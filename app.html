@@ -219,10 +219,19 @@ var CFG = {
   // >>> SET before real fees flow. Empty = fee transfer skipped (dev mode).
   FEE_WALLET: "",
   FEE_BPS: 25,
-  // >>> Swap router. Verify on docs.robinhood.com/chain/protocol-contracts +
-  // Blockscout BEFORE setting. Until set, a snipe = fee + link-out to the DEX.
-  // mode: "disabled" | "v2"  (v2 = swapExactETHForTokens-compatible router)
-  SWAP: { mode: "disabled", router: "", weth: "" },
+  // Uniswap on Robinhood Chain (4663). weth/v3Factory are from Uniswap's own
+  // deployments repo (github.com/Uniswap/contracts, deployments/4663.md),
+  // cross-checked against 1inch + pons docs. router/quoter are RUNTIME-VERIFIED
+  // before any swap: the app calls factory() and WETH9() onchain and refuses to
+  // trade unless they match the verified factory + WETH. Never skip that check.
+  UNI: {
+    weth:      "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    v3Factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+    swapRouter02: "0xCaf681a66D020601342297493863E78C959E5cb2",
+    quoterV2:     "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+    feeTiers: [10000, 3000, 500, 100],   // 1% first — memecoin pools live there
+    defaultSlippageBps: 500              // 5%
+  },
   GT: "https://api.geckoterminal.com/api/v2",
   GT_NET: "robinhood",
   DS: "https://api.dexscreener.com",
@@ -472,7 +481,8 @@ function renderBoard(){
 }
 
 // ================= TOKEN MODAL + SNIPE =================
-var modal={ pool:null, mode:"wallet" };
+var modal={ pool:null, mode:"wallet", slip:CFG.UNI.defaultSlippageBps, quote:null };
+var uniVerified=null; // null=unknown, true/false after runtime check
 function openToken(poolAddr){
   var p=state.pools.find(function(x){return (x.pool||"").toLowerCase()===(poolAddr||"").toLowerCase()});
   if(!p) return;
@@ -499,78 +509,173 @@ function openToken(poolAddr){
    +'</div>'
    +'<input class="amt" id="snipeAmt" inputmode="decimal" placeholder="0.0" value="0.05" aria-label="ETH amount">'
    +'<div class="qamt">'+["0.01","0.05","0.1","0.25","0.5"].map(function(v){return '<button data-action="qamt" data-v="'+v+'">'+v+'</button>'}).join("")+'</div>'
+   +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="slip" data-b="'+b+'" '+(b===modal.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
    +'<div class="fees" id="feeBox"></div>'
    +'<button class="fire" id="fireBtn" data-action="fire">🏹 FIRE SNIPE</button>'
    +(p.dsUrl?'<a class="linkout" href="'+esc(p.dsUrl)+'" target="_blank" rel="noopener">open on DexScreener ↗</a>':'')
    +'<a class="linkout" href="https://www.geckoterminal.com/'+CFG.GT_NET+'/pools/'+esc(p.pool)+'" target="_blank" rel="noopener">open on GeckoTerminal ↗</a>'
    +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
   +'</div></div>';
+  modal.quote=null;
   updFees();
-  $("#snipeAmt").addEventListener("input", updFees);
+  $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; updFees(); });
 }
+var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
   var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
   var fee=amt*CFG.FEE_BPS/10000, net=amt-fee;
   var estUsd=net*state.ethUsd, estTok=p.price? estUsd/p.price : null;
-  var exec = CFG.SWAP.mode!=="disabled" ? "ONCHAIN SWAP" : "FEE + DEX LINK-OUT";
+  var q=modal.quote;
+  var received = q && q.amt===net
+    ? "≈ "+(+q.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" · UNI V3 "+(q.fee/10000)+"%"
+    : (estTok?("≈ "+estTok.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" (indexer est.)"):"—");
   $("#feeBox").innerHTML=
     '<div><span class="k">Snipe fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
-   +'<div><span class="k">Net</span><span class="up">'+net.toFixed(6)+' ETH</span></div>'
-   +'<div><span class="k">Est. received</span><span>'+(estTok?("≈ "+estTok.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)):"—")+'</span></div>'
-   +'<div><span class="k">Execution</span><span style="color:var(--gold)">'+exec+'</span></div>'
+   +'<div><span class="k">Net swapped</span><span class="up">'+net.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Est. received</span><span id="quoteLine">'+received+'</span></div>'
+   +'<div><span class="k">Max slippage</span><span>'+(modal.slip/100)+'%</span></div>'
+   +'<div><span class="k">Execution</span><span style="color:var(--gold)">UNISWAP V3 · ONCHAIN</span></div>'
    +(CFG.FEE_WALLET?'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>':'<div><span class="k">Fee wallet</span><span class="k">unset — dev mode, fee skipped</span></div>');
+  if(net>0 && p.baseToken) liveQuote(p, net);
+}
+// ---- Uniswap plumbing ----
+function rpc(){ return new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId); }
+async function verifyUni(provider){
+  if(uniVerified!==null) return uniVerified;
+  try{
+    var pr = provider || rpc();
+    var code = await pr.getCode(CFG.UNI.swapRouter02);
+    if(!code || code==="0x") throw 0;
+    var r = new ethers.Contract(CFG.UNI.swapRouter02,
+      ["function factory() view returns (address)","function WETH9() view returns (address)"], pr);
+    var f = await r.factory(), w = await r.WETH9();
+    uniVerified = f.toLowerCase()===CFG.UNI.v3Factory.toLowerCase()
+               && w.toLowerCase()===CFG.UNI.weth.toLowerCase();
+  }catch(e){ uniVerified=false; }
+  return uniVerified;
+}
+async function tokenDecimals(pr, addr){
+  try{ return Number(await new ethers.Contract(addr,["function decimals() view returns (uint8)"],pr).decimals()); }
+  catch(e){ return 18; }
+}
+async function bestQuote(pr, token, amountInWei){
+  // try fee tiers, keep the best amountOut
+  var q = new ethers.Contract(CFG.UNI.quoterV2,
+    ["function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut,uint160,uint32,uint256)"], pr);
+  var best=null;
+  for(var i=0;i<CFG.UNI.feeTiers.length;i++){
+    var fee=CFG.UNI.feeTiers[i];
+    try{
+      var res = await q.quoteExactInputSingle.staticCall({ tokenIn:CFG.UNI.weth, tokenOut:token, amountIn:amountInWei, fee:fee, sqrtPriceLimitX96:0 });
+      var out = res[0];
+      if(out>0n && (!best || out>best.out)) best={ out:out, fee:fee };
+    }catch(e){ /* no pool at this tier */ }
+  }
+  return best;
+}
+async function liveQuote(p, netEth){
+  var seq=++quoteSeq;
+  try{
+    var pr=rpc();
+    if(!(await verifyUni(pr))) return;
+    var wei=ethers.parseEther(netEth.toFixed(18));
+    var best=await bestQuote(pr, p.baseToken, wei);
+    if(seq!==quoteSeq || !best) return;
+    var dec=await tokenDecimals(pr, p.baseToken);
+    if(seq!==quoteSeq) return;
+    modal.quote={ amt:netEth, out:best.out, outFmt:ethers.formatUnits(best.out,dec), fee:best.fee, dec:dec };
+    var el=$("#quoteLine");
+    if(el) el.textContent="≈ "+(+modal.quote.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" · UNI V3 "+(best.fee/10000)+"%";
+  }catch(e){}
 }
 async function fire(){
   var p=modal.pool; if(!p)return;
   var amt=parseFloat($("#snipeAmt").value);
   if(!amt||amt<=0){toast("Enter an amount",true);return}
+  if(!p.baseToken){toast("Token address unknown for this pool",true);return}
   var btn=$("#fireBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> LOCKING ON…';
+  var done=function(){ var b=$("#fireBtn"); if(b){ b.disabled=false; b.textContent="🏹 FIRE SNIPE"; } };
   try{
-    var signer=null;
+    // ---- signer ----
+    var signer=null, provider=null;
     if(modal.mode==="wallet"){
       if(!state.wallet) await connect();
       if(!state.wallet) throw new Error("No wallet connected");
       await ensureChain();
-      signer = await state.provider.getSigner();
+      provider = state.provider;
+      signer = await provider.getSigner();
     }else{
       if(!state.burner) throw new Error("Create your HoodSnipr wallet first (Wallets tab)");
-      var rp=new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId);
-      signer = new ethers.Wallet(state.burner.pk, rp);
-      var bal = await rp.getBalance(signer.address);
+      provider = rpc();
+      signer = new ethers.Wallet(state.burner.pk, provider);
+      var bal = await provider.getBalance(signer.address);
       if(bal < ethers.parseEther(String(amt))) throw new Error("Burner balance too low — send ETH on Robinhood Chain first");
     }
+
+    // ---- runtime-verify the router before a single wei moves ----
+    btn.innerHTML='<span class="spin"></span> VERIFYING ROUTER…';
+    if(!(await verifyUni(rpc()))) throw new Error("Router failed onchain verification — trading disabled for safety");
+
     var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
+    var netWei = ethers.parseEther(net.toFixed(18));
+
+    // ---- quote (route + minOut) ----
+    btn.innerHTML='<span class="spin"></span> QUOTING UNISWAP…';
+    var best = await bestQuote(rpc(), p.baseToken, netWei);
+    if(!best) throw new Error("No Uniswap v3 WETH pool found for $"+p.sym+" — it may still be on a launchpad bonding curve or v4-only");
+    var minOut = best.out - (best.out * BigInt(modal.slip) / 10000n);
+    var dec = (modal.quote && modal.quote.dec) || await tokenDecimals(rpc(), p.baseToken);
+
+    // ---- 1) platform fee (skipped in dev mode) ----
     if(CFG.FEE_WALLET){
+      btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
       var tx1 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
       await tx1.wait();
     }
-    if(CFG.SWAP.mode==="v2" && CFG.SWAP.router && CFG.SWAP.weth && p.baseToken){
-      var router=new ethers.Contract(CFG.SWAP.router,
-        ["function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin,address[] path,address to,uint deadline) payable"],
-        signer);
-      var tx2=await router.swapExactETHForTokensSupportingFeeOnTransferTokens(
-        0, [CFG.SWAP.weth, p.baseToken], await signer.getAddress(),
-        Math.floor(Date.now()/1000)+600, { value: ethers.parseEther(net.toFixed(18)) });
-      await tx2.wait();
-      toast("Sniped $"+p.sym+" 🎯");
-    }else{
-      // honest path until a router is verified: fee (if set) + open the DEX to finish
-      toast(CFG.FEE_WALLET?"Fee sent — finish the swap on the DEX ↗":"Recorded — finish the swap on the DEX ↗");
-      var url = p.dsUrl || ("https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool);
-      window.open(url,"_blank","noopener");
-    }
-    recordTrade(p, amt, fee, modal.mode);
+
+    // ---- 2) the swap: SwapRouter02.exactInputSingle, ETH in (router wraps) ----
+    btn.innerHTML='<span class="spin"></span> SWAP '+(CFG.FEE_WALLET?"2/2":"")+' — SIGN IN WALLET…';
+    var router = new ethers.Contract(CFG.UNI.swapRouter02,
+      ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"],
+      signer);
+    var params = { tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:best.fee,
+      recipient: await signer.getAddress(), amountIn: netWei,
+      amountOutMinimum: minOut, sqrtPriceLimitX96: 0 };
+    var tx2 = await router.exactInputSingle(params, { value: netWei });
+    btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
+    var rcpt = await tx2.wait();
+    if(!rcpt || rcpt.status!==1) throw new Error("Swap reverted onchain");
+
+    // ---- actual received amount from the ERC-20 Transfer log to us ----
+    var got = null;
+    try{
+      var me=(await signer.getAddress()).toLowerCase();
+      var iface=new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
+      rcpt.logs.forEach(function(lg){
+        if((lg.address||"").toLowerCase()!==p.baseToken.toLowerCase()) return;
+        try{ var ev=iface.parseLog(lg);
+          if(ev && ev.args && String(ev.args[1]).toLowerCase()===me) got=ev.args[2];
+        }catch(e){}
+      });
+    }catch(e){}
+    var tokensOut = +(ethers.formatUnits(got!=null?got:best.out, dec));
+
+    recordTrade(p, amt, fee, modal.mode, tokensOut, rcpt.hash);
+    toast("Sniped "+tokensOut.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" 🎯");
     closeModal();
   }catch(e){
-    toast((e&&e.shortMessage)||(e&&e.message)||"Snipe failed", true);
+    // NOTHING is recorded on failure — the board stays honest
+    var m=(e&&(e.shortMessage||e.reason||e.message))||"Snipe failed";
+    if(/user rejected|denied/i.test(m)) m="Signature rejected in wallet";
+    toast(m, true);
   }
-  var b=$("#fireBtn"); if(b){ b.disabled=false; b.textContent="🏹 FIRE SNIPE"; }
+  done();
 }
-function recordTrade(p, ethIn, fee, mode){
+function recordTrade(p, ethIn, fee, mode, tokensOut, txHash){
   var t={ sym:p.sym, baseToken:p.baseToken, pool:p.pool, ethIn:ethIn, fee:fee,
     entryPrice:p.price, ts:Date.now(), mode:mode,
-    tokens: p.price? ((ethIn-fee)*state.ethUsd/p.price) : null };
+    tokens: tokensOut, tx: txHash||null };
   state.trades.unshift(t); save("hs_trades", state.trades);
   renderPnl(); syncLeaderboard();
 }
@@ -725,7 +830,7 @@ async function saveProfile(){
 function pnlOf(t){
   var p=state.pools.find(function(x){return x.baseToken&&t.baseToken&&x.baseToken.toLowerCase()===t.baseToken.toLowerCase()});
   var now=p?p.price:t.entryPrice;
-  if(!t.tokens||!t.entryPrice||!now) return {usd:0,pct:0,now:now||0};
+  if(!t.tokens||!now) return {usd:0,pct:0,now:now||0};
   var cost=t.ethIn*state.ethUsd, cur=t.tokens*now;
   return {usd:cur-cost, pct:cost?((cur-cost)/cost*100):0, now:now};
 }
@@ -735,7 +840,7 @@ function renderPnl(){
   var tot=0;
   var h=state.trades.map(function(t,i){
     var r=pnlOf(t); tot+=r.usd; var up=r.usd>=0;
-    return '<div class="lrow"><div class="nm">🎯 $'+esc(t.sym)+'<div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.ethIn+' ETH · '+(t.mode==="burner"?"burner":"wallet")+'</div></div>'
+    return '<div class="lrow"><div class="nm">🎯 $'+esc(t.sym)+'<div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.ethIn+' ETH · '+(t.mode==="burner"?"burner":"wallet")+(t.tx?' · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/tx/'+esc(t.tx)+'" target="_blank" rel="noopener" style="color:var(--green)">tx ↗</a>':'')+'</div></div>'
       +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+r.usd.toFixed(2)+' <span style="font-size:11px">('+(up?"+":"")+r.pct.toFixed(1)+'%)</span></div>'
       +'<button class="obtn" style="padding:6px 10px;font-size:11px" data-action="share" data-i="'+i+'">Share</button></div>';
   }).join("");
@@ -838,7 +943,8 @@ document.addEventListener("click", function(e){
   else if(a==="close") closeModal();
   else if(a==="closebg"){ if(e.target===el) closeModal(); }
   else if(a==="paymode"){ modal.mode=el.getAttribute("data-m"); $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)}); updFees(); }
-  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); updFees(); }
+  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; updFees(); }
+  else if(a==="slip"){ modal.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="slip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===modal.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updFees(); }
   else if(a==="fire") fire();
   else if(a==="bw-create"){ if(confirm("Create a burner wallet? Keys live ONLY in this browser — you must export and back up the key yourself.")) createBurner(); }
   else if(a==="bw-import"){ var pk=prompt("Paste private key (0x…) — it stays in this browser:"); if(pk){ try{createBurner(pk.trim())}catch(err){toast("Invalid key",true)} } }

@@ -50,20 +50,37 @@
 
 ## What YOU must configure (CFG block at the top of app.html)
 
-1. **`FEE_WALLET`** — currently `""` = dev mode, fee transfer skipped and the
-   UI says so. Set it to your locked fee address to start collecting 0.25%.
-2. **`SWAP`** — currently `{ mode: "disabled" }`. In this mode a snipe =
-   fee transfer (if set) + opens the token's DEX page to finish the swap, and
-   the UI labels execution as "FEE + DEX LINK-OUT". To go full one-tap:
-   - Find the router on docs.robinhood.com/chain/protocol-contracts (Uniswap
-     contracts are deployed on 4663) and **verify the address on Blockscout**.
-   - If it's a v2-style router: `SWAP: { mode:"v2", router:"0x…", weth:"0x…" }`
-     and the app executes `swapExactETHForTokensSupportingFeeOnTransferTokens`.
-   - If it's Universal Router / v4 with launchpad hooks (likely for hood.fun
-     and Flap tokens), the calldata is different per pool — that's a v0.3 task,
-     not a config flag. Do NOT point mode:"v2" at the Universal Router.
-   - ⚠️ amountOutMin is 0 in v0.2 (no slippage guard). Fine for testing; add a
-     quote + minOut before pushing volume through it.
+1. **`FEE_WALLET`** — currently `""` = dev mode: the fee leg is skipped and the
+   UI says so. Set your locked fee address to start collecting 0.25%.
+
+## Swap execution (v0.2.2 — LIVE via Uniswap v3)
+
+"Fire Snipe" now executes a **real onchain swap** — no link-outs, no phantom
+records. The flow per snipe:
+
+1. **Runtime router verification.** WETH + v3Factory are pinned from Uniswap's
+   own deployments repo for chain 4663. Before any wei moves, the app calls
+   `factory()` and `WETH9()` on SwapRouter02 onchain and refuses to trade
+   unless both match the pinned addresses. A wrong or malicious router address
+   can't pass this.
+2. **Live quote.** QuoterV2 is tried across fee tiers (1% → 0.3% → 0.05% →
+   0.01%); the best route wins and shows in the fee box ("UNI V3 1%"). minOut
+   is derived from the quote using the user's slippage chip (1/3/5/10%,
+   default 5%).
+3. **Fee leg** (if FEE_WALLET set) — plain ETH transfer, signed in wallet.
+4. **Swap leg** — `SwapRouter02.exactInputSingle` with ETH in (the router
+   wraps to WETH itself), signed in wallet. Two signatures total; the button
+   narrates each step.
+5. **Record on confirmation only.** The trade is stored only after the receipt
+   returns status 1, with the **actual token amount parsed from the ERC-20
+   Transfer log** (not an estimate) and the tx hash — which now shows as a
+   Blockscout link in the PnL list. Rejected signature, failed quote, reverted
+   swap → clear error toast, nothing recorded.
+
+If a token has no v3 WETH pool (still on a launchpad bonding curve, or
+v4-only like graduated Bags tokens), the quote fails and the snipe blocks with
+an explanatory error instead of guessing. Routing those through the
+UniversalRouter/v4 is the v0.3 execution task.
 
 ## Honest limitations to keep in your head
 
