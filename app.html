@@ -200,7 +200,7 @@ canvas.share{display:none}
     </div>
     <div class="board" id="board"></div>
     <div class="pager" id="pager"></div>
-    <div class="note">Live pool data merged from GeckoTerminal + DexScreener for Robinhood Chain (4663). Refreshes ~30s.<br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
+    <div class="note"><span id="trackNote">Tracking the chain…</span><br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
   </div>
 
   <!-- ============ NEW LAUNCHES ============ -->
@@ -515,6 +515,16 @@ async function refresh(){
   try{
     var mk = await fetchMarket();
     var merged = mergePools(mk.gt, mk.ds);
+    // Early movers matter more than incumbents here: anything the new-pools
+    // feed found that the main merge missed gets folded in, so a token picking
+    // up volume 10 minutes after launch is snipeable from the main index.
+    if(state.newPools && state.newPools.length){
+      var have={}; merged.forEach(function(p){ if(p.baseToken) have[p.baseToken.toLowerCase()]=1; });
+      state.newPools.forEach(function(p){
+        var k=(p.baseToken||"").toLowerCase();
+        if(k && !have[k] && !isStable(p) && !isStock(p) && !isEthLike(p)) merged.push(p);
+      });
+    }
     if(merged.length){
       state.pools=merged; state.lastUpdate=Date.now(); failStreak=0;
       state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
@@ -711,7 +721,7 @@ function renderPager(total, pages){
   el.innerHTML=h;
 }
 function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:state.tf==="h6"?p.ch6:p.ch24 }
-var PAGE_SIZE=50, MAX_TOKENS=500;
+var PAGE_SIZE=50, MAX_TOKENS=Infinity;   // track the whole chain, paginate the view
 function renderBoard(){
   var el=$("#board");
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
@@ -741,6 +751,8 @@ function renderBoard(){
   });
   el.innerHTML=h;
   renderPager(ranked.length, pages);
+  var tn=$("#trackNote");
+  if(tn) tn.textContent="Tracking "+ranked.length+" pools across Robinhood Chain · GeckoTerminal + DexScreener · new launches folded in live";
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
   $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
@@ -1846,7 +1858,12 @@ setInterval(function(){ if(!document.hidden) pollBlock(); }, 5000);
 pullChainStats(); setInterval(function(){ if(!document.hidden) pullChainStats(); }, 20000);
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
 setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
-setInterval(function(){ var vn=$("#v-new"); if(vn && vn.style.display!=="none") refreshNew(true); }, 45000);
+setInterval(function(){
+  if(document.hidden) return;
+  var vn=$("#v-new");
+  refreshNew(vn && vn.style.display!=="none");   // forced when visible, cached otherwise
+}, 45000);
+refreshNew(false);   // prime the launch feed at boot so early movers show immediately
 setInterval(function(){ if(state.lastUpdate){var a=Math.round((Date.now()-state.lastUpdate)/1000);$("#ageTxt").textContent=a<60?a+"s ago":Math.round(a/60)+"m ago";} },5000);
 renderWallets();
 })();
