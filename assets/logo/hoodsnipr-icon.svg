@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="HoodSnipr app icon">
+  <rect width="512" height="512" rx="114" fill="#0C0E10"/>
+  <circle cx="256" cy="256" r="205" fill="none" stroke="#00C805" stroke-width="4" opacity="0.18" stroke-dasharray="14 22"/>
+  <g>
+    <circle cx="256" cy="256" r="130.00" fill="none" stroke="#00C805" stroke-width="26.00"/>
+    <circle cx="256" cy="256" r="34.71" fill="#00C805"/>
+    <line x1="256.00" y1="82.71" x2="256.00" y2="169.33" stroke="#00C805" stroke-width="26.00" stroke-linecap="butt"/>
+    <line x1="256.00" y1="342.67" x2="256.00" y2="429.29" stroke="#00C805" stroke-width="26.00" stroke-linecap="butt"/>
+    <line x1="82.71" y1="256.00" x2="169.33" y2="256.00" stroke="#00C805" stroke-width="26.00" stroke-linecap="butt"/>
+    <line x1="342.67" y1="256.00" x2="429.29" y2="256.00" stroke="#00C805" stroke-width="26.00" stroke-linecap="butt"/>
+  </g>
+</svg>
