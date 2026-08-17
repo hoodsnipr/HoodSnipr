@@ -58,6 +58,12 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .src{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
 .src b{color:var(--green);font-weight:500}
 
+.chainbar{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.chainbar .cb{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:9px 10px;text-align:center}
+.chainbar .k{font-family:var(--mono);font-size:8.5px;color:var(--mute);letter-spacing:.12em}
+.chainbar .v{font-family:var(--mono);font-size:13px;margin-top:3px}
+.chainbar .v.blk{color:var(--green)}
+@media(max-width:480px){.chainbar{grid-template-columns:repeat(2,1fr)}}
 .board{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
 .row{display:flex;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
 .row:last-child{border-bottom:none}
@@ -172,10 +178,17 @@ canvas.share{display:none}
       <div class="tfpills" id="tfpills">
         <button class="tf" data-tf="m5">5M</button>
         <button class="tf on" data-tf="h1">1H</button>
+        <button class="tf" data-tf="h6">6H</button>
         <button class="tf" data-tf="h24">24H</button>
         <button class="tf" data-tf="d30">30D</button>
       </div>
       <div class="src">SOURCES <b id="srcTxt">—</b> · <span id="ageTxt">…</span></div>
+    </div>
+    <div class="chainbar" id="chainBar">
+      <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">—</div></div>
+      <div class="cb"><div class="k">24H TXNS</div><div class="v" id="cbTx">—</div></div>
+      <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">—</div></div>
+      <div class="cb"><div class="k">BLOCK</div><div class="v" id="cbBlk">—</div></div>
     </div>
     <div class="board" id="board"></div>
     <div class="note">Live pool data merged from GeckoTerminal + DexScreener for Robinhood Chain (4663). Refreshes ~30s.<br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
@@ -290,7 +303,7 @@ var $=function(s){return document.querySelector(s)}, $$=function(s){return Array
 var state = {
   tf:"h1", pools:[], dsChain:null, ethUsd:CFG.ETH_USD_FALLBACK,
   wallet:null, provider:null, burner:null, burnerBal:null,
-  d30:{}, d30Loading:false, lastUpdate:0, srcs:[],
+  d30:{}, d30Loading:false, lastUpdate:0, srcs:[], chain:{},
   trades: load("hs_trades", []),
   profile: load("hs_profile", null)
 };
@@ -332,8 +345,8 @@ function parseGTPage(j, out, seen){
       img: (meta_.img && meta_.img!=="missing.png") ? meta_.img : null,
       baseToken: btId ? btId.split("_").pop() : null,
       price:+a.base_token_price_usd||null,
-      m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
-      cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
+      m5:+(vol.m5||0), h1:+(vol.h1||0), h6:+(vol.h6||0), h24:+(vol.h24||0),
+      cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch6:+(chg.h6||0), ch24:+(chg.h24||0),
       liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
       mcap:+a.market_cap_usd||+a.fdv_usd||null,
       created:a.pool_created_at||null,
@@ -355,8 +368,9 @@ function parseDSPairs(pairs, chain){
       img:(p.info&&p.info.imageUrl)||null,
       baseToken:(p.baseToken||{}).address||null,
       price:+p.priceUsd||null,
-      m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
-      cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+      m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h6:+(p.volume&&p.volume.h6||0), h24:+(p.volume&&p.volume.h24||0),
+      cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch6:+(p.priceChange&&p.priceChange.h6||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+      txns24:(p.txns&&p.txns.h24)?((+p.txns.h24.buys||0)+(+p.txns.h24.sells||0)):null,
       liq:+(p.liquidity&&p.liquidity.usd||0), fdv:+p.fdv||null,
       mcap:+p.marketCap||+p.fdv||null,
       created:p.pairCreatedAt? new Date(p.pairCreatedAt).toISOString() : null,
@@ -381,6 +395,7 @@ async function fetchMarket(){
         (pay.gtPages||[]).forEach(function(pg){ parseGTPage(pg, gtOut, seen); });
         var dsOut=parseDSPairs(pay.dsPairs||[], null);
         if(pay.ethUsd>0) state.ethUsd=pay.ethUsd;
+        if(pay.stats) state.chain=pay.stats;
         return { gt:gtOut, ds:dsOut, viaProxy:true };
       }
       throw 0;
@@ -428,6 +443,9 @@ function mergePools(gtP, dsP){
       if(!map[k].price&&p.price)map[k].price=p.price;
       if(!map[k].img&&p.img)map[k].img=p.img;
       if(!map[k].mcap&&p.mcap)map[k].mcap=p.mcap;
+      if(!map[k].h6&&p.h6)map[k].h6=p.h6;
+      if(!map[k].ch6&&p.ch6)map[k].ch6=p.ch6;
+      if(map[k].txns24==null&&p.txns24!=null)map[k].txns24=p.txns24;
       if(!map[k].site)map[k].site=p.site; if(!map[k].tw)map[k].tw=p.tw; if(!map[k].tg)map[k].tg=p.tg; }
     else map[k]=p;
   });
@@ -494,7 +512,17 @@ async function refresh(){
     } else failStreak++;
   }catch(e){ failStreak++; }
   setLive();
+  renderChainBar();
   renderBoard();
+}
+function fmtNum(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return (n/1e9).toFixed(2)+"B"; if(n>=1e6)return (n/1e6).toFixed(2)+"M"; if(n>=1e3)return (n/1e3).toFixed(1)+"K"; return String(Math.round(n)); }
+function renderChainBar(){
+  var c=state.chain||{};
+  var e;
+  if((e=$("#cbVol"))) e.textContent = c.vol24!=null? fmtUsd(c.vol24) : "—";
+  if((e=$("#cbTx")))  e.textContent = c.txns24? fmtNum(c.txns24) : "—";
+  if((e=$("#cbLiq"))) e.textContent = c.liq!=null? fmtUsd(c.liq) : "—";
+  if((e=$("#cbBlk"))){ e.className="v blk"; e.textContent = c.block? "#"+c.block.toLocaleString() : "—"; }
 }
 function setLive(){
   // Data <90s old is still LIVE even if one poll hiccuped; only a real,
@@ -612,8 +640,8 @@ function socialLinks(p, size){
 
 // ================= BOARD =================
 function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
-var TF_LABEL={m5:"5M",h1:"1H",h24:"24H",d30:"30D"};
-function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:p.ch24 }
+var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
+function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:state.tf==="h6"?p.ch6:p.ch24 }
 function renderBoard(){
   var el=$("#board");
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
@@ -665,8 +693,8 @@ async function refreshNew(force){
           tokenName:m.name||"", img:(m.img&&m.img!=="missing.png")?m.img:null,
           baseToken:btId?btId.split("_").pop():null,
           price:+a.base_token_price_usd||null,
-          m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
-          cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
+          m5:+(vol.m5||0), h1:+(vol.h1||0), h6:+(vol.h6||0), h24:+(vol.h24||0),
+          cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch6:+(chg.h6||0), ch24:+(chg.h24||0),
           liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
           mcap:+a.market_cap_usd||+a.fdv_usd||null,
           created:a.pool_created_at||null,
