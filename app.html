@@ -58,12 +58,13 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .src{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
 .src b{color:var(--green);font-weight:500}
 
-.chainbar{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.chainbar{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}
 .chainbar .cb{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:9px 10px;text-align:center}
 .chainbar .k{font-family:var(--mono);font-size:8.5px;color:var(--mute);letter-spacing:.12em}
 .chainbar .v{font-family:var(--mono);font-size:13px;margin-top:3px}
 .chainbar .v.blk{color:var(--green)}
-@media(max-width:480px){.chainbar{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.chainbar{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:420px){.chainbar{grid-template-columns:repeat(2,1fr)}}
 .board{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
 .row{display:flex;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
 .row:last-child{border-bottom:none}
@@ -86,6 +87,12 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .snp:hover{background:var(--green);color:#000}
 @media(max-width:540px){.vl{display:none}}
 
+.pager{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:12px;flex-wrap:wrap}
+.pager button{font-family:var(--mono);font-size:12px;padding:8px 14px;border-radius:99px;border:1px solid var(--line);color:var(--green);background:transparent;transition:all .15s}
+.pager button:hover:not(:disabled){border-color:var(--green);background:var(--green-dim)}
+.pager button:disabled{color:var(--mute);opacity:.4;cursor:default}
+.pager .pinfo{font-family:var(--mono);font-size:11px;color:var(--mute);letter-spacing:.06em}
+.pager .more{background:var(--green);color:#000;font-weight:700;border:none;padding:10px 22px}
 .note{font-size:11px;color:var(--mute);text-align:center;margin-top:10px;line-height:1.6}
 .skel{height:54px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:shimmer 1.2s linear infinite}
 .progress{font-family:var(--mono);font-size:11px;color:var(--gold);text-align:center;padding:10px}
@@ -188,9 +195,11 @@ canvas.share{display:none}
       <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">—</div></div>
       <div class="cb"><div class="k">24H TXNS</div><div class="v" id="cbTx">—</div></div>
       <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">—</div></div>
-      <div class="cb"><div class="k">BLOCK</div><div class="v" id="cbBlk">—</div></div>
+      <div class="cb"><div class="k">TOKENS</div><div class="v" id="cbTokens">—</div></div>
+      <div class="cb"><div class="k">BLOCK</div><div class="v blk" id="cbBlk">—</div></div>
     </div>
     <div class="board" id="board"></div>
+    <div class="pager" id="pager"></div>
     <div class="note">Live pool data merged from GeckoTerminal + DexScreener for Robinhood Chain (4663). Refreshes ~30s.<br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
   </div>
 
@@ -303,7 +312,7 @@ var $=function(s){return document.querySelector(s)}, $$=function(s){return Array
 var state = {
   tf:"h1", pools:[], dsChain:null, ethUsd:CFG.ETH_USD_FALLBACK,
   wallet:null, provider:null, burner:null, burnerBal:null,
-  d30:{}, d30Loading:false, lastUpdate:0, srcs:[], chain:{},
+  d30:{}, d30Loading:false, lastUpdate:0, srcs:[], chain:{}, block:null, page:0,
   trades: load("hs_trades", []),
   profile: load("hs_profile", null)
 };
@@ -349,6 +358,7 @@ function parseGTPage(j, out, seen){
       cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch6:+(chg.h6||0), ch24:+(chg.h24||0),
       liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
       mcap:+a.market_cap_usd||+a.fdv_usd||null,
+      txns24: (a.transactions&&a.transactions.h24)? ((+a.transactions.h24.buys||0)+(+a.transactions.h24.sells||0)) : null,
       created:a.pool_created_at||null,
       src:"GT", dex: rel.dex&&rel.dex.data ? rel.dex.data.id : "", dsUrl:null
     });
@@ -516,13 +526,41 @@ async function refresh(){
   renderBoard();
 }
 function fmtNum(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return (n/1e9).toFixed(2)+"B"; if(n>=1e6)return (n/1e6).toFixed(2)+"M"; if(n>=1e3)return (n/1e3).toFixed(1)+"K"; return String(Math.round(n)); }
+// Aggregate from whatever data we actually have in hand. The proxy's numbers
+// are used only when they're larger (deeper coverage) — the bar can never sit
+// empty just because a function hasn't warmed up.
+function localStats(){
+  var vol=0, tx=0, liq=0, toks={};
+  var all=(state.pools||[]).concat(state.newPools||[]);
+  var seen={};
+  all.forEach(function(p){
+    var k=(p.pool||"").toLowerCase(); if(!k||seen[k])return; seen[k]=1;
+    vol+=(+p.h24||0); liq+=(+p.liq||0);
+    if(p.txns24!=null) tx+=(+p.txns24||0);
+    if(p.baseToken) toks[p.baseToken.toLowerCase()]=1;
+  });
+  return { vol24:vol, txns24:tx, liq:liq, tokenCount:Object.keys(toks).length };
+}
 function renderChainBar(){
-  var c=state.chain||{};
+  var c=state.chain||{}, l=localStats();
+  var vol=Math.max(c.vol24||0, l.vol24), tx=Math.max(c.txns24||0, l.txns24),
+      liq=Math.max(c.liq||0, l.liq), n=Math.max(c.tokenCount||0, l.tokenCount);
   var e;
-  if((e=$("#cbVol"))) e.textContent = c.vol24!=null? fmtUsd(c.vol24) : "—";
-  if((e=$("#cbTx")))  e.textContent = c.txns24? fmtNum(c.txns24) : "—";
-  if((e=$("#cbLiq"))) e.textContent = c.liq!=null? fmtUsd(c.liq) : "—";
-  if((e=$("#cbBlk"))){ e.className="v blk"; e.textContent = c.block? "#"+c.block.toLocaleString() : "—"; }
+  if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "—";
+  if((e=$("#cbTx")))  e.textContent = tx>0? fmtNum(tx) : (n?"—":"—");
+  if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "—";
+  if((e=$("#cbBlk"))){ e.className="v blk"; e.textContent = state.block? "#"+state.block.toLocaleString() : "—"; }
+  var t=$("#cbTokens"); if(t) t.textContent = n? n.toLocaleString() : "—";
+}
+// block height straight from chain RPC — always available, never proxy-dependent
+async function pollBlock(){
+  try{
+    var r=await fetch(CFG.CHAIN.rpcUrls[0],{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_blockNumber",params:[]})});
+    var j=await r.json();
+    var b=parseInt(j.result,16);
+    if(b>0){ state.block=b; var e=$("#cbBlk"); if(e) e.textContent="#"+b.toLocaleString(); }
+  }catch(e){}
 }
 function setLive(){
   // Data <90s old is still LIVE even if one poll hiccuped; only a real,
@@ -538,7 +576,7 @@ async function ensure30d(){
   if(state.d30Loading) return;
   state.d30Loading=true;
   var cache=load("hs_d30",{}); var now=Date.now();
-  var top = state.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,20);
+  var top = state.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,60);
   var done=0;
   for(var i=0;i<top.length;i++){
     var p=top[i], key=(p.pool||"").toLowerCase();
@@ -641,17 +679,34 @@ function socialLinks(p, size){
 // ================= BOARD =================
 function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
 var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
+function renderPager(total, pages){
+  var el=$("#pager"); if(!el)return;
+  if(total<=PAGE_SIZE){ el.innerHTML=""; return; }
+  var start=state.page*PAGE_SIZE+1, end=Math.min(total,(state.page+1)*PAGE_SIZE);
+  var h='<button data-action="page" data-p="'+(state.page-1)+'"'+(state.page===0?" disabled":"")+'>← PREV</button>'
+   +'<span class="pinfo">'+start+'–'+end+' of '+total+' · page '+(state.page+1)+'/'+pages+'</span>'
+   +'<button data-action="page" data-p="'+(state.page+1)+'"'+(state.page>=pages-1?" disabled":"")+'>NEXT →</button>';
+  if(state.page<pages-1) h+='<button class="more" data-action="page" data-p="'+(state.page+1)+'">SHOW MORE</button>';
+  el.innerHTML=h;
+}
 function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:state.tf==="h6"?p.ch6:p.ch24 }
+var PAGE_SIZE=50, MAX_TOKENS=500;
 function renderBoard(){
   var el=$("#board");
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
-  var rows=state.pools.slice().sort(function(a,b){return volFor(b)-volFor(a)}).slice(0,25);
+  var ranked=state.pools.slice().sort(function(a,b){return volFor(b)-volFor(a)}).slice(0,MAX_TOKENS);
+  var pages=Math.max(1,Math.ceil(ranked.length/PAGE_SIZE));
+  if(state.page>=pages) state.page=pages-1;
+  if(state.page<0) state.page=0;
+  var start=state.page*PAGE_SIZE;
+  var rows=ranked.slice(start, start+PAGE_SIZE);
   var h="";
   if(state.tf==="d30"){
     var have=rows.filter(function(p){return volFor(p)>0}).length;
     if(have<5) h+='<div class="progress">RANGING 30D VOLUME… (sums 30 daily candles per pool — first pass takes ~1 min)</div>';
   }
-  rows.forEach(function(p,i){
+  rows.forEach(function(p,idx){
+    var i=start+idx;
     var c=chgFor(p), up=c>=0;
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
       +'<div class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</div>'
@@ -664,6 +719,7 @@ function renderBoard(){
       +'</div>';
   });
   el.innerHTML=h;
+  renderPager(ranked.length, pages);
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
   $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
@@ -1673,6 +1729,11 @@ document.addEventListener("click", function(e){
   else if(a==="bw-export"){ if(confirm("Reveal private key? Anyone who sees it controls the funds.")) prompt("Your burner private key — store it safely:", state.burner.pk); }
   else if(a==="bw-burn"){ if(confirm("Destroy this burner from the browser? If the key isn't exported and it holds funds, THEY ARE GONE FOREVER.") && confirm("Final confirm: key exported or wallet empty?")){ state.burner=null; state.burnerBal=null; localStorage.removeItem("hs_burner"); renderWallets(); toast("Burner destroyed"); } }
   else if(a==="prof-save") saveProfile();
+  else if(a==="page"){
+      state.page=parseInt(el.getAttribute("data-p"),10)||0;
+      renderBoard();
+      var b=$("#board"); if(b) b.scrollIntoView({behavior:"smooth",block:"start"});
+    }
   else if(a==="port-refresh") loadPortfolio();
   else if(a==="port-open"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
   else if(a==="copy-ca"){ navigator.clipboard.writeText(el.getAttribute("data-addr")).then(function(){ toast("Contract address copied 📋"); }).catch(function(){ prompt("Contract address:", el.getAttribute("data-addr")); }); }
@@ -1696,6 +1757,7 @@ $("#tfpills").addEventListener("click",function(e){
   var b=e.target.closest(".tf"); if(!b)return;
   $$(".tf").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
   state.tf=b.getAttribute("data-tf");
+  state.page=0;
   renderBoard();
   if(state.tf==="d30") ensure30d();
 });
@@ -1738,7 +1800,9 @@ state.burner = load("hs_burner", null);
 })();
 autoReconnect();
 document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
-fetchEthUsd(); refresh(); setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
+fetchEthUsd(); refresh(); pollBlock();
+setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
+setInterval(function(){ if(!document.hidden) pollBlock(); }, 5000);
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
 setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
 setInterval(function(){ var vn=$("#v-new"); if(vn && vn.style.display!=="none") refreshNew(true); }, 45000);
