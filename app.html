@@ -3,640 +3,778 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>HoodSnipr — Snipe trending tokens on Robinhood Chain</title>
-<meta name="description" content="Volume-ranked token sniping on Robinhood Chain. 5M / 1H / 24H / 30D. 0.25% fee. Powered by $QUIVR.">
+<title>HoodSnipr — live trending on Robinhood Chain</title>
+<meta name="description" content="Live volume-ranked token sniping on Robinhood Chain. 5M/1H/24H/30D. Real charts. 0.25% fee.">
 <meta name="theme-color" content="#0C0E10">
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-<meta property="og:title" content="HoodSnipr — Every trending token. One arrow away.">
-<meta property="og:description" content="Snipe trending tokens on Robinhood Chain. 0.25% fee. $QUIVR powered.">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
 <style>
-  html,body{margin:0;padding:0;background:#0C0E10}
-  #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-        background:#0C0E10;color:#00C805;font-family:ui-monospace,monospace;font-size:12px;
-        letter-spacing:.14em;z-index:999}
+:root{
+  --void:#0C0E10;--panel:#15181C;--panel2:#1B1F24;--line:#242A30;
+  --green:#00C805;--green-dim:rgba(0,200,5,.14);--red:#FF5000;
+  --text:#F0F4F1;--mute:#7C8683;--gold:#FFD166;
+  --body:'Space Grotesk',system-ui,sans-serif;--mono:'DM Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--text);font-family:var(--body);min-height:100vh}
+::selection{background:var(--green);color:#000}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input{font-family:var(--mono);outline:none}
+a{color:inherit}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes pop{0%{transform:scale(.94);opacity:0}100%{transform:scale(1);opacity:1}}
+@keyframes shimmer{to{background-position:-200% 0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(12,14,16,.95);backdrop-filter:blur(8px);z-index:20}
+.logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+.logo b{font-weight:700;font-size:19px;letter-spacing:-.02em}
+.logo b span{color:var(--green)}
+.logo .sub{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
+.hstat{display:flex;align-items:center;gap:8px}
+.live{font-family:var(--mono);font-size:11px;color:var(--green);display:flex;align-items:center;gap:6px}
+.live i{width:7px;height:7px;border-radius:99px;background:var(--green);animation:pulse 1.8s infinite;display:inline-block}
+.live.err i{background:var(--red);animation:none}
+.wbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:9px 15px;border-radius:99px}
+.wbtn.on{background:var(--panel2);color:var(--green);border:1px solid var(--green);font-family:var(--mono)}
+
+.tabs{display:flex;gap:8px;padding:14px 16px 0;max-width:900px;margin:0 auto;flex-wrap:wrap}
+.tab{background:transparent;color:var(--mute);border:1px solid var(--line);font-weight:700;font-size:13px;padding:8px 14px;border-radius:99px}
+.tab.on{background:var(--text);color:#000;border-color:var(--text)}
+main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
+
+.tfbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 12px;flex-wrap:wrap}
+.tfpills{display:flex;gap:6px}
+.tf{font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);color:var(--mute)}
+.tf.on{border-color:var(--green);color:var(--green);background:var(--green-dim)}
+.src{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
+.src b{color:var(--green);font-weight:500}
+
+.board{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.row{display:flex;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.row:last-child{border-bottom:none}
+.row:hover{background:var(--panel2)}
+.rank{font-family:var(--mono);font-size:11px;color:var(--mute);width:22px}
+.rank.top{color:var(--gold)}
+.tok{flex:1;min-width:0}
+.tok .s{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tok .n{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pr{text-align:right;min-width:84px}
+.pr .p{font-family:var(--mono);font-size:13px}
+.pr .c{font-family:var(--mono);font-size:12px}
+.up{color:var(--green)}.dn{color:var(--red)}
+.vl{text-align:right;min-width:70px}
+.vl .v{font-family:var(--mono);font-size:12px}
+.vl .k{font-size:10px;color:var(--mute)}
+.snp{color:var(--green);border:1.5px solid var(--green);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
+.snp:hover{background:var(--green);color:#000}
+@media(max-width:540px){.vl{display:none}}
+
+.note{font-size:11px;color:var(--mute);text-align:center;margin-top:10px;line-height:1.6}
+.skel{height:54px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:shimmer 1.2s linear infinite}
+.progress{font-family:var(--mono);font-size:11px;color:var(--gold);text-align:center;padding:10px}
+
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);display:flex;align-items:flex-end;justify-content:center;z-index:50}
+.modal{background:var(--panel2);border:1px solid var(--line);border-bottom:none;border-radius:20px 20px 0 0;width:100%;max-width:640px;max-height:92vh;overflow-y:auto;padding:18px 16px 30px;animation:pop .22s ease-out}
+.mhead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.mhead h2{font-size:18px}
+.mhead .px{font-family:var(--mono);font-size:12px;color:var(--mute)}
+.x{color:var(--mute);font-size:20px;padding:4px 8px}
+.chart{width:100%;height:340px;border:1px solid var(--line);border-radius:12px;margin-top:12px;background:var(--void)}
+.mstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-top:10px}
+.ms{background:var(--void);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.ms .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.1em}
+.ms .v{font-family:var(--mono);font-size:13px;margin-top:3px}
+
+.paytog{display:flex;gap:8px;margin-top:14px}
+.paytog button{flex:1;padding:10px 0;border-radius:10px;font-weight:700;font-size:13px;background:var(--void);color:var(--mute);border:1px solid var(--line)}
+.paytog button.on{background:var(--green-dim);color:var(--green);border-color:var(--green)}
+.amt{width:100%;margin-top:10px;background:var(--void);border:1px solid var(--line);border-radius:12px;color:var(--text);font-size:20px;padding:12px 14px}
+.qamt{display:flex;gap:6px;margin-top:8px}
+.qamt button{flex:1;padding:6px 0;background:var(--void);border:1px solid var(--line);border-radius:8px;color:var(--mute);font-family:var(--mono);font-size:12px}
+.fees{margin-top:12px;background:var(--void);border-radius:12px;padding:11px 13px;font-family:var(--mono);font-size:12px}
+.fees div{display:flex;justify-content:space-between;padding:3px 0}
+.fees .k{color:var(--mute)}
+.fire{width:100%;margin-top:14px;background:var(--green);color:#000;font-weight:700;font-size:16px;padding:14px 0;border-radius:14px}
+.fire:disabled{background:var(--panel);color:var(--mute)}
+.warn{font-size:10px;color:var(--mute);text-align:center;margin-top:9px;line-height:1.6}
+.linkout{display:block;text-align:center;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--mute);text-decoration:none}
+.linkout:hover{color:var(--green)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:12px}
+.card h3{font-size:15px;margin-bottom:10px}
+.frow{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.finput{flex:1;min-width:140px;background:var(--void);border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:14px;padding:10px 12px}
+.sbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:10px 16px;border-radius:10px}
+.obtn{color:var(--green);border:1px solid var(--green);font-weight:700;font-size:13px;padding:10px 16px;border-radius:10px;text-align:center}
+.dbtn{color:var(--red);border:1px solid var(--red);font-weight:700;font-size:12px;padding:8px 14px;border-radius:10px}
+.addr{font-family:var(--mono);font-size:12px;color:var(--green);word-break:break-all;background:var(--void);padding:9px 11px;border-radius:8px;margin-top:8px}
+.hint{font-size:12px;color:var(--mute);line-height:1.6;margin-top:8px}
+.pfp{width:64px;height:64px;border-radius:99px;background:var(--void);border:2px solid var(--green);object-fit:cover}
+.lrow{display:flex;align-items:center;gap:10px;padding:11px 6px;border-bottom:1px solid var(--line)}
+.lrow:last-child{border-bottom:none}
+.lrow img{width:34px;height:34px;border-radius:99px;object-fit:cover;background:var(--void)}
+.lrow .nm{flex:1;font-weight:700;font-size:14px;min-width:0}
+.lrow .nm .h{font-family:var(--mono);font-size:10px;color:var(--mute);font-weight:400}
+.lrow .pnl{font-family:var(--mono);font-size:14px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
+.toast.bad{background:var(--red)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,.3);border-top-color:#000;border-radius:99px;animation:spin .8s linear infinite;vertical-align:-2px}
+.empty{text-align:center;color:var(--mute);padding:40px 16px;font-size:14px}
+canvas.share{display:none}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
 </head>
 <body>
-<div id="boot">INITIALIZING SCOPE&hellip;</div>
-<div id="root"></div>
 
-<script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef, useMemo } = React;
+<header>
+  <a class="logo" href="./index.html">
+    <svg width="26" height="26" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15" fill="none" stroke="#00C805" stroke-width="3"/><circle cx="20" cy="20" r="4" fill="#00C805"/><line x1="20" y1="0" x2="20" y2="10" stroke="#00C805" stroke-width="3"/><line x1="20" y1="30" x2="20" y2="40" stroke="#00C805" stroke-width="3"/><line x1="0" y1="20" x2="10" y2="20" stroke="#00C805" stroke-width="3"/><line x1="30" y1="20" x2="40" y2="20" stroke="#00C805" stroke-width="3"/></svg>
+    <span><b>Hood<span>Snipr</span></b><div class="sub">ROBINHOOD CHAIN · LIVE</div></span>
+  </a>
+  <div class="hstat">
+    <div class="live" id="liveDot"><i></i><span id="liveTxt">LIVE</span></div>
+    <button class="wbtn" id="walletBtn" data-action="connect">Connect wallet</button>
+  </div>
+</header>
 
+<div class="tabs" id="tabs">
+  <button class="tab on" data-tab="board">🎯 Trending</button>
+  <button class="tab" data-tab="wallet">👝 Wallets</button>
+  <button class="tab" data-tab="profile">🪪 Profile</button>
+  <button class="tab" data-tab="ranks">🏆 Ranks</button>
+</div>
+
+<main>
+  <!-- ============ BOARD ============ -->
+  <div id="v-board">
+    <div class="tfbar">
+      <div class="tfpills" id="tfpills">
+        <button class="tf" data-tf="m5">5M</button>
+        <button class="tf on" data-tf="h1">1H</button>
+        <button class="tf" data-tf="h24">24H</button>
+        <button class="tf" data-tf="d30">30D</button>
+      </div>
+      <div class="src">SOURCES <b id="srcTxt">—</b> · <span id="ageTxt">…</span></div>
+    </div>
+    <div class="board" id="board"></div>
+    <div class="note">Live pool data merged from GeckoTerminal + DexScreener for Robinhood Chain (4663). Refreshes ~30s.<br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
+  </div>
+
+  <!-- ============ WALLETS ============ -->
+  <div id="v-wallet" style="display:none">
+    <div class="card">
+      <h3>🔗 Connected wallet</h3>
+      <div id="cwBox"><p class="hint">Connect MetaMask / Rabby / any EVM wallet. HoodSnipr adds Robinhood Chain (4663) automatically.</p>
+      <div class="frow"><button class="sbtn" data-action="connect">Connect wallet</button></div></div>
+    </div>
+    <div class="card">
+      <h3>🏹 HoodSnipr wallet <span style="font-family:var(--mono);font-size:10px;color:var(--gold)">BURNER</span></h3>
+      <p class="hint">A throwaway wallet generated <b>in your browser</b>. Send Robinhood-Chain ETH to it and snipe without connecting anything. Keys never leave this device — HoodSnipr cannot see or recover them. Export the key before clearing browser data, and keep only what you're actively sniping with.</p>
+      <div id="bwBox"></div>
+    </div>
+  </div>
+
+  <!-- ============ PROFILE ============ -->
+  <div id="v-profile" style="display:none">
+    <div class="card">
+      <h3>🪪 Snipr profile</h3>
+      <div id="profBox"></div>
+    </div>
+    <div class="card">
+      <h3>📜 My snipes & PnL</h3>
+      <div id="pnlBox"><div class="empty">No snipes recorded yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ============ RANKS ============ -->
+  <div id="v-ranks" style="display:none">
+    <div class="card">
+      <h3>🏆 PnL leaderboard</h3>
+      <div id="ranksBox"><div class="empty">Loading…</div></div>
+      <p class="hint">Ranked by realized + unrealized PnL from snipes recorded on HoodSnipr, tied to the wallet that made them.</p>
+    </div>
+  </div>
+</main>
+
+<canvas class="share" id="shareCanvas" width="1200" height="630"></canvas>
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script>
+(function(){
+"use strict";
 /* ================================================================
-   HOODSNIPR — snipe trending tokens on Robinhood Chain
-   Prototype v0.1 — mock data, simulated live prices
-   Fee: 0.25% (25 bps) → frozen fee wallet
-   Token: $QUIVR
+   HOODSNIPR v0.2 — LIVE DATA
+   Indexers: GeckoTerminal (network: robinhood) + DexScreener, merged
+   Chain: Robinhood Chain — chainId 4663 · ETH gas · Blockscout
    ================================================================ */
 
-const C = {
-  bg: "#0C0E10",
-  panel: "#15181C",
-  panel2: "#1B1F24",
-  line: "#242A30",
-  green: "#00C805",
-  greenDim: "#00C80522",
-  red: "#FF5000",
-  redDim: "#FF500022",
-  text: "#F0F4F1",
-  muted: "#7C8683",
-  gold: "#FFD166",
+// ---------------- CONFIG — the parts YOU must set ----------------
+var CFG = {
+  CHAIN: {
+    chainId: 4663,
+    chainIdHex: "0x1237",
+    chainName: "Robinhood Chain",
+    rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"],
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    blockExplorerUrls: ["https://robinhoodchain.blockscout.com"]
+  },
+  // >>> SET before real fees flow. Empty = fee transfer skipped (dev mode).
+  FEE_WALLET: "",
+  FEE_BPS: 25,
+  // >>> Swap router. Verify on docs.robinhood.com/chain/protocol-contracts +
+  // Blockscout BEFORE setting. Until set, a snipe = fee + link-out to the DEX.
+  // mode: "disabled" | "v2"  (v2 = swapExactETHForTokens-compatible router)
+  SWAP: { mode: "disabled", router: "", weth: "" },
+  GT: "https://api.geckoterminal.com/api/v2",
+  GT_NET: "robinhood",
+  DS: "https://api.dexscreener.com",
+  DS_CHAINS: ["robinhoodchain", "robinhood"],   // slug probed at runtime
+  API: "/.netlify/functions",
+  REFRESH_MS: 30000,
+  ETH_USD_FALLBACK: 3400
 };
 
-const FEE_BPS = 25; // 0.25%
-const FEE_WALLET = "0x5N1P...F33D"; // display only — frozen in prod build
-const DEPOSIT_ADDR = "0xQU1V...R0BN";
+var $=function(s){return document.querySelector(s)}, $$=function(s){return Array.prototype.slice.call(document.querySelectorAll(s))};
+var state = {
+  tf:"h1", pools:[], dsChain:null, ethUsd:CFG.ETH_USD_FALLBACK,
+  wallet:null, provider:null, burner:null, burnerBal:null,
+  d30:{}, d30Loading:false, lastUpdate:0, srcs:[],
+  trades: load("hs_trades", []),
+  profile: load("hs_profile", null)
+};
 
-const TIMEFRAMES = ["5M", "1H", "24H", "30D"];
-
-// ---- seeded rng so sparklines are stable per token ----
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+function load(k,d){ try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d} }
+function save(k,v){ try{localStorage.setItem(k,JSON.stringify(v))}catch(e){} }
+function toast(msg,bad){
+  var t=document.createElement("div"); t.className="toast"+(bad?" bad":""); t.textContent=msg;
+  $("#toastRoot").appendChild(t); setTimeout(function(){t.remove()},3400);
 }
+function fmtUsd(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return"$"+(n/1e9).toFixed(2)+"B"; if(n>=1e6)return"$"+(n/1e6).toFixed(2)+"M"; if(n>=1e3)return"$"+(n/1e3).toFixed(1)+"K"; return"$"+(+n).toFixed(0) }
+function fmtP(p){ p=+p; if(!isFinite(p))return"—"; if(p>=1000)return p.toFixed(0); if(p>=1)return p.toFixed(3); if(p>=0.01)return p.toFixed(4); if(p>=1e-6)return p.toFixed(7); return p.toExponential(2) }
+function short(a){ return a? a.slice(0,6)+"…"+a.slice(-4) : "" }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]}) }
 
-function makeSpark(seed, n = 28, drift = 0) {
-  const rnd = mulberry32(seed);
-  let v = 50;
-  const pts = [];
-  for (let i = 0; i < n; i++) {
-    v += (rnd() - 0.48 + drift) * 9;
-    v = Math.max(6, Math.min(94, v));
-    pts.push(v);
+// ================= DATA LAYER =================
+async function gt(path){
+  var r = await fetch(CFG.GT+path, { headers:{ "accept":"application/json" } });
+  if(!r.ok) throw new Error("GT "+r.status);
+  return r.json();
+}
+async function fetchGTPools(){
+  var urls = [
+    "/networks/"+CFG.GT_NET+"/trending_pools?page=1",
+    "/networks/"+CFG.GT_NET+"/pools?page=1&sort=h24_volume_usd_desc",
+    "/networks/"+CFG.GT_NET+"/pools?page=2&sort=h24_volume_usd_desc"
+  ];
+  var out=[], seen={};
+  for(var i=0;i<urls.length;i++){
+    try{
+      var j = await gt(urls[i]);
+      (j.data||[]).forEach(function(p){
+        var a=p.attributes||{}, id=(a.address||p.id||"").toLowerCase();
+        if(!id||seen[id])return; seen[id]=1;
+        var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
+        var rel=p.relationships||{};
+        out.push({
+          pool:a.address, fullName:a.name||"",
+          sym:(a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+          baseToken: rel.base_token&&rel.base_token.data ? rel.base_token.data.id.split("_").pop() : null,
+          price:+a.base_token_price_usd||null,
+          m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
+          cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
+          liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
+          src:"GT", dex: rel.dex&&rel.dex.data ? rel.dex.data.id : "", dsUrl:null
+        });
+      });
+    }catch(e){ /* one page failing shouldn't kill the board */ }
   }
-  return pts;
+  return out;
 }
-
-const TOKENS = [
-  { sym: "POUCH",  name: "Pouch",          price: 0.004182, seed: 7,  drift: 0.06,
-    vol: { "5M": 48210, "1H": 402000, "24H": 5210000, "30D": 61200000 }, chg: { "5M": 4.2, "1H": 12.8, "24H": 31.4, "30D": 188.0 } },
-  { sym: "FEATHR", name: "Feather",        price: 0.01821,  seed: 12, drift: 0.05,
-    vol: { "5M": 61800, "1H": 355000, "24H": 6890000, "30D": 44100000 }, chg: { "5M": 7.1, "1H": 9.3,  "24H": 22.7, "30D": 96.5 } },
-  { sym: "HOODIE", name: "Hoodie",         price: 0.1204,   seed: 23, drift: 0.03,
-    vol: { "5M": 22400, "1H": 512000, "24H": 3120000, "30D": 71800000 }, chg: { "5M": -1.8, "1H": 5.4, "24H": 14.2, "30D": 61.3 } },
-  { sym: "TENDIE", name: "Tendies",        price: 0.000914, seed: 31, drift: 0.08,
-    vol: { "5M": 90100, "1H": 288000, "24H": 8410000, "30D": 30200000 }, chg: { "5M": 18.4, "1H": 26.1, "24H": 74.9, "30D": 41.0 } },
-  { sym: "VLADCH", name: "Vlad Chain",     price: 0.00276,  seed: 44, drift: 0.02,
-    vol: { "5M": 15300, "1H": 198000, "24H": 2210000, "30D": 89400000 }, chg: { "5M": 2.2, "1H": -3.1, "24H": 8.8,  "30D": 240.2 } },
-  { sym: "STONK",  name: "Stonk",          price: 0.0691,   seed: 52, drift: -0.02,
-    vol: { "5M": 33900, "1H": 441000, "24H": 4760000, "30D": 25600000 }, chg: { "5M": -4.6, "1H": -8.2, "24H": -12.1, "30D": 18.4 } },
-  { sym: "YOLO",   name: "Yolo Rocket",    price: 0.00033,  seed: 61, drift: 0.09,
-    vol: { "5M": 77200, "1H": 622000, "24H": 2980000, "30D": 12100000 }, chg: { "5M": 22.9, "1H": 44.3, "24H": 19.5, "30D": -6.7 } },
-  { sym: "DMND",   name: "Diamond Hands",  price: 0.2488,   seed: 73, drift: 0.01,
-    vol: { "5M": 12800, "1H": 155000, "24H": 6100000, "30D": 98700000 }, chg: { "5M": 0.9, "1H": 2.6, "24H": 6.3, "30D": 128.9 } },
-];
-
-const fmtUsd = (n) =>
-  n >= 1e6 ? "$" + (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? "$" + (n / 1e3).toFixed(1) + "K" : "$" + n.toFixed(0);
-
-const fmtPrice = (p) => (p >= 1 ? p.toFixed(2) : p >= 0.01 ? p.toFixed(4) : p.toFixed(6));
-
-/* ---------- Scope logo ---------- */
-function Scope({ size = 26, color = C.green }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 40 40" aria-hidden="true">
-      <circle cx="20" cy="20" r="15" fill="none" stroke={color} strokeWidth="3" />
-      <circle cx="20" cy="20" r="4" fill={color} />
-      <line x1="20" y1="0" x2="20" y2="10" stroke={color} strokeWidth="3" />
-      <line x1="20" y1="30" x2="20" y2="40" stroke={color} strokeWidth="3" />
-      <line x1="0" y1="20" x2="10" y2="20" stroke={color} strokeWidth="3" />
-      <line x1="30" y1="20" x2="40" y2="20" stroke={color} strokeWidth="3" />
-    </svg>
-  );
+async function probeDSChain(){
+  if(state.dsChain) return state.dsChain;
+  for(var i=0;i<CFG.DS_CHAINS.length;i++){
+    try{
+      var r = await fetch(CFG.DS+"/latest/dex/search?q="+CFG.DS_CHAINS[i]);
+      var j = await r.json();
+      var hit = (j.pairs||[]).find(function(p){return p.chainId===CFG.DS_CHAINS[i]});
+      if(hit){ state.dsChain = CFG.DS_CHAINS[i]; return state.dsChain; }
+    }catch(e){}
+  }
+  return null;
 }
-
-/* ---------- Sparkline ---------- */
-function Spark({ pts, up }) {
-  const w = 96, h = 34;
-  const path = pts
-    .map((v, i) => `${i === 0 ? "M" : "L"}${((i / (pts.length - 1)) * w).toFixed(1)},${(h - (v / 100) * h).toFixed(1)}`)
-    .join(" ");
-  const col = up ? C.green : C.red;
-  return (
-    <svg width={w} height={h} style={{ display: "block" }} aria-hidden="true">
-      <path d={path} fill="none" stroke={col} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-      <circle
-        cx={w}
-        cy={h - (pts[pts.length - 1] / 100) * h}
-        r="2.6"
-        fill={col}
-      />
-    </svg>
-  );
-}
-
-/* ================================================================ */
-function HoodSnipr() {
-  const [tf, setTf] = useState("1H");
-  const [wallet, setWallet] = useState(null);
-  const [connecting, setConnecting] = useState(false);
-  const [snipeToken, setSnipeToken] = useState(null);
-  const [ethIn, setEthIn] = useState("0.1");
-  const [payMode, setPayMode] = useState("wallet"); // wallet | send
-  const [snipes, setSnipes] = useState([]);
-  const [toast, setToast] = useState(null);
-  const [tab, setTab] = useState("trending"); // trending | quivr | activity
-  const [tick, setTick] = useState(0);
-  const [firing, setFiring] = useState(false);
-  const toastTimer = useRef(null);
-
-  // simulated live prices
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 2400);
-    return () => clearInterval(id);
-  }, []);
-
-  const live = useMemo(() => {
-    return TOKENS.map((t) => {
-      const rnd = mulberry32(t.seed * 1000 + tick);
-      const jitter = (rnd() - 0.5) * 0.012;
-      return { ...t, livePrice: t.price * (1 + jitter), spark: makeSpark(t.seed + tick, 28, t.drift) };
+async function fetchDSPools(){
+  var chain = await probeDSChain();
+  if(!chain) return [];
+  var out=[], seen={};
+  try{
+    var r = await fetch(CFG.DS+"/latest/dex/search?q=WETH");
+    var j = await r.json();
+    (j.pairs||[]).forEach(function(p){
+      if(p.chainId!==chain) return;
+      var id=(p.pairAddress||"").toLowerCase();
+      if(!id||seen[id])return; seen[id]=1;
+      out.push({
+        pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?",
+        fullName:((p.baseToken||{}).symbol||"")+" / "+((p.quoteToken||{}).symbol||""),
+        baseToken:(p.baseToken||{}).address||null,
+        price:+p.priceUsd||null,
+        m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
+        cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+        liq:+(p.liquidity&&p.liquidity.usd||0), fdv:+p.fdv||null,
+        src:"DS", dex:p.dexId||"", dsUrl:p.url||null
+      });
     });
-  }, [tick]);
-
-  const sorted = useMemo(
-    () => [...live].sort((a, b) => b.vol[tf] - a.vol[tf]),
-    [live, tf]
-  );
-
-  function showToast(msg, ok = true) {
-    setToast({ msg, ok });
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3200);
-  }
-
-  async function connect() {
-    setConnecting(true);
-    try {
-      if (typeof window !== "undefined" && window.ethereum) {
-        const accts = await window.ethereum.request({ method: "eth_requestAccounts" });
-        if (accts && accts[0]) {
-          setWallet(accts[0]);
-          showToast("Wallet connected to Robinhood Chain");
-          setConnecting(false);
-          return;
-        }
-      }
-    } catch (e) {
-      /* fall through to demo */
+  }catch(e){}
+  return out;
+}
+function mergePools(gtP, dsP){
+  // GT primary; DS fills gaps + adds its chart URL. Key by base token, fall back to pool.
+  var map={};
+  gtP.forEach(function(p){ map[(p.baseToken||p.pool||"").toLowerCase()]=p; });
+  dsP.forEach(function(p){
+    var k=(p.baseToken||p.pool||"").toLowerCase();
+    if(map[k]){ map[k].dsUrl=p.dsUrl; map[k].src="GT+DS"; if(!map[k].price&&p.price)map[k].price=p.price; }
+    else map[k]=p;
+  });
+  return Object.keys(map).map(function(k){return map[k]})
+    .filter(function(p){return p.h24>0 || p.h1>0 || p.m5>0})
+    .filter(function(p){return p.liq>500}); // dust-pool floor
+}
+async function refresh(){
+  try{
+    var results = await Promise.all([fetchGTPools(), fetchDSPools()]);
+    var merged = mergePools(results[0], results[1]);
+    if(merged.length){
+      state.pools=merged; state.lastUpdate=Date.now();
+      state.srcs=[]; if(results[0].length)state.srcs.push("GECKOTERMINAL"); if(results[1].length)state.srcs.push("DEXSCREENER");
     }
-    // demo wallet
-    setTimeout(() => {
-      setWallet("0xD4Y0" + Math.random().toString(16).slice(2, 6).toUpperCase() + "…B00F");
-      showToast("Demo wallet connected — Robinhood Chain");
-      setConnecting(false);
-    }, 700);
+    setLive(merged.length>0);
+  }catch(e){ setLive(false); }
+  renderBoard();
+}
+function setLive(ok){
+  $("#liveDot").className="live"+(ok?"":" err");
+  $("#liveTxt").textContent = ok?"LIVE":"RETRYING";
+  $("#srcTxt").textContent = state.srcs.join(" + ")||"—";
+}
+// ---- 30D: lazy per-pool daily-OHLCV sums via GT, cached 6h ----
+async function ensure30d(){
+  if(state.d30Loading) return;
+  state.d30Loading=true;
+  var cache=load("hs_d30",{}); var now=Date.now();
+  var top = state.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,20);
+  var done=0;
+  for(var i=0;i<top.length;i++){
+    var p=top[i], key=(p.pool||"").toLowerCase();
+    if(cache[key] && now-cache[key].t < 6*3600e3){ state.d30[key]=cache[key].v; done++; continue; }
+    try{
+      var j=await gt("/networks/"+CFG.GT_NET+"/pools/"+p.pool+"/ohlcv/day?limit=30");
+      var list=(((j.data||{}).attributes)||{}).ohlcv_list||[];
+      var v=list.reduce(function(a,c){return a+(+c[5]||0)},0);
+      state.d30[key]=v; cache[key]={v:v,t:now}; done++;
+      var pe=$("#board .progress"); pe&&(pe.textContent="RANGING 30D VOLUME… "+done+"/"+top.length);
+      if(state.tf==="d30") renderBoard();
+      await new Promise(function(r){setTimeout(r,2100)}); // GT free tier ≈30 req/min
+    }catch(e){ /* keep going */ }
+    if(state.tf!=="d30") break; // user left — stop burning quota
   }
-
-  function fireSnipe() {
-    const amt = parseFloat(ethIn);
-    if (!amt || amt <= 0) { showToast("Enter an ETH amount first", false); return; }
-    if (payMode === "wallet" && !wallet) { showToast("Connect a wallet or switch to Send ETH", false); return; }
-    setFiring(true);
-    setTimeout(() => {
-      const fee = amt * (FEE_BPS / 10000);
-      const t = snipeToken;
-      const out = ((amt - fee) * 3400) / t.livePrice; // mock: 1 ETH = $3400
-      setSnipes((s) => [
-        { sym: t.sym, ethIn: amt, fee, out, time: new Date().toLocaleTimeString(), mode: payMode },
-        ...s,
-      ]);
-      setFiring(false);
-      setSnipeToken(null);
-      showToast(`Sniped ${out.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${t.sym} 🎯`);
-    }, 1400);
-  }
-
-  const feeEth = (parseFloat(ethIn) || 0) * (FEE_BPS / 10000);
-  const netEth = (parseFloat(ethIn) || 0) - feeEth;
-  const estOut = snipeToken ? (netEth * 3400) / snipeToken.livePrice : 0;
-
-  const totalVol = snipes.reduce((a, s) => a + s.ethIn, 0);
-  const totalFees = snipes.reduce((a, s) => a + s.fee, 0);
-
-  return (
-    <div style={{
-      minHeight: "100vh", background: C.bg, color: C.text,
-      fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap');
-        * { box-sizing: border-box; margin: 0; }
-        button { font-family: inherit; cursor: pointer; border: none; }
-        input { font-family: 'DM Mono', monospace; }
-        ::selection { background: ${C.green}; color: #000; }
-        @keyframes tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        @keyframes pop { 0% { transform: scale(.92); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-        @keyframes scopeIn { 0% { transform: rotate(-90deg) scale(.6); opacity: 0 } 100% { transform: rotate(0) scale(1); opacity: 1 } }
-        .row:hover { background: ${C.panel2} !important; }
-        .snipeBtn:hover { background: ${C.green} !important; color: #000 !important; }
-        .tfPill:hover { border-color: ${C.green} !important; }
-        @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
-        @media (max-width: 560px) {
-          .volCol { display: none; }
-          .sparkCol { display: none; }
-        }
-      `}</style>
-
-      {/* ---------- header ---------- */}
-      <header style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "14px 18px", borderBottom: `1px solid ${C.line}`,
-        position: "sticky", top: 0, background: C.bg + "F2", backdropFilter: "blur(8px)", zIndex: 20,
-      }}>
-        <a href="./index.html" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none", color: "inherit" }}>
-          <div style={{ animation: "scopeIn .6s cubic-bezier(.2,1.4,.4,1)" }}><Scope /></div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 19, letterSpacing: "-0.02em" }}>
-              Hood<span style={{ color: C.green }}>Snipr</span>
-            </div>
-            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: C.muted, letterSpacing: ".08em" }}>
-              ROBINHOOD CHAIN · L2
-            </div>
-          </div>
-        </a>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.green,
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <span style={{ width: 7, height: 7, borderRadius: 99, background: C.green, animation: "pulse 1.8s infinite", display: "inline-block" }} />
-            LIVE
-          </div>
-          <button onClick={wallet ? () => setWallet(null) : connect} style={{
-            background: wallet ? C.panel2 : C.green,
-            color: wallet ? C.green : "#000",
-            fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 99,
-            border: wallet ? `1px solid ${C.green}` : "none",
-            fontFamily: wallet ? "'DM Mono', monospace" : "inherit",
-          }}>
-            {connecting ? "Connecting…" : wallet ? wallet.slice(0, 6) + "…" + wallet.slice(-4) : "Connect wallet"}
-          </button>
-        </div>
-      </header>
-
-      {/* ---------- ticker tape ---------- */}
-      <div style={{ overflow: "hidden", borderBottom: `1px solid ${C.line}`, background: C.panel }}>
-        <div style={{ display: "flex", width: "max-content", animation: "tape 32s linear infinite", padding: "8px 0" }}>
-          {[...live, ...live].map((t, i) => (
-            <span key={i} style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "0 22px", whiteSpace: "nowrap" }}>
-              <span style={{ color: C.muted }}>${t.sym}</span>{" "}
-              <span>{fmtPrice(t.livePrice)}</span>{" "}
-              <span style={{ color: t.chg["24H"] >= 0 ? C.green : C.red }}>
-                {t.chg["24H"] >= 0 ? "▲" : "▼"}{Math.abs(t.chg["24H"]).toFixed(1)}%
-              </span>
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <main style={{ maxWidth: 860, margin: "0 auto", padding: "22px 14px 80px" }}>
-
-        {/* ---------- hero ---------- */}
-        <div style={{ textAlign: "center", padding: "18px 0 26px" }}>
-          <h1 style={{ fontSize: "clamp(28px, 6vw, 44px)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05 }}>
-            Every trending token.<br />
-            <span style={{ color: C.green }}>One arrow away.</span>
-          </h1>
-          <p style={{ color: C.muted, marginTop: 12, fontSize: 15 }}>
-            Snipe new Robinhood Chain tokens ranked by real volume. Connect a wallet, or just send ETH.
-          </p>
-          <div style={{
-            display: "inline-flex", gap: 18, marginTop: 18, padding: "10px 20px",
-            background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14,
-            fontFamily: "'DM Mono', monospace", fontSize: 12,
-          }}>
-            <span><span style={{ color: C.muted }}>FEE</span> <span style={{ color: C.green }}>0.25%</span></span>
-            <span><span style={{ color: C.muted }}>SNIPES</span> <span>{snipes.length}</span></span>
-            <span><span style={{ color: C.muted }}>VOL</span> <span>{totalVol.toFixed(3)} ETH</span></span>
-          </div>
-        </div>
-
-        {/* ---------- tabs ---------- */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          {[["trending", "🎯 Trending"], ["quivr", "🏹 $QUIVR"], ["activity", "📜 My snipes"]].map(([k, label]) => (
-            <button key={k} onClick={() => setTab(k)} style={{
-              background: tab === k ? C.text : "transparent",
-              color: tab === k ? "#000" : C.muted,
-              border: `1px solid ${tab === k ? C.text : C.line}`,
-              fontWeight: 700, fontSize: 13, padding: "8px 14px", borderRadius: 99,
-            }}>{label}</button>
-          ))}
-        </div>
-
-        {/* ================= TRENDING ================= */}
-        {tab === "trending" && (
-          <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.muted, letterSpacing: ".1em" }}>
-                RANKED BY VOLUME · {tf}
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                {TIMEFRAMES.map((f) => (
-                  <button key={f} className="tfPill" onClick={() => setTf(f)} style={{
-                    fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: 500,
-                    padding: "6px 12px", borderRadius: 8,
-                    background: tf === f ? C.greenDim : "transparent",
-                    color: tf === f ? C.green : C.muted,
-                    border: `1px solid ${tf === f ? C.green : C.line}`,
-                    transition: "border-color .15s",
-                  }}>{f}</button>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 16, overflow: "hidden" }}>
-              {sorted.map((t, i) => {
-                const up = t.chg[tf] >= 0;
-                return (
-                  <div key={t.sym} className="row" style={{
-                    display: "flex", alignItems: "center", gap: 12, padding: "13px 16px",
-                    borderBottom: i < sorted.length - 1 ? `1px solid ${C.line}` : "none",
-                    background: "transparent", transition: "background .15s",
-                  }}>
-                    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: i < 3 ? C.gold : C.muted, width: 22 }}>
-                      {String(i + 1).padStart(2, "0")}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 15 }}>
-                        ${t.sym}
-                        {t.sym === "POUCH" && <span style={{ fontSize: 10, color: C.gold, marginLeft: 6 }}>★ OG</span>}
-                      </div>
-                      <div style={{ fontSize: 12, color: C.muted }}>{t.name}</div>
-                    </div>
-                    <div className="sparkCol"><Spark pts={t.spark} up={up} /></div>
-                    <div style={{ textAlign: "right", minWidth: 86 }}>
-                      <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 13 }}>${fmtPrice(t.livePrice)}</div>
-                      <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: up ? C.green : C.red }}>
-                        {up ? "+" : ""}{t.chg[tf].toFixed(1)}%
-                      </div>
-                    </div>
-                    <div className="volCol" style={{ textAlign: "right", minWidth: 70 }}>
-                      <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12 }}>{fmtUsd(t.vol[tf])}</div>
-                      <div style={{ fontSize: 10, color: C.muted }}>vol {tf}</div>
-                    </div>
-                    <button className="snipeBtn" onClick={() => { setSnipeToken(t); setPayMode(wallet ? "wallet" : "wallet"); }} style={{
-                      background: "transparent", color: C.green, border: `1.5px solid ${C.green}`,
-                      fontWeight: 700, fontSize: 12, padding: "8px 13px", borderRadius: 99,
-                      transition: "all .15s", letterSpacing: ".04em",
-                    }}>
-                      SNIPE
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <p style={{ fontSize: 11, color: C.muted, marginTop: 10, textAlign: "center" }}>
-              Prototype — prices & volume simulated. Production wires to GeckoTerminal + Robinhood Chain RPC.
-            </p>
-          </>
-        )}
-
-        {/* ================= $QUIVR ================= */}
-        {tab === "quivr" && (
-          <div style={{ animation: "pop .25s ease-out" }}>
-            <div style={{
-              background: `linear-gradient(160deg, ${C.panel2}, ${C.panel})`,
-              border: `1px solid ${C.green}44`, borderRadius: 18, padding: "26px 22px", textAlign: "center",
-            }}>
-              <div style={{ fontSize: 44 }}>🏹</div>
-              <h2 style={{ fontSize: 28, fontWeight: 700, marginTop: 6 }}>$QUIVR</h2>
-              <p style={{ color: C.muted, fontSize: 14, marginTop: 6, maxWidth: 420, marginLeft: "auto", marginRight: "auto" }}>
-                The quiver holds the arrows. Hold $QUIVR, pay less per shot. Platform token of HoodSnipr on Robinhood Chain.
-              </p>
-              <div style={{
-                display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-                gap: 10, marginTop: 22, textAlign: "left",
-              }}>
-                {[
-                  ["SUPPLY", "1,000,000,000", "fixed · no mint"],
-                  ["FEE SPLIT", "50% buyback", "of platform fees"],
-                  ["LP", "Locked", "at launch"],
-                  ["CHAIN", "Robinhood", "Arbitrum Orbit L2"],
-                ].map(([k, v, s]) => (
-                  <div key={k} style={{ background: C.bg, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px" }}>
-                    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: C.muted, letterSpacing: ".1em" }}>{k}</div>
-                    <div style={{ fontWeight: 700, fontSize: 15, marginTop: 3 }}>{v}</div>
-                    <div style={{ fontSize: 11, color: C.muted }}>{s}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <h3 style={{ fontSize: 15, fontWeight: 700, margin: "22px 0 10px", color: C.muted, letterSpacing: ".06em" }}>FEE TIERS</h3>
-            <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14, overflow: "hidden" }}>
-              {[
-                ["Free range", "0 $QUIVR", "0.25%", false],
-                ["Archer", "100K $QUIVR", "0.20%", false],
-                ["Marksman", "1M $QUIVR", "0.15%", false],
-                ["Deadeye", "10M $QUIVR", "0.10%", true],
-              ].map(([tier, req, fee, best], i, arr) => (
-                <div key={tier} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "12px 16px", borderBottom: i < arr.length - 1 ? `1px solid ${C.line}` : "none",
-                }}>
-                  <div>
-                    <span style={{ fontWeight: 700, fontSize: 14 }}>{tier}</span>
-                    {best && <span style={{ fontSize: 10, color: C.gold, marginLeft: 8 }}>★ BEST</span>}
-                    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.muted }}>{req}</div>
-                  </div>
-                  <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 15, color: C.green, fontWeight: 500 }}>{fee}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ================= ACTIVITY ================= */}
-        {tab === "activity" && (
-          <div style={{ animation: "pop .25s ease-out" }}>
-            {snipes.length === 0 ? (
-              <div style={{
-                background: C.panel, border: `1px dashed ${C.line}`, borderRadius: 16,
-                padding: "44px 20px", textAlign: "center",
-              }}>
-                <Scope size={38} color={C.muted} />
-                <p style={{ color: C.muted, marginTop: 12, fontSize: 14 }}>
-                  No snipes yet. Pick a token from Trending and take the shot.
-                </p>
-              </div>
-            ) : (
-              <>
-                <div style={{
-                  display: "flex", gap: 14, marginBottom: 12, fontFamily: "'DM Mono', monospace", fontSize: 12,
-                }}>
-                  <span style={{ color: C.muted }}>TOTAL: <span style={{ color: C.text }}>{totalVol.toFixed(4)} ETH</span></span>
-                  <span style={{ color: C.muted }}>FEES PAID: <span style={{ color: C.green }}>{totalFees.toFixed(5)} ETH</span></span>
-                </div>
-                <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14, overflow: "hidden" }}>
-                  {snipes.map((s, i) => (
-                    <div key={i} style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "12px 16px", borderBottom: i < snipes.length - 1 ? `1px solid ${C.line}` : "none",
-                    }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: 14 }}>🎯 ${s.sym}</div>
-                        <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.muted }}>
-                          {s.time} · {s.mode === "wallet" ? "wallet" : "sent ETH"}
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right", fontFamily: "'DM Mono', monospace" }}>
-                        <div style={{ fontSize: 13, color: C.green }}>
-                          +{s.out.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </div>
-                        <div style={{ fontSize: 11, color: C.muted }}>-{s.ethIn} ETH</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </main>
-
-      {/* ---------- snipe modal ---------- */}
-      {snipeToken && (
-        <div onClick={() => !firing && setSnipeToken(null)} style={{
-          position: "fixed", inset: 0, background: "#000A", backdropFilter: "blur(4px)",
-          display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50,
-        }}>
-          <div onClick={(e) => e.stopPropagation()} style={{
-            background: C.panel2, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 480,
-            padding: "22px 20px 30px", border: `1px solid ${C.line}`, borderBottom: "none",
-            animation: "pop .22s ease-out",
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <Scope size={22} />
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 17 }}>Snipe ${snipeToken.sym}</div>
-                  <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.muted }}>
-                    ${fmtPrice(snipeToken.livePrice)} · {snipeToken.chg[tf] >= 0 ? "+" : ""}{snipeToken.chg[tf].toFixed(1)}% {tf}
-                  </div>
-                </div>
-              </div>
-              <button onClick={() => setSnipeToken(null)} style={{ background: "transparent", color: C.muted, fontSize: 20 }}>✕</button>
-            </div>
-
-            {/* pay mode toggle */}
-            <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-              {[["wallet", "🔗 Wallet"], ["send", "📤 Send ETH"]].map(([k, label]) => (
-                <button key={k} onClick={() => setPayMode(k)} style={{
-                  flex: 1, padding: "10px 0", borderRadius: 10, fontWeight: 700, fontSize: 13,
-                  background: payMode === k ? C.greenDim : C.bg,
-                  color: payMode === k ? C.green : C.muted,
-                  border: `1px solid ${payMode === k ? C.green : C.line}`,
-                }}>{label}</button>
-              ))}
-            </div>
-
-            {payMode === "wallet" ? (
-              <>
-                <label style={{ display: "block", fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.muted, marginTop: 16, letterSpacing: ".08em" }}>
-                  AMOUNT (ETH)
-                </label>
-                <input value={ethIn} onChange={(e) => setEthIn(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" style={{
-                  width: "100%", marginTop: 6, background: C.bg, border: `1px solid ${C.line}`,
-                  borderRadius: 12, color: C.text, fontSize: 22, padding: "13px 14px", outline: "none",
-                }} />
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  {["0.05", "0.1", "0.25", "0.5", "1"].map((v) => (
-                    <button key={v} onClick={() => setEthIn(v)} style={{
-                      flex: 1, padding: "6px 0", background: C.bg, border: `1px solid ${C.line}`,
-                      borderRadius: 8, color: C.muted, fontFamily: "'DM Mono', monospace", fontSize: 12,
-                    }}>{v}</button>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <div style={{ marginTop: 16, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 12, padding: 14 }}>
-                <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: C.muted, letterSpacing: ".08em" }}>
-                  SEND ETH ON ROBINHOOD CHAIN TO
-                </div>
-                <div style={{
-                  fontFamily: "'DM Mono', monospace", fontSize: 14, color: C.green, marginTop: 6,
-                  wordBreak: "break-all", padding: "8px 10px", background: C.panel, borderRadius: 8,
-                }}>
-                  {DEPOSIT_ADDR}
-                </div>
-                <p style={{ fontSize: 12, color: C.muted, marginTop: 10, lineHeight: 1.5 }}>
-                  Include token symbol <span style={{ color: C.text, fontFamily: "'DM Mono', monospace" }}>${snipeToken.sym}</span> in
-                  calldata (production: unique deposit address per snipe). Tokens are delivered back to the sending address.
-                  Still enter your amount below for the fee preview.
-                </p>
-                <input value={ethIn} onChange={(e) => setEthIn(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" style={{
-                  width: "100%", marginTop: 8, background: C.panel, border: `1px solid ${C.line}`,
-                  borderRadius: 10, color: C.text, fontSize: 18, padding: "10px 12px", outline: "none",
-                }} />
-              </div>
-            )}
-
-            {/* fee breakdown */}
-            <div style={{
-              marginTop: 14, background: C.bg, borderRadius: 12, padding: "12px 14px",
-              fontFamily: "'DM Mono', monospace", fontSize: 12,
-            }}>
-              {[
-                ["Snipe fee (0.25%)", feeEth.toFixed(6) + " ETH", C.muted],
-                ["Net swapped", netEth.toFixed(6) + " ETH", C.text],
-                ["Est. received", "≈ " + estOut.toLocaleString(undefined, { maximumFractionDigits: 0 }) + " $" + snipeToken.sym, C.green],
-              ].map(([k, v, col]) => (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
-                  <span style={{ color: C.muted }}>{k}</span>
-                  <span style={{ color: col }}>{v}</span>
-                </div>
-              ))}
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
-                <span style={{ color: C.muted }}>Fee wallet</span>
-                <span style={{ color: C.muted }}>{FEE_WALLET} 🔒</span>
-              </div>
-            </div>
-
-            <button onClick={fireSnipe} disabled={firing} style={{
-              width: "100%", marginTop: 16, background: firing ? C.panel : C.green, color: "#000",
-              fontWeight: 700, fontSize: 16, padding: "15px 0", borderRadius: 14,
-              letterSpacing: ".03em", opacity: firing ? 0.7 : 1,
-            }}>
-              {firing ? "🎯 Locking on…" : payMode === "wallet" ? "🏹 FIRE SNIPE" : "🏹 I'VE SENT THE ETH"}
-            </button>
-            <p style={{ fontSize: 10, color: C.muted, textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
-              Total-loss risk. Fee is non-refundable on transaction failure. Verify every transaction in your wallet before signing. Not investment advice.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* ---------- toast ---------- */}
-      {toast && (
-        <div style={{
-          position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)",
-          background: toast.ok ? C.green : C.red, color: "#000", fontWeight: 700, fontSize: 13,
-          padding: "11px 18px", borderRadius: 99, zIndex: 60, animation: "pop .2s ease-out",
-          whiteSpace: "nowrap", maxWidth: "92vw", overflow: "hidden", textOverflow: "ellipsis",
-        }}>
-          {toast.msg}
-        </div>
-      )}
-    </div>
-  );
+  save("hs_d30",cache);
+  state.d30Loading=false;
+  if(state.tf==="d30") renderBoard();
 }
 
+// ================= BOARD =================
+function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
+function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:p.ch24 }
+function renderBoard(){
+  var el=$("#board");
+  if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
+  var rows=state.pools.slice().sort(function(a,b){return volFor(b)-volFor(a)}).slice(0,25);
+  var h="";
+  if(state.tf==="d30"){
+    var have=rows.filter(function(p){return volFor(p)>0}).length;
+    if(have<5) h+='<div class="progress">RANGING 30D VOLUME… (sums 30 daily candles per pool — first pass takes ~1 min)</div>';
+  }
+  rows.forEach(function(p,i){
+    var c=chgFor(p), up=c>=0;
+    h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
+      +'<div class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</div>'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+'</div><div class="n">'+esc(p.fullName)+' · '+esc(p.dex||p.src)+'</div></div>'
+      +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">vol '+(state.tf==="d30"?"30D":state.tf.toUpperCase())+'</div></div>'
+      +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
+      +'</div>';
+  });
+  el.innerHTML=h;
+  var age=Math.round((Date.now()-state.lastUpdate)/1000);
+  $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
+}
 
-const bootEl = document.getElementById('boot');
-if (bootEl) bootEl.remove();
-ReactDOM.createRoot(document.getElementById('root')).render(<HoodSnipr />);
+// ================= TOKEN MODAL + SNIPE =================
+var modal={ pool:null, mode:"wallet" };
+function openToken(poolAddr){
+  var p=state.pools.find(function(x){return (x.pool||"").toLowerCase()===(poolAddr||"").toLowerCase()});
+  if(!p) return;
+  modal.pool=p; modal.mode = state.wallet?"wallet":(state.burner?"burner":"wallet");
+  var gtEmbed="https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool+"?embed=1&info=0&swaps=0&light_chart=0";
+  var c=p.ch24, up=c>=0;
+  $("#modalRoot").innerHTML=
+  '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><div><h2>$'+esc(p.sym)+' <span style="font-size:12px;color:var(--mute)">'+esc(p.fullName)+'</span></h2>'
+   +'<div class="px">$'+fmtP(p.price)+' · <span class="'+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'% 24H</span> · '+esc(p.dex||"")+'</div></div>'
+   +'<button class="x" data-action="close">✕</button></div>'
+   +'<iframe class="chart" src="'+gtEmbed+'" title="Live chart — GeckoTerminal" loading="lazy"></iframe>'
+   +'<div class="mstats">'
+     +'<div class="ms"><div class="k">LIQ</div><div class="v">'+fmtUsd(p.liq)+'</div></div>'
+     +'<div class="ms"><div class="k">FDV</div><div class="v">'+fmtUsd(p.fdv)+'</div></div>'
+     +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
+     +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
+   +'</div>'
+   +'<div class="paytog">'
+     +'<button data-action="paymode" data-m="wallet" class="'+(modal.mode==="wallet"?"on":"")+'">🔗 Connected</button>'
+     +'<button data-action="paymode" data-m="burner" class="'+(modal.mode==="burner"?"on":"")+'">🏹 HoodSnipr wallet</button>'
+   +'</div>'
+   +'<input class="amt" id="snipeAmt" inputmode="decimal" placeholder="0.0" value="0.05" aria-label="ETH amount">'
+   +'<div class="qamt">'+["0.01","0.05","0.1","0.25","0.5"].map(function(v){return '<button data-action="qamt" data-v="'+v+'">'+v+'</button>'}).join("")+'</div>'
+   +'<div class="fees" id="feeBox"></div>'
+   +'<button class="fire" id="fireBtn" data-action="fire">🏹 FIRE SNIPE</button>'
+   +(p.dsUrl?'<a class="linkout" href="'+esc(p.dsUrl)+'" target="_blank" rel="noopener">open on DexScreener ↗</a>':'')
+   +'<a class="linkout" href="https://www.geckoterminal.com/'+CFG.GT_NET+'/pools/'+esc(p.pool)+'" target="_blank" rel="noopener">open on GeckoTerminal ↗</a>'
+   +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
+  +'</div></div>';
+  updFees();
+  $("#snipeAmt").addEventListener("input", updFees);
+}
+function updFees(){
+  var p=modal.pool; if(!p)return;
+  var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
+  var fee=amt*CFG.FEE_BPS/10000, net=amt-fee;
+  var estUsd=net*state.ethUsd, estTok=p.price? estUsd/p.price : null;
+  var exec = CFG.SWAP.mode!=="disabled" ? "ONCHAIN SWAP" : "FEE + DEX LINK-OUT";
+  $("#feeBox").innerHTML=
+    '<div><span class="k">Snipe fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Net</span><span class="up">'+net.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Est. received</span><span>'+(estTok?("≈ "+estTok.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)):"—")+'</span></div>'
+   +'<div><span class="k">Execution</span><span style="color:var(--gold)">'+exec+'</span></div>'
+   +(CFG.FEE_WALLET?'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>':'<div><span class="k">Fee wallet</span><span class="k">unset — dev mode, fee skipped</span></div>');
+}
+async function fire(){
+  var p=modal.pool; if(!p)return;
+  var amt=parseFloat($("#snipeAmt").value);
+  if(!amt||amt<=0){toast("Enter an amount",true);return}
+  var btn=$("#fireBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> LOCKING ON…';
+  try{
+    var signer=null;
+    if(modal.mode==="wallet"){
+      if(!state.wallet) await connect();
+      if(!state.wallet) throw new Error("No wallet connected");
+      await ensureChain();
+      signer = await state.provider.getSigner();
+    }else{
+      if(!state.burner) throw new Error("Create your HoodSnipr wallet first (Wallets tab)");
+      var rp=new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId);
+      signer = new ethers.Wallet(state.burner.pk, rp);
+      var bal = await rp.getBalance(signer.address);
+      if(bal < ethers.parseEther(String(amt))) throw new Error("Burner balance too low — send ETH on Robinhood Chain first");
+    }
+    var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
+    if(CFG.FEE_WALLET){
+      var tx1 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
+      await tx1.wait();
+    }
+    if(CFG.SWAP.mode==="v2" && CFG.SWAP.router && CFG.SWAP.weth && p.baseToken){
+      var router=new ethers.Contract(CFG.SWAP.router,
+        ["function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin,address[] path,address to,uint deadline) payable"],
+        signer);
+      var tx2=await router.swapExactETHForTokensSupportingFeeOnTransferTokens(
+        0, [CFG.SWAP.weth, p.baseToken], await signer.getAddress(),
+        Math.floor(Date.now()/1000)+600, { value: ethers.parseEther(net.toFixed(18)) });
+      await tx2.wait();
+      toast("Sniped $"+p.sym+" 🎯");
+    }else{
+      // honest path until a router is verified: fee (if set) + open the DEX to finish
+      toast(CFG.FEE_WALLET?"Fee sent — finish the swap on the DEX ↗":"Recorded — finish the swap on the DEX ↗");
+      var url = p.dsUrl || ("https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool);
+      window.open(url,"_blank","noopener");
+    }
+    recordTrade(p, amt, fee, modal.mode);
+    closeModal();
+  }catch(e){
+    toast((e&&e.shortMessage)||(e&&e.message)||"Snipe failed", true);
+  }
+  var b=$("#fireBtn"); if(b){ b.disabled=false; b.textContent="🏹 FIRE SNIPE"; }
+}
+function recordTrade(p, ethIn, fee, mode){
+  var t={ sym:p.sym, baseToken:p.baseToken, pool:p.pool, ethIn:ethIn, fee:fee,
+    entryPrice:p.price, ts:Date.now(), mode:mode,
+    tokens: p.price? ((ethIn-fee)*state.ethUsd/p.price) : null };
+  state.trades.unshift(t); save("hs_trades", state.trades);
+  renderPnl(); syncLeaderboard();
+}
+function closeModal(){ $("#modalRoot").innerHTML=""; modal.pool=null; }
+
+// ================= WALLETS =================
+async function connect(){
+  if(!window.ethereum){ toast("No EVM wallet found — install MetaMask/Rabby", true); return; }
+  try{
+    state.provider = new ethers.BrowserProvider(window.ethereum);
+    var accts = await window.ethereum.request({ method:"eth_requestAccounts" });
+    state.wallet = ethers.getAddress(accts[0]);
+    await ensureChain();
+    $("#walletBtn").textContent = short(state.wallet); $("#walletBtn").className="wbtn on";
+    renderWallets(); renderProfile(); toast("Connected · Robinhood Chain");
+  }catch(e){ toast(e.message||"Connect failed", true); }
+}
+async function ensureChain(){
+  try{
+    await window.ethereum.request({ method:"wallet_switchEthereumChain", params:[{ chainId: CFG.CHAIN.chainIdHex }] });
+  }catch(err){
+    var code = err && (err.code || (err.data&&err.data.originalError&&err.data.originalError.code));
+    if(code===4902){
+      await window.ethereum.request({ method:"wallet_addEthereumChain", params:[{
+        chainId: CFG.CHAIN.chainIdHex, chainName: CFG.CHAIN.chainName,
+        rpcUrls: CFG.CHAIN.rpcUrls, nativeCurrency: CFG.CHAIN.nativeCurrency,
+        blockExplorerUrls: CFG.CHAIN.blockExplorerUrls }] });
+    } else if(code!==4001 && err) throw err;
+  }
+}
+function renderWallets(){
+  var cw=$("#cwBox");
+  if(state.wallet){
+    cw.innerHTML='<div class="addr">'+esc(state.wallet)+'</div>'
+      +'<p class="hint">Chain 4663 · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/address/'+esc(state.wallet)+'" target="_blank" rel="noopener" style="color:var(--green)">view on Blockscout ↗</a></p>';
+  }
+  var bw=$("#bwBox");
+  if(state.burner){
+    bw.innerHTML='<div class="addr">'+esc(state.burner.addr)+'</div>'
+     +'<p class="hint">Balance: <b id="bwBal" style="color:var(--green)">'+(state.burnerBal==null?"…":state.burnerBal+" ETH")+'</b> · send ETH <b>on Robinhood Chain</b> to arm it.</p>'
+     +'<div class="frow">'
+       +'<button class="obtn" data-action="bw-copy">Copy address</button>'
+       +'<button class="obtn" data-action="bw-refresh">Refresh balance</button>'
+       +'<button class="obtn" data-action="bw-export">Export key</button>'
+       +'<button class="dbtn" data-action="bw-burn">Destroy</button>'
+     +'</div>';
+    refreshBurnerBal();
+  }else{
+    bw.innerHTML='<div class="frow"><button class="sbtn" data-action="bw-create">Create burner</button>'
+      +'<button class="obtn" data-action="bw-import">Import key</button></div>';
+  }
+}
+async function refreshBurnerBal(){
+  if(!state.burner)return;
+  try{
+    var rp=new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId);
+    var b=await rp.getBalance(state.burner.addr);
+    state.burnerBal=(+ethers.formatEther(b)).toFixed(5);
+    var el=$("#bwBal"); if(el)el.textContent=state.burnerBal+" ETH";
+  }catch(e){}
+}
+function createBurner(pk){
+  var w = pk? new ethers.Wallet(pk) : ethers.Wallet.createRandom();
+  state.burner={ addr:w.address, pk:w.privateKey };
+  save("hs_burner", state.burner);
+  renderWallets();
+  toast("Burner ready — export the key NOW and store it safely");
+}
+
+// ================= PROFILE / PNL / SHARE =================
+function renderProfile(){
+  var box=$("#profBox"); if(!box)return; var pr=state.profile||{};
+  box.innerHTML=
+   '<div style="display:flex;gap:14px;align-items:center">'
+    +'<img class="pfp" alt="pfp" src="'+(pr.pfp||"./favicon.svg")+'">'
+    +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16px">'+esc(pr.name||"Unnamed Snipr")+'</div>'
+    +'<div style="font-family:var(--mono);font-size:11px;color:var(--mute)">'+(state.wallet?short(state.wallet):"connect a wallet to claim rank")+(pr.x?' · @'+esc(pr.x):'')+'</div></div>'
+   +'</div>'
+   +'<div class="frow" style="margin-top:14px">'
+    +'<input class="finput" id="prName" placeholder="Display name" maxlength="24" value="'+esc(pr.name||"")+'">'
+    +'<input class="finput" id="prX" placeholder="X handle (no @)" maxlength="15" value="'+esc(pr.x||"")+'">'
+   +'</div>'
+   +'<div class="frow">'
+    +'<label class="obtn">Upload PFP<input type="file" id="prPfp" accept="image/*" style="display:none"></label>'
+    +'<button class="sbtn" data-action="prof-save">'+(state.wallet?"Sign & save profile":"Save locally")+'</button>'
+   +'</div>'
+   +'<p class="hint">Saving with a connected wallet signs a message proving you own the address — that claims your name + PFP on the leaderboard. X is handle-only for now (no OAuth; nothing ever posts without you).</p>';
+  var f=$("#prPfp"); if(f)f.addEventListener("change",function(){
+    var file=f.files[0]; if(!file)return;
+    var rd=new FileReader();
+    rd.onload=function(){
+      var img=new Image();
+      img.onload=function(){
+        var c=document.createElement("canvas"); c.width=c.height=128;
+        c.getContext("2d").drawImage(img,0,0,128,128);
+        state.profile=Object.assign({},state.profile,{pfp:c.toDataURL("image/jpeg",.85)});
+        save("hs_profile",state.profile); renderProfile();
+      };
+      img.src=rd.result;
+    };
+    rd.readAsDataURL(file);
+  });
+}
+async function saveProfile(){
+  var pr=Object.assign({},state.profile,{ name:($("#prName").value||"").trim(), x:($("#prX").value||"").replace(/^@/,"").trim() });
+  state.profile=pr; save("hs_profile",pr);
+  if(state.wallet && state.provider){
+    try{
+      var signer=await state.provider.getSigner();
+      var msg="HoodSnipr profile claim\naddr:"+state.wallet+"\nname:"+pr.name+"\nx:"+pr.x+"\nts:"+Date.now();
+      var sig=await signer.signMessage(msg);
+      var r=await fetch(CFG.API+"/profile",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({addr:state.wallet,msg:msg,sig:sig,name:pr.name,x:pr.x,pfp:pr.pfp||null})});
+      if(!r.ok) throw 0;
+      toast("Profile claimed ✍️");
+    }catch(e){ toast("Saved locally (leaderboard backend offline)", true); }
+  }else toast("Saved locally");
+  renderProfile(); syncLeaderboard();
+}
+function pnlOf(t){
+  var p=state.pools.find(function(x){return x.baseToken&&t.baseToken&&x.baseToken.toLowerCase()===t.baseToken.toLowerCase()});
+  var now=p?p.price:t.entryPrice;
+  if(!t.tokens||!t.entryPrice||!now) return {usd:0,pct:0,now:now||0};
+  var cost=t.ethIn*state.ethUsd, cur=t.tokens*now;
+  return {usd:cur-cost, pct:cost?((cur-cost)/cost*100):0, now:now};
+}
+function renderPnl(){
+  var box=$("#pnlBox"); if(!box)return;
+  if(!state.trades.length){ box.innerHTML='<div class="empty">No snipes recorded yet.</div>'; return; }
+  var tot=0;
+  var h=state.trades.map(function(t,i){
+    var r=pnlOf(t); tot+=r.usd; var up=r.usd>=0;
+    return '<div class="lrow"><div class="nm">🎯 $'+esc(t.sym)+'<div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.ethIn+' ETH · '+(t.mode==="burner"?"burner":"wallet")+'</div></div>'
+      +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+r.usd.toFixed(2)+' <span style="font-size:11px">('+(up?"+":"")+r.pct.toFixed(1)+'%)</span></div>'
+      +'<button class="obtn" style="padding:6px 10px;font-size:11px" data-action="share" data-i="'+i+'">Share</button></div>';
+  }).join("");
+  var up=tot>=0;
+  box.innerHTML='<div style="font-family:var(--mono);font-size:13px;margin-bottom:8px">TOTAL PNL: <b class="'+(up?"up":"dn")+'">'+(up?"+":"")+"$"+tot.toFixed(2)+'</b></div>'+h
+   +'<div class="frow"><button class="sbtn" data-action="share" data-i="-1">📤 Share total PnL to X</button></div>';
+}
+// ---- branded PnL share card (client-side canvas, 1200×630) ----
+function drawScope(g,cx,cy,r,sw,color){
+  g.strokeStyle=color; g.fillStyle=color; g.lineWidth=sw; g.lineCap="butt";
+  g.beginPath(); g.arc(cx,cy,r,0,6.2832); g.stroke();
+  g.beginPath(); g.arc(cx,cy,r*4/15,0,6.2832); g.fill();
+  var ext=r*20/15, tin=r*10/15;
+  [[cx,cy-ext,cx,cy-tin],[cx,cy+tin,cx,cy+ext],[cx-ext,cy,cx-tin,cy],[cx+tin,cy,cx+ext,cy]].forEach(function(l){
+    g.beginPath(); g.moveTo(l[0],l[1]); g.lineTo(l[2],l[3]); g.stroke();
+  });
+}
+function shareCard(i){
+  var c=$("#shareCanvas"), g=c.getContext("2d");
+  var pr=state.profile||{};
+  var title, big, sub, up;
+  if(i<0){
+    var tot=state.trades.reduce(function(a,t){return a+pnlOf(t).usd},0);
+    up=tot>=0; title="TOTAL PNL"; big=(up?"+":"−")+"$"+Math.abs(tot).toFixed(2);
+    sub=state.trades.length+" snipes on Robinhood Chain";
+  }else{
+    var t=state.trades[i], r=pnlOf(t); up=r.usd>=0;
+    title="$"+t.sym+" SNIPE"; big=(up?"+":"−")+"$"+Math.abs(r.usd).toFixed(2);
+    sub=(up?"+":"")+r.pct.toFixed(1)+"% · entry $"+fmtP(t.entryPrice)+" → $"+fmtP(r.now);
+  }
+  g.clearRect(0,0,1200,630);
+  g.fillStyle="#0C0E10"; g.fillRect(0,0,1200,630);
+  g.save(); g.globalAlpha=.12; g.strokeStyle="#00C805"; g.setLineDash([8,26]); g.lineWidth=2;
+  g.beginPath(); g.arc(600,300,430,0,6.2832); g.stroke();
+  g.setLineDash([40,30]); g.beginPath(); g.arc(600,300,330,0,6.2832); g.stroke(); g.restore();
+  drawScope(g,140,120,52,10,"#00C805");
+  g.textAlign="left";
+  g.fillStyle="#F0F4F1"; g.font="700 44px 'Space Grotesk',sans-serif"; g.fillText("Hood",212,136);
+  var w=g.measureText("Hood").width;
+  g.fillStyle="#00C805"; g.fillText("Snipr",212+w,136);
+  g.font="500 20px 'DM Mono',monospace"; g.fillStyle="#7C8683";
+  g.fillText("ROBINHOOD CHAIN",212,164);
+  g.textAlign="center";
+  g.fillStyle="#7C8683"; g.font="500 26px 'DM Mono',monospace"; g.fillText(title,600,268);
+  g.fillStyle=up?"#00C805":"#FF5000"; g.font="700 118px 'Space Grotesk',sans-serif"; g.fillText(big,600,388);
+  g.fillStyle="#F0F4F1"; g.font="500 26px 'DM Mono',monospace"; g.fillText(sub,600,438);
+  g.font="700 28px 'Space Grotesk',sans-serif"; g.fillStyle="#F0F4F1";
+  g.fillText((pr.name||"Snipr")+(pr.x?"  ·  @"+pr.x:""),600,540);
+  g.font="500 18px 'DM Mono',monospace"; g.fillStyle="#7C8683";
+  g.fillText("EVERY TRENDING TOKEN. ONE ARROW AWAY.",600,575);
+  g.textAlign="left";
+  c.toBlob(function(blob){
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement("a"); a.href=url; a.download="hoodsnipr-pnl.png"; a.click();
+    setTimeout(function(){URL.revokeObjectURL(url)},4000);
+    var text=encodeURIComponent("My PnL on HoodSnipr — sniping trending tokens on Robinhood Chain 🏹🎯");
+    window.open("https://twitter.com/intent/tweet?text="+text,"_blank","noopener");
+    toast("Card downloaded — attach it to the post 📤");
+  },"image/png");
+}
+
+// ================= LEADERBOARD =================
+async function syncLeaderboard(){
+  if(!state.wallet) return;
+  var tot=state.trades.reduce(function(a,t){return a+pnlOf(t).usd},0);
+  try{
+    await fetch(CFG.API+"/leaderboard",{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({addr:state.wallet,pnl:+tot.toFixed(2),trades:state.trades.length})});
+  }catch(e){}
+}
+async function renderRanks(){
+  var box=$("#ranksBox");
+  try{
+    var r=await fetch(CFG.API+"/leaderboard"); if(!r.ok)throw 0;
+    var j=await r.json(); var list=j.list||[];
+    if(!list.length){ box.innerHTML='<div class="empty">No ranked sniprs yet — record a snipe with a connected wallet to claim #01.</div>'; return; }
+    box.innerHTML=list.map(function(u,i){
+      var up=u.pnl>=0;
+      return '<div class="lrow"><span class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</span>'
+        +'<img src="'+(u.pfp?esc(u.pfp):"./favicon.svg")+'" alt="">'
+        +'<div class="nm">'+esc(u.name||short(u.addr))+'<div class="h">'+short(u.addr)+(u.x?' · @'+esc(u.x):'')+' · '+(+u.trades||0)+' snipes</div></div>'
+        +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+(+u.pnl).toFixed(2)+'</div></div>';
+    }).join("");
+  }catch(e){
+    box.innerHTML='<div class="empty">Leaderboard backend offline — deploy the Netlify functions (see V02-NOTES.md in the repo).</div>';
+  }
+}
+
+// ================= EVENTS (delegated — CSP-safe, no inline handlers) =================
+document.addEventListener("click", function(e){
+  var el=e.target.closest("[data-action]"); if(!el) return;
+  var a=el.getAttribute("data-action");
+  if(a==="connect") connect();
+  else if(a==="open"){ e.stopPropagation(); openToken(el.getAttribute("data-pool")); }
+  else if(a==="close") closeModal();
+  else if(a==="closebg"){ if(e.target===el) closeModal(); }
+  else if(a==="paymode"){ modal.mode=el.getAttribute("data-m"); $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)}); updFees(); }
+  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); updFees(); }
+  else if(a==="fire") fire();
+  else if(a==="bw-create"){ if(confirm("Create a burner wallet? Keys live ONLY in this browser — you must export and back up the key yourself.")) createBurner(); }
+  else if(a==="bw-import"){ var pk=prompt("Paste private key (0x…) — it stays in this browser:"); if(pk){ try{createBurner(pk.trim())}catch(err){toast("Invalid key",true)} } }
+  else if(a==="bw-copy"){ navigator.clipboard.writeText(state.burner.addr).then(function(){toast("Address copied")}); }
+  else if(a==="bw-refresh") refreshBurnerBal();
+  else if(a==="bw-export"){ if(confirm("Reveal private key? Anyone who sees it controls the funds.")) prompt("Your burner private key — store it safely:", state.burner.pk); }
+  else if(a==="bw-burn"){ if(confirm("Destroy this burner from the browser? If the key isn't exported and it holds funds, THEY ARE GONE FOREVER.") && confirm("Final confirm: key exported or wallet empty?")){ state.burner=null; state.burnerBal=null; localStorage.removeItem("hs_burner"); renderWallets(); toast("Burner destroyed"); } }
+  else if(a==="prof-save") saveProfile();
+  else if(a==="share") shareCard(parseInt(el.getAttribute("data-i"),10));
+});
+$("#tabs").addEventListener("click",function(e){
+  var b=e.target.closest(".tab"); if(!b)return;
+  $$(".tab").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
+  var v=b.getAttribute("data-tab");
+  ["board","wallet","profile","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
+  if(v==="ranks") renderRanks();
+  if(v==="profile"){ renderProfile(); renderPnl(); }
+  if(v==="wallet") renderWallets();
+});
+$("#tfpills").addEventListener("click",function(e){
+  var b=e.target.closest(".tf"); if(!b)return;
+  $$(".tf").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
+  state.tf=b.getAttribute("data-tf");
+  renderBoard();
+  if(state.tf==="d30") ensure30d();
+});
+
+// ================= BOOT =================
+state.burner = load("hs_burner", null);
+refresh(); setInterval(refresh, CFG.REFRESH_MS);
+setInterval(function(){ if(state.lastUpdate){var a=Math.round((Date.now()-state.lastUpdate)/1000);$("#ageTxt").textContent=a<60?a+"s ago":Math.round(a/60)+"m ago";} },5000);
+renderWallets(); renderProfile(); renderPnl();
+})();
 </script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 # HoodSnipr — Netlify config
 [build]
   publish = "."
+  functions = "netlify/functions"
 
 [[headers]]
   for = "/*"
@@ -9,9 +10,8 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
-    # NOTE: 'unsafe-eval' is required ONLY because app.html compiles JSX in-browser
-    # via babel-standalone. Move to a Vite build for production and delete it.
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https:; frame-ancestors 'self'"
+    # v0.2: plain JS everywhere — no unsafe-eval needed. Keep it that way.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://api.geckoterminal.com https://api.dexscreener.com https://rpc.mainnet.chain.robinhood.com https://cdnjs.cloudflare.com; frame-src https://www.geckoterminal.com https://dexscreener.com; frame-ancestors 'self'"
 
 [[headers]]
   for = "/favicon.svg"
