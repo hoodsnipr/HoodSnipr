@@ -882,7 +882,10 @@ async function fire(){
       if(Number(net_.chainId)!==CFG.CHAIN.chainId)
         throw new Error("Wallet is on the wrong network — switch to Robinhood Chain (4663)");
       signer = await provider.getSigner();
-      var wbal = await rpc().getBalance(await signer.getAddress());
+      var liveAddr = ethers.getAddress(await signer.getAddress());
+      if(liveAddr!==state.wallet){ state.wallet=liveAddr; save("hs_addr",liveAddr);
+        var wb=$("#walletBtn"); if(wb) wb.textContent=short(liveAddr); }
+      var wbal = await rpc().getBalance(liveAddr);
       if(wbal < ethers.parseEther(String(amt)))
         throw new Error("Not enough ETH on Robinhood Chain ("+(+ethers.formatEther(wbal)).toFixed(5)+" ETH) — bridge ETH to chain 4663 first");
     }else{
@@ -1003,7 +1006,7 @@ async function connect(){
     state.wallet = ethers.getAddress(accts[0]);
     await ensureChain();
     state.provider = new ethers.BrowserProvider(window.ethereum);
-    save("hs_connected", 1);
+    save("hs_connected", 1); save("hs_addr", state.wallet);
     var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
     renderWallets();
     var isNew = !state.profile;
@@ -1095,7 +1098,7 @@ function renderWMenu(open){
 }
 function disconnect(){
   state.wallet=null; state.provider=null;
-  try{ localStorage.removeItem("hs_connected"); }catch(e){}
+  try{ localStorage.removeItem("hs_connected"); localStorage.removeItem("hs_addr"); }catch(e){}
   var b=$("#walletBtn"); b.textContent="Connect wallet"; b.className="wbtn"; b.setAttribute("data-action","connect");
   renderWMenu(false); renderWallets();
   toast("Disconnected");
@@ -1136,8 +1139,9 @@ function renderProfile(){
 async function saveProfile(){
   var pr=Object.assign({},state.profile,{ name:($("#prName").value||"").trim(), x:($("#prX").value||"").replace(/^@/,"").trim() });
   state.profile=pr; save("hs_profile",pr);
-  if(state.wallet && state.provider){
+  if(state.wallet && window.ethereum){
     try{
+      state.provider = state.provider || new ethers.BrowserProvider(window.ethereum);
       var signer=await state.provider.getSigner();
       var msg="HoodSnipr profile claim\naddr:"+state.wallet+"\nname:"+pr.name+"\nx:"+pr.x+"\nts:"+Date.now();
       var sig=await signer.signMessage(msg);
@@ -1531,6 +1535,8 @@ async function fireLoose(){
       await ensureChain();
       state.provider=new ethers.BrowserProvider(window.ethereum);
       signer=await state.provider.getSigner();
+      var liveA=ethers.getAddress(await signer.getAddress());
+      if(liveA!==state.wallet){ state.wallet=liveA; save("hs_addr",liveA); }
     }else{
       if(!state.burner) throw new Error("Burner not found");
       signer=new ethers.Wallet(state.burner.pk, rpc());
@@ -1666,17 +1672,18 @@ $("#tfpills").addEventListener("click",function(e){
   if(state.tf==="d30") ensure30d();
 });
 
-async function autoReconnect(){
-  if(!window.ethereum || !load("hs_connected", null)) return;
-  try{
-    var accts = await window.ethereum.request({ method:"eth_accounts" }); // silent — no popup
-    if(!accts || !accts.length) return;
-    state.wallet = ethers.getAddress(accts[0]);
-    state.provider = new ethers.BrowserProvider(window.ethereum);
-    var b=$("#walletBtn"); b.textContent=short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
-    renderWallets(); syncLeaderboard();
-    // chain switching stays lazy — first snipe/loose calls ensureChain, so boot is prompt-free
-  }catch(e){}
+function autoReconnect(){
+  // Session restore is PURELY LOCAL: no eth_accounts, no provider creation,
+  // no request of any kind at boot. Mobile in-app wallets (MetaMask mobile,
+  // Coinbase Wallet) pop their connect sheet on eth_accounts even though the
+  // spec says it's silent — so on first launch and on reconnect alike, the
+  // wallet is not touched until the user actually does something.
+  var addr = load("hs_addr", null);
+  if(!load("hs_connected", null) || !addr) return;   // never connected → do nothing
+  try{ state.wallet = ethers.getAddress(addr); }catch(e){ return; }
+  var b=$("#walletBtn"); b.textContent=short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
+  renderWallets(); syncLeaderboard();
+  // provider + signatures happen lazily at the first snipe/loose/profile-save
 }
 
 // keep provider honest if the user flips chain/account in the wallet UI
@@ -1685,6 +1692,7 @@ if(window.ethereum && window.ethereum.on){
   window.ethereum.on("accountsChanged", function(accs){
     if(!accs || !accs.length){ disconnect(); return; }
     state.wallet = ethers.getAddress(accs[0]);
+    save("hs_addr", state.wallet);
     var b=$("#walletBtn"); if(b && b.classList.contains("on")) b.textContent=short(state.wallet);
     renderWallets();
   });
