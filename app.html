@@ -603,8 +603,18 @@ async function fire(){
       if(!state.wallet) await connect();
       if(!state.wallet) throw new Error("No wallet connected");
       await ensureChain();
+      // BrowserProvider caches the network it was created on — after a chain
+      // switch a stale provider estimates gas against the WRONG chain, which
+      // surfaces as "missing revert data". Always rebuild it post-switch.
+      state.provider = new ethers.BrowserProvider(window.ethereum);
       provider = state.provider;
+      var net_ = await provider.getNetwork();
+      if(Number(net_.chainId)!==CFG.CHAIN.chainId)
+        throw new Error("Wallet is on the wrong network — switch to Robinhood Chain (4663)");
       signer = await provider.getSigner();
+      var wbal = await rpc().getBalance(await signer.getAddress());
+      if(wbal < ethers.parseEther(String(amt)))
+        throw new Error("Not enough ETH on Robinhood Chain ("+(+ethers.formatEther(wbal)).toFixed(5)+" ETH) — bridge ETH to chain 4663 first");
     }else{
       if(!state.burner) throw new Error("Create your HoodSnipr wallet first (Wallets tab)");
       provider = rpc();
@@ -627,6 +637,28 @@ async function fire(){
     var minOut = best.out - (best.out * BigInt(modal.slip) / 10000n);
     var dec = (modal.quote && modal.quote.dec) || await tokenDecimals(rpc(), p.baseToken);
 
+    // ---- preflight: simulate the exact swap via eth_call from the user's
+    // address BEFORE asking for any signature. Opaque estimate failures
+    // become readable errors here, and no fee is taken on a doomed swap. ----
+    btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
+    var me = await signer.getAddress();
+    var routerIface = new ethers.Interface(
+      ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"]);
+    async function preflight(feeTier, minO){
+      var data = routerIface.encodeFunctionData("exactInputSingle", [{
+        tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:feeTier, recipient:me,
+        amountIn:netWei, amountOutMinimum:minO, sqrtPriceLimitX96:0 }]);
+      await rpc().call({ to: CFG.UNI.swapRouter02, data: data, value: netWei, from: me });
+    }
+    try{ await preflight(best.fee, minOut); }
+    catch(pfErr){
+      // retry once with zero minOut to distinguish slippage from a dead pool
+      var slippageIssue=false;
+      try{ await preflight(best.fee, 0n); slippageIssue=true; }catch(e2){}
+      if(slippageIssue) throw new Error("Price moved beyond your "+(modal.slip/100)+"% slippage — raise slippage or retry");
+      throw new Error("Swap simulation reverted for $"+p.sym+" — likely a transfer-tax/honeypot token or launchpad-gated pool. Not sniped, nothing charged.");
+    }
+
     // ---- 1) platform fee (skipped in dev mode) ----
     if(CFG.FEE_WALLET){
       btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
@@ -642,7 +674,18 @@ async function fire(){
     var params = { tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:best.fee,
       recipient: await signer.getAddress(), amountIn: netWei,
       amountOutMinimum: minOut, sqrtPriceLimitX96: 0 };
-    var tx2 = await router.exactInputSingle(params, { value: netWei });
+    var tx2;
+    try{
+      tx2 = await router.exactInputSingle(params, { value: netWei });
+    }catch(sendErr){
+      var sm=(sendErr&&(sendErr.shortMessage||sendErr.message))||"";
+      if(/missing revert data|estimate/i.test(sm)){
+        // preflight already proved the swap succeeds — the wallet's own gas
+        // estimator is the flaky part on this young chain. Send with a manual
+        // gas limit to skip its estimation.
+        tx2 = await router.exactInputSingle(params, { value: netWei, gasLimit: 800000n });
+      } else throw sendErr;
+    }
     btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
     var rcpt = await tx2.wait();
     if(!rcpt || rcpt.status!==1) throw new Error("Swap reverted onchain");
@@ -668,6 +711,8 @@ async function fire(){
     // NOTHING is recorded on failure — the board stays honest
     var m=(e&&(e.shortMessage||e.reason||e.message))||"Snipe failed";
     if(/user rejected|denied/i.test(m)) m="Signature rejected in wallet";
+    else if(/missing revert data/i.test(m)) m="Swap simulation failed — check you have ETH on Robinhood Chain (4663) and your wallet is on that network, then retry";
+    else if(/insufficient funds/i.test(m)) m="Not enough ETH on Robinhood Chain for amount + gas";
     toast(m, true);
   }
   done();
@@ -685,10 +730,10 @@ function closeModal(){ $("#modalRoot").innerHTML=""; modal.pool=null; }
 async function connect(){
   if(!window.ethereum){ toast("No EVM wallet found — install MetaMask/Rabby", true); return; }
   try{
-    state.provider = new ethers.BrowserProvider(window.ethereum);
     var accts = await window.ethereum.request({ method:"eth_requestAccounts" });
     state.wallet = ethers.getAddress(accts[0]);
     await ensureChain();
+    state.provider = new ethers.BrowserProvider(window.ethereum);
     var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
     renderWallets();
     var isNew = !state.profile;
@@ -708,8 +753,14 @@ async function ensureChain(){
         chainId: CFG.CHAIN.chainIdHex, chainName: CFG.CHAIN.chainName,
         rpcUrls: CFG.CHAIN.rpcUrls, nativeCurrency: CFG.CHAIN.nativeCurrency,
         blockExplorerUrls: CFG.CHAIN.blockExplorerUrls }] });
-    } else if(code!==4001 && err) throw err;
+    } else if(code===4001){
+      throw new Error("Network switch rejected — approve Robinhood Chain in your wallet to snipe");
+    } else if(err) throw err;
   }
+  // confirm the wallet actually landed on 4663
+  var cid = await window.ethereum.request({ method:"eth_chainId" });
+  if(parseInt(cid,16)!==CFG.CHAIN.chainId)
+    throw new Error("Wallet is on the wrong network — switch to Robinhood Chain (4663)");
 }
 function renderWallets(){
   var cw=$("#cwBox");
@@ -970,6 +1021,17 @@ $("#tfpills").addEventListener("click",function(e){
   renderBoard();
   if(state.tf==="d30") ensure30d();
 });
+
+// keep provider honest if the user flips chain/account in the wallet UI
+if(window.ethereum && window.ethereum.on){
+  window.ethereum.on("chainChanged", function(){ if(state.wallet) state.provider = new ethers.BrowserProvider(window.ethereum); });
+  window.ethereum.on("accountsChanged", function(accs){
+    if(!accs || !accs.length){ disconnect(); return; }
+    state.wallet = ethers.getAddress(accs[0]);
+    var b=$("#walletBtn"); if(b && b.classList.contains("on")) b.textContent=short(state.wallet);
+    renderWallets();
+  });
+}
 
 // ================= BOOT =================
 state.burner = load("hs_burner", null);
