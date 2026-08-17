@@ -127,6 +127,16 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .lrow .nm{flex:1;font-weight:700;font-size:14px;min-width:0}
 .lrow .nm .h{font-family:var(--mono);font-size:10px;color:var(--mute);font-weight:400}
 .lrow .pnl{font-family:var(--mono);font-size:14px}
+.pstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.pst{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+.pst .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.14em}
+.pst .v{font-family:var(--mono);font-size:18px;margin-top:5px}
+.pst .s{font-size:10px;color:var(--mute);margin-top:2px}
+.pvchart{height:150px}
+.pvchart svg{width:100%;height:100%;display:block}
+.hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
+.loose:hover{background:var(--red);color:#000}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
 .toast.bad{background:var(--red)}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,.3);border-top-color:#000;border-radius:99px;animation:spin .8s linear infinite;vertical-align:-2px}
@@ -149,6 +159,7 @@ canvas.share{display:none}
 
 <div class="tabs" id="tabs">
   <button class="tab on" data-tab="board">🎯 Trending</button>
+  <button class="tab" data-tab="port">💼 Portfolio</button>
   <button class="tab" data-tab="wallet">👝 Wallets</button>
   <button class="tab" data-tab="ranks">🏆 Ranks</button>
 </div>
@@ -167,6 +178,21 @@ canvas.share{display:none}
     </div>
     <div class="board" id="board"></div>
     <div class="note">Live pool data merged from GeckoTerminal + DexScreener for Robinhood Chain (4663). Refreshes ~30s.<br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
+  </div>
+
+  <!-- ============ PORTFOLIO ============ -->
+  <div id="v-port" style="display:none">
+    <div class="pstats" id="pStats"></div>
+    <div class="card" style="padding:14px">
+      <h3 style="margin-bottom:4px">📈 Portfolio value</h3>
+      <div id="pvChart" class="pvchart"></div>
+    </div>
+    <div class="card">
+      <h3>💼 Holdings</h3>
+      <div id="holdBox"><div class="empty">Connect a wallet or arm your burner, then refresh.</div></div>
+      <div class="frow"><button class="obtn" data-action="port-refresh">↻ Refresh holdings</button></div>
+      <p class="hint">Holdings pulled live from Blockscout for both wallets, priced via the trending indexers. LOOSE sells through Uniswap v3 with the same 0.25% fee, taken from the ETH you receive.</p>
+    </div>
   </div>
 
   <!-- ============ WALLETS ============ -->
@@ -216,9 +242,10 @@ var CFG = {
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     blockExplorerUrls: ["https://robinhoodchain.blockscout.com"]
   },
-  // >>> SET before real fees flow. Empty = fee transfer skipped (dev mode).
-  FEE_WALLET: "",
+  // Fee route — LIVE. Charged on every snipe (buy) and every loose (sell).
+  FEE_WALLET: "0xb67cBE7fD1258108fE214bA0138d89FC0772791d",
   FEE_BPS: 25,
+  EXPLORER_API: "https://robinhoodchain.blockscout.com/api/v2",
   // Uniswap on Robinhood Chain (4663). weth/v3Factory are from Uniswap's own
   // deployments repo (github.com/Uniswap/contracts, deployments/4663.md),
   // cross-checked against 1inch + pons docs. router/quoter are RUNTIME-VERIFIED
@@ -247,6 +274,8 @@ var CFG = {
   REFRESH_MS: 30000,
   ETH_USD_FALLBACK: 3400
 };
+// The fee route and router set are load-bearing — freeze every layer.
+Object.freeze(CFG.UNI); Object.freeze(CFG.CHAIN); Object.freeze(CFG.FILTERS); Object.freeze(CFG);
 
 var $=function(s){return document.querySelector(s)}, $$=function(s){return Array.prototype.slice.call(document.querySelectorAll(s))};
 var state = {
@@ -536,7 +565,7 @@ function updFees(){
    +'<div><span class="k">Est. received</span><span id="quoteLine">'+received+'</span></div>'
    +'<div><span class="k">Max slippage</span><span>'+(modal.slip/100)+'%</span></div>'
    +'<div><span class="k">Execution</span><span style="color:var(--gold)">UNISWAP V3 · ONCHAIN</span></div>'
-   +(CFG.FEE_WALLET?'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>':'<div><span class="k">Fee wallet</span><span class="k">unset — dev mode, fee skipped</span></div>');
+   +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
   if(net>0 && p.baseToken) liveQuote(p, net);
 }
 // ---- Uniswap plumbing ----
@@ -659,15 +688,13 @@ async function fire(){
       throw new Error("Swap simulation reverted for $"+p.sym+" — likely a transfer-tax/honeypot token or launchpad-gated pool. Not sniped, nothing charged.");
     }
 
-    // ---- 1) platform fee (skipped in dev mode) ----
-    if(CFG.FEE_WALLET){
-      btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
-      var tx1 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
-      await tx1.wait();
-    }
+    // ---- 1) platform fee — ALWAYS charged, frozen route ----
+    btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
+    var tx1 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
+    await tx1.wait();
 
     // ---- 2) the swap: SwapRouter02.exactInputSingle, ETH in (router wraps) ----
-    btn.innerHTML='<span class="spin"></span> SWAP '+(CFG.FEE_WALLET?"2/2":"")+' — SIGN IN WALLET…';
+    btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…';
     var router = new ethers.Contract(CFG.UNI.swapRouter02,
       ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"],
       signer);
@@ -879,6 +906,7 @@ async function saveProfile(){
   renderProfile(); renderWMenu(false); syncLeaderboard();
 }
 function pnlOf(t){
+  if(t.side==="sell") return {usd:0,pct:0,now:0};
   var p=state.pools.find(function(x){return x.baseToken&&t.baseToken&&x.baseToken.toLowerCase()===t.baseToken.toLowerCase()});
   var now=p?p.price:t.entryPrice;
   if(!t.tokens||!now) return {usd:0,pct:0,now:now||0};
@@ -890,13 +918,18 @@ function renderPnl(){
   if(!state.trades.length){ box.innerHTML='<div class="empty">No snipes recorded yet.</div>'; return; }
   var tot=0;
   var h=state.trades.map(function(t,i){
+    if(t.side==="sell"){
+      return '<div class="lrow"><div class="nm">🏹 $'+esc(t.sym)+' <span style="color:var(--red);font-size:11px">LOOSED</span><div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.tokensSold.toLocaleString(undefined,{maximumFractionDigits:2})+' sold → '+(t.ethOut||0).toFixed(5)+' ETH · '+(t.mode==="burner"?"burner":"wallet")+(t.tx?' · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/tx/'+esc(t.tx)+'" target="_blank" rel="noopener" style="color:var(--green)">tx ↗</a>':'')+'</div></div>'
+        +'<div class="pnl up">+'+(t.ethOut||0).toFixed(4)+' ETH</div></div>';
+    }
     var r=pnlOf(t); tot+=r.usd; var up=r.usd>=0;
     return '<div class="lrow"><div class="nm">🎯 $'+esc(t.sym)+'<div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.ethIn+' ETH · '+(t.mode==="burner"?"burner":"wallet")+(t.tx?' · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/tx/'+esc(t.tx)+'" target="_blank" rel="noopener" style="color:var(--green)">tx ↗</a>':'')+'</div></div>'
       +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+r.usd.toFixed(2)+' <span style="font-size:11px">('+(up?"+":"")+r.pct.toFixed(1)+'%)</span></div>'
       +'<button class="obtn" style="padding:6px 10px;font-size:11px" data-action="share" data-i="'+i+'">Share</button></div>';
   }).join("");
-  var up=tot>=0;
-  box.innerHTML='<div style="font-family:var(--mono);font-size:13px;margin-bottom:8px">TOTAL PNL: <b class="'+(up?"up":"dn")+'">'+(up?"+":"")+"$"+tot.toFixed(2)+'</b></div>'+h
+  var shown = port.pnlUsd!=null ? port.pnlUsd : tot;
+  var up=shown>=0;
+  box.innerHTML='<div style="font-family:var(--mono);font-size:13px;margin-bottom:8px">TOTAL PNL: <b class="'+(up?"up":"dn")+'">'+(up?"+":"−")+"$"+Math.abs(shown).toFixed(2)+'</b></div>'+h
    +'<div class="frow"><button class="sbtn" data-action="share" data-i="-1">📤 Share total PnL to X</button></div>';
 }
 // ---- branded PnL share card (client-side canvas, 1200×630) ----
@@ -956,7 +989,8 @@ function shareCard(i){
 // ================= LEADERBOARD =================
 async function syncLeaderboard(){
   if(!state.wallet) return;
-  var tot=state.trades.reduce(function(a,t){return a+pnlOf(t).usd},0);
+  var tot = port.pnlUsd!=null ? port.pnlUsd
+    : state.trades.filter(function(t){return t.side!=="sell"}).reduce(function(a,t){return a+pnlOf(t).usd},0);
   try{
     await fetch(CFG.API+"/leaderboard",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({addr:state.wallet,pnl:+tot.toFixed(2),trades:state.trades.length})});
@@ -978,6 +1012,314 @@ async function renderRanks(){
   }catch(e){
     box.innerHTML='<div class="empty">Leaderboard backend offline — deploy the Netlify functions (see V02-NOTES.md in the repo).</div>';
   }
+}
+
+// ================= PORTFOLIO =================
+var port = { holdings:[], totalUsd:0, ethBal:{}, loading:false, pnlUsd:null };
+
+async function fetchEthUsd(){
+  try{
+    var j = await gt("/simple/networks/"+CFG.GT_NET+"/token_price/"+CFG.UNI.weth);
+    var m = (((j.data||{}).attributes)||{}).token_prices||{};
+    var v = +m[CFG.UNI.weth.toLowerCase()];
+    if(v>0) state.ethUsd = v;
+  }catch(e){}
+}
+async function fetchPrices(addrs){
+  // GT simple price, batched up to 30 addresses per call
+  var out={};
+  for(var i=0;i<addrs.length;i+=30){
+    try{
+      var batch=addrs.slice(i,i+30);
+      var j=await gt("/simple/networks/"+CFG.GT_NET+"/token_price/"+batch.join(","));
+      var m=(((j.data||{}).attributes)||{}).token_prices||{};
+      Object.keys(m).forEach(function(k){ out[k.toLowerCase()]=+m[k]; });
+    }catch(e){}
+  }
+  return out;
+}
+async function walletHoldings(addr, tag){
+  // primary: Blockscout token-balances; fallback: scan known tokens from trades+board
+  var rows=[];
+  try{
+    var r=await fetch(CFG.EXPLORER_API+"/addresses/"+addr+"/token-balances");
+    if(!r.ok) throw 0;
+    var j=await r.json();
+    (j||[]).forEach(function(it){
+      var t=it.token||{};
+      if((t.type||"")!=="ERC-20") return;
+      var dec=+(t.decimals||18), bal=+ethers.formatUnits(it.value||"0",dec);
+      if(bal<=0) return;
+      rows.push({ wallet:tag, addr:(t.address||t.address_hash||"").toLowerCase(), sym:t.symbol||"?",
+        name:t.name||"", img:t.icon_url||null, dec:dec, bal:bal });
+    });
+  }catch(e){
+    // fallback scan: candidates = trade tokens + trending board tokens
+    var cands={};
+    state.trades.forEach(function(t){ if(t.baseToken)cands[t.baseToken.toLowerCase()]={sym:t.sym}; });
+    state.pools.forEach(function(p){ if(p.baseToken)cands[p.baseToken.toLowerCase()]={sym:p.sym,img:p.img}; });
+    var pr=rpc(), keys=Object.keys(cands);
+    await Promise.all(keys.map(async function(k){
+      try{
+        var c=new ethers.Contract(k,["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)"],pr);
+        var b=await c.balanceOf(addr);
+        if(b>0n){ var d=Number(await c.decimals().catch(function(){return 18}));
+          rows.push({wallet:tag,addr:k,sym:cands[k].sym||"?",name:"",img:cands[k].img||null,dec:d,bal:+ethers.formatUnits(b,d)}); }
+      }catch(e2){}
+    }));
+  }
+  return rows;
+}
+async function loadPortfolio(){
+  if(port.loading) return; port.loading=true;
+  var hb=$("#holdBox"); if(hb && !port.holdings.length) hb.innerHTML='<div class="skel"></div>'.repeat(3);
+  try{
+    await fetchEthUsd();
+    var jobs=[], pr=rpc();
+    if(state.wallet){ jobs.push(walletHoldings(state.wallet,"connected")); jobs.push(pr.getBalance(state.wallet).then(function(b){port.ethBal.connected=+ethers.formatEther(b)})); }
+    if(state.burner){ jobs.push(walletHoldings(state.burner.addr,"burner")); jobs.push(pr.getBalance(state.burner.addr).then(function(b){port.ethBal.burner=+ethers.formatEther(b)})); }
+    var res=await Promise.all(jobs);
+    var rows=[]; res.forEach(function(r){ if(Array.isArray(r)) rows=rows.concat(r); });
+    // price: board first, then GT batch for the rest
+    var boardPx={}, boardImg={};
+    state.pools.forEach(function(p){ if(p.baseToken){ boardPx[p.baseToken.toLowerCase()]=p.price; boardImg[p.baseToken.toLowerCase()]=p.img; } });
+    var missing=rows.filter(function(h){return !boardPx[h.addr]}).map(function(h){return h.addr});
+    var extra = missing.length? await fetchPrices(missing) : {};
+    rows.forEach(function(h){
+      h.price = boardPx[h.addr]!=null? boardPx[h.addr] : (extra[h.addr]||null);
+      if(!h.img) h.img=boardImg[h.addr]||null;
+      h.valUsd = h.price? h.bal*h.price : null;
+    });
+    rows.sort(function(a,b){return (b.valUsd||0)-(a.valUsd||0)});
+    port.holdings=rows;
+    var ethUsdTotal=((port.ethBal.connected||0)+(port.ethBal.burner||0))*state.ethUsd;
+    port.totalUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0) + ethUsdTotal;
+    // portfolio-level PnL: (current value + realized ETH out) - lifetime ETH in
+    var inEth=state.trades.filter(function(t){return t.side!=="sell"}).reduce(function(a,t){return a+t.ethIn},0);
+    var outEth=state.trades.filter(function(t){return t.side==="sell"}).reduce(function(a,t){return a+(t.ethOut||0)},0);
+    var tokUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0);
+    port.pnlUsd = inEth>0 ? (tokUsd + outEth*state.ethUsd) - inEth*state.ethUsd : null;
+    snapshotPv();
+  }catch(e){}
+  port.loading=false;
+  renderPortfolio();
+}
+function snapshotPv(){
+  var series=load("hs_pv",[]);
+  var last=series[series.length-1], now=Date.now();
+  if(!last || now-last.t>5*60e3 || Math.abs(port.totalUsd-last.v)>Math.max(1,last.v*0.01)){
+    series.push({t:now,v:+port.totalUsd.toFixed(2)});
+    if(series.length>400) series=series.slice(-400);
+    save("hs_pv",series);
+  }
+}
+function renderPvChart(){
+  var el=$("#pvChart"); if(!el)return;
+  var se=load("hs_pv",[]);
+  if(se.length<2){ el.innerHTML='<div class="empty" style="padding:24px">Value history builds as you use the portfolio — check back soon.</div>'; return; }
+  var W=600,H=150,P=8;
+  var vs=se.map(function(p){return p.v}), mn=Math.min.apply(0,vs), mx=Math.max.apply(0,vs);
+  if(mx-mn<1e-9){mx=mn+1}
+  var t0=se[0].t, t1=se[se.length-1].t||t0+1;
+  function X(t){return P+(t-t0)/(t1-t0||1)*(W-2*P)} function Y(v){return H-P-(v-mn)/(mx-mn)*(H-2*P)}
+  var d=se.map(function(p,i){return (i?"L":"M")+X(p.t).toFixed(1)+","+Y(p.v).toFixed(1)}).join(" ");
+  var up=se[se.length-1].v>=se[0].v, col=up?"#00C805":"#FF5000";
+  el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
+   +'<path d="'+d+' L'+X(t1).toFixed(1)+','+(H-P)+' L'+X(t0).toFixed(1)+','+(H-P)+' Z" fill="'+col+'" opacity="0.08"/>'
+   +'<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2"/>'
+   +'<text x="'+P+'" y="12" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mx.toFixed(2)+'</text>'
+   +'<text x="'+P+'" y="'+(H-2)+'" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mn.toFixed(2)+'</text>'
+   +'</svg>';
+}
+function renderPortfolio(){
+  var st=$("#pStats"); if(!st)return;
+  var inEth=state.trades.filter(function(t){return t.side!=="sell"}).reduce(function(a,t){return a+t.ethIn},0);
+  var pnl=port.pnlUsd, up=(pnl||0)>=0;
+  st.innerHTML=
+   '<div class="pst"><div class="k">TOTAL VALUE</div><div class="v">$'+port.totalUsd.toFixed(2)+'</div><div class="s">tokens + ETH, both wallets</div></div>'
+  +'<div class="pst"><div class="k">LIFETIME INVESTED</div><div class="v">'+inEth.toFixed(4)+' ETH</div><div class="s">≈ $'+(inEth*state.ethUsd).toFixed(2)+' at current ETH</div></div>'
+  +'<div class="pst"><div class="k">TOTAL PNL</div><div class="v '+(up?"up":"dn")+'">'+(pnl==null?"—":((up?"+":"−")+"$"+Math.abs(pnl).toFixed(2)))+'</div><div class="s">value + realized − invested</div></div>';
+  renderPvChart();
+  var hb=$("#holdBox"); if(!hb)return;
+  if(!state.wallet && !state.burner){ hb.innerHTML='<div class="empty">Connect a wallet or arm your burner, then refresh.</div>'; return; }
+  var h="";
+  ["connected","burner"].forEach(function(tag){
+    var eth=port.ethBal[tag];
+    var rows=port.holdings.filter(function(x){return x.wallet===tag});
+    if(eth==null && !rows.length) return;
+    h+='<div class="hgroup">'+(tag==="connected"?"🔗 CONNECTED — "+short(state.wallet||""):"🏹 HOODSNIPR BURNER — "+short(state.burner?state.burner.addr:""))+'</div>';
+    if(eth!=null) h+='<div class="lrow"><img class="timg" src="./favicon.svg" alt=""><div class="nm">ETH<div class="h">native · gas + ammo</div></div><div class="pnl">'+eth.toFixed(5)+'<span style="font-size:11px;color:var(--mute)"> ≈ $'+(eth*state.ethUsd).toFixed(2)+'</span></div></div>';
+    rows.forEach(function(x,i){
+      var gi=port.holdings.indexOf(x);
+      h+='<div class="lrow"><img class="timg" alt="" data-sym="'+esc(x.sym)+'" src="'+(x.img?esc(x.img):letterAvatar(x.sym))+'">'
+        +'<div class="nm">$'+esc(x.sym)+'<div class="h">'+x.bal.toLocaleString(undefined,{maximumFractionDigits:4})+(x.price?' · $'+fmtP(x.price):'')+'</div></div>'
+        +'<div class="pnl">'+(x.valUsd!=null?"$"+x.valUsd.toFixed(2):"—")+'</div>'
+        +'<button class="loose" data-action="loose" data-h="'+gi+'">LOOSE</button></div>';
+    });
+  });
+  hb.innerHTML=h || '<div class="empty">No holdings found yet — fire a snipe first.</div>';
+}
+
+// ================= LOOSE (sell via Uniswap v3, 0.25% fee on proceeds) =================
+var looseM={ h:null, slip:CFG.UNI.defaultSlippageBps, quote:null };
+function openLoose(idx){
+  var x=port.holdings[idx]; if(!x)return;
+  looseM.h=x; looseM.quote=null;
+  $("#modalRoot").innerHTML=
+  '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><div style="display:flex;gap:11px;align-items:center">'
+   +'<img class="timg lg" alt="" src="'+(x.img?esc(x.img):letterAvatar(x.sym))+'">'
+   +'<div><h2>Loose $'+esc(x.sym)+'</h2><div class="px">holding '+x.bal.toLocaleString(undefined,{maximumFractionDigits:4})+' · '+(x.wallet==="connected"?"connected wallet":"burner")+'</div></div></div>'
+   +'<button class="x" data-action="close">✕</button></div>'
+   +'<input class="amt" id="looseAmt" inputmode="decimal" placeholder="0.0" value="'+(x.bal*0.5).toPrecision(6)+'" aria-label="Token amount to sell">'
+   +'<div class="qamt">'+[25,50,75,100].map(function(pc){return '<button data-action="lpct" data-p="'+pc+'">'+pc+'%</button>'}).join("")+'</div>'
+   +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="lslip" data-b="'+b+'" '+(b===looseM.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
+   +'<div class="fees" id="looseFees"></div>'
+   +'<button class="fire" id="looseBtn" data-action="loose-fire" style="background:var(--red)">🏹 LOOSE IT</button>'
+   +'<p class="warn">Sells token → ETH on Uniswap v3. 0.25% fee is taken from the ETH received. Approval may add one extra signature. Total-loss risk.</p>'
+  +'</div></div>';
+  updLooseFees();
+  $("#looseAmt").addEventListener("input", function(){ looseM.quote=null; updLooseFees(); });
+}
+var looseSeq=0;
+function updLooseFees(){
+  var x=looseM.h; if(!x)return;
+  var amt=parseFloat(($("#looseAmt")||{}).value)||0;
+  var q=looseM.quote;
+  var est = q && q.amt===amt ? (+q.outEth).toFixed(6)+" ETH · UNI V3 "+(q.fee/10000)+"%" : (x.price? "≈ "+((amt*x.price)/state.ethUsd).toFixed(6)+" ETH (indexer est.)" : "—");
+  var outEth = q && q.amt===amt ? +q.outEth : (x.price? (amt*x.price)/state.ethUsd : 0);
+  var fee=outEth*CFG.FEE_BPS/10000;
+  $("#looseFees").innerHTML=
+    '<div><span class="k">Est. proceeds</span><span class="up" id="looseQuoteLine">'+est+'</span></div>'
+   +'<div><span class="k">Loose fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">You keep</span><span class="up">'+(outEth-fee).toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Max slippage</span><span>'+(looseM.slip/100)+'%</span></div>'
+   +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
+  if(amt>0) liveLooseQuote(x, amt);
+}
+async function bestQuoteOut(pr, token, amountInUnits){
+  var q = new ethers.Contract(CFG.UNI.quoterV2,
+    ["function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut,uint160,uint32,uint256)"], pr);
+  var best=null;
+  for(var i=0;i<CFG.UNI.feeTiers.length;i++){
+    var f=CFG.UNI.feeTiers[i];
+    try{ var res=await q.quoteExactInputSingle.staticCall({tokenIn:token,tokenOut:CFG.UNI.weth,amountIn:amountInUnits,fee:f,sqrtPriceLimitX96:0});
+      if(res[0]>0n && (!best||res[0]>best.out)) best={out:res[0],fee:f};
+    }catch(e){}
+  }
+  return best;
+}
+async function liveLooseQuote(x, amt){
+  var seq=++looseSeq;
+  try{
+    var pr=rpc(); if(!(await verifyUni(pr))) return;
+    var units=ethers.parseUnits(amt.toFixed(Math.min(18,x.dec)), x.dec);
+    var best=await bestQuoteOut(pr, x.addr, units);
+    if(seq!==looseSeq||!best) return;
+    looseM.quote={ amt:amt, out:best.out, outEth:ethers.formatEther(best.out), fee:best.fee, units:units };
+    var el=$("#looseQuoteLine");
+    if(el) el.textContent=(+looseM.quote.outEth).toFixed(6)+" ETH · UNI V3 "+(best.fee/10000)+"%";
+    updLooseFeesStatic();
+  }catch(e){}
+}
+function updLooseFeesStatic(){
+  var q=looseM.quote; if(!q)return;
+  var fee=+q.outEth*CFG.FEE_BPS/10000;
+  var box=$("#looseFees"); if(!box)return;
+  var rows=box.querySelectorAll("div");
+  if(rows[1]) rows[1].lastChild.textContent=fee.toFixed(6)+" ETH";
+  if(rows[2]) rows[2].lastChild.textContent=(+q.outEth-fee).toFixed(6)+" ETH";
+}
+async function fireLoose(){
+  var x=looseM.h; if(!x)return;
+  var amt=parseFloat($("#looseAmt").value);
+  if(!amt||amt<=0){toast("Enter an amount",true);return}
+  if(amt>x.bal*1.0000001){toast("More than you hold",true);return}
+  var btn=$("#looseBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> NOCKING…';
+  var done=function(){var b=$("#looseBtn"); if(b){b.disabled=false;b.textContent="🏹 LOOSE IT";}};
+  try{
+    var signer=null, provider=null;
+    if(x.wallet==="connected"){
+      if(!state.wallet) throw new Error("Connect the wallet that holds this token");
+      await ensureChain();
+      state.provider=new ethers.BrowserProvider(window.ethereum);
+      signer=await state.provider.getSigner();
+    }else{
+      if(!state.burner) throw new Error("Burner not found");
+      signer=new ethers.Wallet(state.burner.pk, rpc());
+    }
+    if(!(await verifyUni(rpc()))) throw new Error("Router failed onchain verification — trading disabled for safety");
+    var me=await signer.getAddress();
+    var units=ethers.parseUnits(amt.toFixed(Math.min(18,x.dec)), x.dec);
+
+    btn.innerHTML='<span class="spin"></span> QUOTING…';
+    var best=await bestQuoteOut(rpc(), x.addr, units);
+    if(!best) throw new Error("No Uniswap v3 WETH pool for $"+x.sym);
+    var minOut = best.out - (best.out*BigInt(looseM.slip)/10000n);
+
+    // ---- approval if needed (one extra signature, once per token) ----
+    var erc=new ethers.Contract(x.addr,
+      ["function allowance(address,address) view returns (uint256)","function approve(address,uint256) returns (bool)"], signer);
+    var allow=await erc.allowance(me, CFG.UNI.swapRouter02);
+    if(allow<units){
+      btn.innerHTML='<span class="spin"></span> APPROVE — SIGN IN WALLET…';
+      var atx=await erc.approve(CFG.UNI.swapRouter02, ethers.MaxUint256);
+      await atx.wait();
+    }
+
+    // ---- swap: token→WETH to router, unwrap to user, in one multicall ----
+    btn.innerHTML='<span class="spin"></span> LOOSING — SIGN IN WALLET…';
+    var iface=new ethers.Interface([
+      "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256)",
+      "function unwrapWETH9(uint256 amountMinimum,address recipient) payable",
+      "function multicall(bytes[] data) payable returns (bytes[])"
+    ]);
+    var callSwap=iface.encodeFunctionData("exactInputSingle",[{
+      tokenIn:x.addr, tokenOut:CFG.UNI.weth, fee:best.fee,
+      recipient:CFG.UNI.swapRouter02, amountIn:units, amountOutMinimum:minOut, sqrtPriceLimitX96:0 }]);
+    var callUnwrap=iface.encodeFunctionData("unwrapWETH9",[minOut, me]);
+    var router=new ethers.Contract(CFG.UNI.swapRouter02, ["function multicall(bytes[] data) payable returns (bytes[])"], signer);
+    var tx;
+    try{ tx=await router.multicall([callSwap, callUnwrap]); }
+    catch(sendErr){
+      var sm=(sendErr&&(sendErr.shortMessage||sendErr.message))||"";
+      if(/missing revert data|estimate/i.test(sm)) tx=await router.multicall([callSwap, callUnwrap], { gasLimit: 900000n });
+      else throw sendErr;
+    }
+    btn.innerHTML='<span class="spin"></span> CONFIRMING…';
+    var rcpt=await tx.wait();
+    if(!rcpt||rcpt.status!==1) throw new Error("Loose reverted onchain");
+
+    // actual ETH out = WETH Withdrawal event from the unwrap
+    var got=null;
+    try{
+      var wIface=new ethers.Interface(["event Withdrawal(address indexed src,uint256 wad)"]);
+      rcpt.logs.forEach(function(lg){
+        if((lg.address||"").toLowerCase()!==CFG.UNI.weth.toLowerCase())return;
+        try{ var ev=wIface.parseLog(lg); if(ev) got=ev.args[1]; }catch(e){}
+      });
+    }catch(e){}
+    var outWei = got!=null? got : best.out;
+    var outEth = +ethers.formatEther(outWei);
+
+    // ---- fee leg: 0.25% of proceeds → frozen fee wallet ----
+    var feeWei = outWei*BigInt(CFG.FEE_BPS)/10000n;
+    btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
+    var ftx=await signer.sendTransaction({ to: CFG.FEE_WALLET, value: feeWei });
+    await ftx.wait();
+
+    state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:outEth,
+      fee:+ethers.formatEther(feeWei), tokensSold:amt, ts:Date.now(),
+      mode:x.wallet==="connected"?"wallet":"burner", tx:rcpt.hash });
+    save("hs_trades", state.trades);
+    toast("Loosed "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" $"+x.sym+" → "+(outEth-+ethers.formatEther(feeWei)).toFixed(5)+" ETH 🏹");
+    closeModal(); renderPnl(); loadPortfolio(); syncLeaderboard();
+  }catch(e){
+    var m=(e&&(e.shortMessage||e.reason||e.message))||"Loose failed";
+    if(/user rejected|denied/i.test(m)) m="Signature rejected in wallet";
+    toast(m,true);
+  }
+  done();
 }
 
 // ================= EVENTS (delegated — CSP-safe, no inline handlers) =================
@@ -1004,15 +1346,21 @@ document.addEventListener("click", function(e){
   else if(a==="bw-export"){ if(confirm("Reveal private key? Anyone who sees it controls the funds.")) prompt("Your burner private key — store it safely:", state.burner.pk); }
   else if(a==="bw-burn"){ if(confirm("Destroy this burner from the browser? If the key isn't exported and it holds funds, THEY ARE GONE FOREVER.") && confirm("Final confirm: key exported or wallet empty?")){ state.burner=null; state.burnerBal=null; localStorage.removeItem("hs_burner"); renderWallets(); toast("Burner destroyed"); } }
   else if(a==="prof-save") saveProfile();
+  else if(a==="port-refresh") loadPortfolio();
+  else if(a==="loose"){ e.stopPropagation(); openLoose(parseInt(el.getAttribute("data-h"),10)); }
+  else if(a==="loose-fire") fireLoose();
+  else if(a==="lpct"){ var xx=looseM.h; if(xx){ $("#looseAmt").value=(xx.bal*parseInt(el.getAttribute("data-p"),10)/100).toPrecision(6); looseM.quote=null; updLooseFees(); } }
+  else if(a==="lslip"){ looseM.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="lslip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===looseM.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updLooseFees(); }
   else if(a==="share") shareCard(parseInt(el.getAttribute("data-i"),10));
 });
 $("#tabs").addEventListener("click",function(e){
   var b=e.target.closest(".tab"); if(!b)return;
   $$(".tab").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
   var v=b.getAttribute("data-tab");
-  ["board","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
+  ["board","port","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
   if(v==="ranks") renderRanks();
   if(v==="wallet") renderWallets();
+  if(v==="port"){ renderPortfolio(); loadPortfolio(); }
 });
 $("#tfpills").addEventListener("click",function(e){
   var b=e.target.closest(".tf"); if(!b)return;
@@ -1035,7 +1383,7 @@ if(window.ethereum && window.ethereum.on){
 
 // ================= BOOT =================
 state.burner = load("hs_burner", null);
-refresh(); setInterval(refresh, CFG.REFRESH_MS);
+fetchEthUsd(); refresh(); setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
 setInterval(function(){ if(state.lastUpdate){var a=Math.round((Date.now()-state.lastUpdate)/1000);$("#ageTxt").textContent=a<60?a+"s ago":Math.round(a/60)+"m ago";} },5000);
 renderWallets();
 })();
