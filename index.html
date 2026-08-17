@@ -175,6 +175,28 @@ section{max-width:1020px;margin:0 auto;padding:110px 20px}
 .tfchip.on .t{color:var(--green)}
 #tfReadout{font-family:var(--mono);font-size:12px;color:var(--green);margin-top:16px;letter-spacing:.08em;min-height:18px}
 
+/* ===== live mini board ===== */
+.liveboard{margin-top:16px;background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;min-height:64px}
+.lbrow{display:flex;align-items:center;gap:11px;padding:11px 14px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit;transition:background .15s}
+.lbrow:last-child{border-bottom:none}
+.lbrow:hover{background:var(--panel2)}
+.lbrow .r{font-family:var(--mono);font-size:11px;color:var(--mute);width:20px}
+.lbrow .r.top{color:var(--gold)}
+.lbrow img{width:28px;height:28px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
+.lbrow .t{flex:1;min-width:0}
+.lbrow .t b{font-size:14px;display:block}
+.lbrow .t span{font-size:11px;color:var(--mute)}
+.lbrow .px{text-align:right;font-family:var(--mono);font-size:12px;min-width:78px}
+.lbrow .px .c{font-size:11px}
+.lbrow .vv{text-align:right;font-family:var(--mono);font-size:12px;min-width:64px}
+.lbrow .vv small{display:block;font-size:9px;color:var(--mute);letter-spacing:.1em}
+.lbrow .u{color:var(--green)}.lbrow .d{color:var(--red)}
+.lbskel{height:50px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:tape 1.2s linear infinite}
+.lbfoot{display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em;flex-wrap:wrap;gap:8px}
+.lbcta{color:var(--green);text-decoration:none;border:1px solid var(--line);border-radius:99px;padding:7px 14px}
+.lbcta:hover{border-color:var(--green)}
+@media(max-width:560px){.lbrow .vv{display:none}}
+
 /* ===== fee calculator ===== */
 .calc{background:linear-gradient(150deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:22px;padding:32px 28px;margin-top:44px}
 .calc .row{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
@@ -290,12 +312,12 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
 
   <div class="bootline"><span id="boot"></span><span class="cur">▮</span></div>
   <h1>EVERY TRENDING TOKEN.<br><span class="g">ONE ARROW AWAY.</span></h1>
-  <p class="sub">The sniping terminal for Robinhood Chain. Volume-ranked targets on 5M · 1H · 24H · 30D. Connect a wallet — or just send ETH.</p>
+  <p class="sub">The sniping terminal for Robinhood Chain. Live volume-ranked targets on 5M · 1H · 24H · 30D, real charts, one-tap Uniswap execution at 0.25%.</p>
   <div class="btns">
     <a class="btn-g" href="./app.html">🏹 Launch HoodSnipr</a>
     <a class="btn-o" href="#quivr">Hold $QUIVR</a>
   </div>
-  <div class="chainbadge"><i></i> LIVE ON ROBINHOOD CHAIN</div>
+  <div class="chainbadge"><i></i> LIVE ON ROBINHOOD CHAIN · <span id="heroStat">connecting to the chain…</span></div>
 </header>
 
 <!-- ============ TAPE ============ -->
@@ -313,7 +335,7 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
   <div class="shots">
     <div class="shot reveal"><div class="ic">📡</div><div class="n">SHOT 01</div><h3>SCAN</h3><p>The trending board ranks every Robinhood Chain token by traded volume. Sparklines, window-relative change, honeypot badges. Top three wear gold.</p></div>
     <div class="shot reveal"><div class="ic">🎯</div><div class="n">SHOT 02</div><h3>LOCK</h3><p>Flip 5M for scalps or 30D for conviction. The whole board re-sorts instantly — the timeframe is the trigger discipline.</p></div>
-    <div class="shot reveal"><div class="ic">🏹</div><div class="n">SHOT 03</div><h3>LOOSE</h3><p>One atomic transaction: 0.25% fee peeled pre-swap to a frozen wallet, the rest swapped. Wallet mode or send-ETH mode. Tokens land in your address.</p></div>
+    <div class="shot reveal"><div class="ic">🏹</div><div class="n">SHOT 03</div><h3>LOOSE</h3><p>Quote from Uniswap v3, set your slippage, sign. 0.25% fee to a frozen wallet, the rest swapped. Connected wallet or in-browser burner. Tokens land in your address.</p></div>
   </div>
 
   <div class="tfrow" id="tfrow">
@@ -322,7 +344,12 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
     <div class="tfchip" data-tf="24H"><div class="t">24H</div><div class="s">DAILY LEADERS</div></div>
     <div class="tfchip" data-tf="30D"><div class="t">30D</div><div class="s">CONVICTION</div></div>
   </div>
-  <div id="tfReadout">> RANKING BY 1H VOLUME · TOP TARGET: $TENDIE · $288.0K</div>
+  <div id="tfReadout">> SCANNING ROBINHOOD CHAIN…</div>
+  <div class="liveboard" id="liveBoard"></div>
+  <div class="lbfoot">
+    <span id="lbAge">live from the same feed the terminal uses</span>
+    <a class="lbcta" href="./app.html">OPEN TERMINAL →</a>
+  </div>
 </section>
 
 <!-- ============ FEE ============ -->
@@ -394,7 +421,7 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
     <a href="./quivr-paper.pdf" target="_blank" rel="noopener" style="font-family:var(--mono);font-size:11px;color:var(--green);text-decoration:none;border:1px solid var(--line);padding:9px 16px;border-radius:99px;letter-spacing:.1em">📄 THE QUIVR PAPER</a>
     <a href="./app.html" style="font-family:var(--mono);font-size:11px;color:var(--green);text-decoration:none;border:1px solid var(--line);padding:9px 16px;border-radius:99px;letter-spacing:.1em">🏹 LAUNCH APP</a>
   </div>
-  <p class="disc">Trading memecoins involves total-loss risk. Trending volume is not a signal of quality. The 0.25% fee is non-refundable on transaction failure. Not investment advice. HoodSnipr is an independent platform and is not affiliated with, endorsed by, or connected to Robinhood Markets, Inc.; "Robinhood Chain" identifies only the network on which the platform operates. Verify every transaction in your wallet before signing.</p>
+  <p class="disc">Live market data from GeckoTerminal and DexScreener. Trading memecoins involves total-loss risk. Trending volume is not a signal of quality. The 0.25% fee is non-refundable on transaction failure. Not investment advice. HoodSnipr is an independent platform and is not affiliated with, endorsed by, or connected to Robinhood Markets, Inc.; "Robinhood Chain" identifies only the network on which the platform operates. Verify every transaction in your wallet before signing.</p>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
@@ -409,7 +436,7 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
   var lines = [
     "INITIALIZING SCOPE …",
     "LINKING ROBINHOOD CHAIN RPC … OK",
-    "CALIBRATING 5M · 1H · 24H · 30D …",
+    "PULLING LIVE POOLS · 5M · 1H · 24H · 30D …",
     "FEE ROUTE FROZEN @ 25BPS … OK",
     "SCOPE READY. HAPPY HUNTING."
   ];
@@ -491,42 +518,175 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
     toggle.style.display = 'none';
   }
 
-  /* ---------- ticker tape ---------- */
-  var toks = [
-    ["POUCH", 0.004182, 31.4], ["FEATHR", 0.01821, 22.7], ["HOODIE", 0.1204, 14.2],
-    ["TENDIE", 0.000914, 74.9], ["VLADCH", 0.00276, 8.8], ["STONK", 0.0691, -12.1],
-    ["YOLO", 0.00033, 19.5], ["DMND", 0.2488, 6.3], ["QUIVR", "TGE SOON", null]
-  ];
-  var tape = document.getElementById('tape');
-  var html = '';
-  for (var pass = 0; pass < 2; pass++) {
-    toks.forEach(function(t){
-      if (t[2] === null) { html += '<span>$' + t[0] + ' <b style="color:#FFD166">' + t[1] + '</b> 🏹</span>'; return; }
-      var up = t[2] >= 0;
-      html += '<span>$' + t[0] + ' <b>' + (t[1] < 0.01 ? t[1].toFixed(6) : t[1].toFixed(4)) + '</b> <span class="' + (up ? 'u' : 'd') + '">' + (up ? '▲' : '▼') + Math.abs(t[2]).toFixed(1) + '%</span></span>';
+  /* ---------- LIVE DATA (same shared edge cache the terminal uses) ---------- */
+  var API = "/.netlify/functions";
+  var GT = "https://api.geckoterminal.com/api/v2", GT_NET = "robinhood";
+  var WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
+  var STABLES = ["USDC","USDT","USDG","DAI","USDE","FDUSD","USD1","PYUSD","TUSD","USDS","GHO","FRAX","LUSD","BUSD"];
+  var ETHISH = ["WETH","ETH","WSTETH","STETH","RETH","CBETH","EZETH","WEETH"];
+  var STOCKS = ["AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","GOOG","META","AMD","NFLX","COIN","HOOD","SPY","QQQ","PLTR","MSTR","GME","AMC","INTC","JPM","V","MA","DIS","BA","XOM","WMT","KO","PFE","T","F","NIO","BABA","SOFI","RIVN","LCID","CRCL","UNH","LLY","AVGO","ORCL","CRM","ADBE","ABNB","UBER","SHOP","PYPL","SNAP","RDDT","SMCI","ARM","MU","QCOM","TSM","IBIT","GLD","SLV","VOO","VTI"];
+  var live = { pools: [], tf: "1H", ts: 0 };
+  var TFKEY = { "5M":"m5", "1H":"h1", "24H":"h24", "30D":"h24" };
+
+  function fUsd(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return"$"+(n/1e9).toFixed(2)+"B"; if(n>=1e6)return"$"+(n/1e6).toFixed(2)+"M"; if(n>=1e3)return"$"+(n/1e3).toFixed(1)+"K"; return "$"+(+n).toFixed(0); }
+  function fPx(p){ p=+p; if(!isFinite(p))return"—"; if(p>=1)return p.toFixed(3); if(p>=0.01)return p.toFixed(4); if(p>=1e-6)return p.toFixed(7); return p.toExponential(2); }
+  function esc(x){ return String(x==null?"":x).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+  function keep(p){
+    var sym=(p.sym||"").toUpperCase();
+    if(p.baseToken && p.baseToken.toLowerCase()===WETH) return false;
+    if(ETHISH.indexOf(sym)>=0 || STABLES.indexOf(sym)>=0 || STABLES.indexOf(sym.replace(/^W/,""))>=0) return false;
+    var base = /x$/.test(p.sym||"") ? sym.slice(0,-1) : sym;
+    if(STOCKS.indexOf(base)>=0) return false;
+    if(/xstock|tokenized|\betf\b|\bequity\b/i.test((p.name||"")+" "+(p.fullName||""))) return false;
+    return (p.h24>0||p.h1>0||p.m5>0) && p.liq>500;
+  }
+  function fromGT(j, out, seen){
+    var inc={};
+    (j.included||[]).forEach(function(t){ if(t.type==="token") inc[t.id]={img:(t.attributes||{}).image_url||null,sym:(t.attributes||{}).symbol||null,name:(t.attributes||{}).name||null}; });
+    (j.data||[]).forEach(function(p){
+      var a=p.attributes||{}, id=(a.address||"").toLowerCase(); if(!id||seen[id])return; seen[id]=1;
+      var v=a.volume_usd||{}, c=a.price_change_percentage||{}, rel=p.relationships||{};
+      var bt=rel.base_token&&rel.base_token.data?rel.base_token.data.id:null, m=(bt&&inc[bt])||{};
+      out.push({ pool:a.address, sym:m.sym||(a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+        name:m.name||"", fullName:a.name||"", img:(m.img&&m.img!=="missing.png")?m.img:null,
+        baseToken:bt?bt.split("_").pop():null, price:+a.base_token_price_usd||null,
+        m5:+(v.m5||0), h1:+(v.h1||0), h24:+(v.h24||0),
+        cm5:+(c.m5||0), ch1:+(c.h1||0), ch24:+(c.h24||0),
+        liq:+a.reserve_in_usd||0, mcap:+a.market_cap_usd||+a.fdv_usd||null });
     });
   }
-  tape.innerHTML = html;
+  function fromDS(pairs){
+    var out=[], seen={};
+    (pairs||[]).forEach(function(p){
+      if(!/robinhood/i.test(p.chainId||"")) return;
+      var id=(p.pairAddress||"").toLowerCase(); if(!id||seen[id])return; seen[id]=1;
+      out.push({ pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?", name:(p.baseToken||{}).name||"",
+        fullName:"", img:(p.info&&p.info.imageUrl)||null, baseToken:(p.baseToken||{}).address||null,
+        price:+p.priceUsd||null,
+        m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
+        cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+        liq:+(p.liquidity&&p.liquidity.usd||0), mcap:+p.marketCap||+p.fdv||null });
+    });
+    return out;
+  }
+  async function pullMarket(){
+    var gtOut=[], seen={}, dsOut=[];
+    try{
+      var r=await fetch(API+"/market");
+      if(r.ok){
+        var pay=await r.json();
+        (pay.gtPages||[]).forEach(function(pg){ fromGT(pg,gtOut,seen); });
+        dsOut=fromDS(pay.dsPairs||[]);
+      } else throw 0;
+    }catch(e){
+      // direct fallback so the page still lives on a plain static host
+      try{
+        var a=await fetch(GT+"/networks/"+GT_NET+"/trending_pools?page=1&include=base_token");
+        if(a.ok) fromGT(await a.json(), gtOut, seen);
+        var b=await fetch(GT+"/networks/"+GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token");
+        if(b.ok) fromGT(await b.json(), gtOut, seen);
+      }catch(e2){}
+    }
+    var map={};
+    gtOut.forEach(function(p){ map[(p.baseToken||p.pool||"").toLowerCase()]=p; });
+    dsOut.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase();
+      if(map[k]){ if(!map[k].img)map[k].img=p.img; if(!map[k].mcap)map[k].mcap=p.mcap; }
+      else map[k]=p; });
+    var all=Object.keys(map).map(function(k){return map[k]}).filter(keep);
+    if(all.length){ live.pools=all; live.ts=Date.now(); }
+    return live.pools;
+  }
+  function avatar(sym){
+    var ch=(sym||"?").charAt(0).toUpperCase();
+    var c=document.createElement("canvas"); c.width=c.height=56;
+    var g=c.getContext("2d");
+    g.fillStyle="#141920"; g.beginPath(); g.arc(28,28,28,0,6.2832); g.fill();
+    g.strokeStyle="#00C805"; g.lineWidth=2.5; g.beginPath(); g.arc(28,28,26,0,6.2832); g.stroke();
+    g.fillStyle="#00C805"; g.font="700 26px 'Space Grotesk',sans-serif"; g.textAlign="center"; g.textBaseline="middle";
+    g.fillText(ch,28,30);
+    return c.toDataURL();
+  }
+  document.addEventListener("error", function(e){
+    var t=e.target;
+    if(t && t.dataset && t.dataset.sym && !t.dataset.fb){ t.dataset.fb="1"; t.src=avatar(t.dataset.sym); }
+  }, true);
 
-  /* ---------- timeframe chips ---------- */
-  var tfData = {
-    "5M":  { top: "$TENDIE", vol: "$90.1K" },
-    "1H":  { top: "$YOLO",   vol: "$622.0K" },
-    "24H": { top: "$TENDIE", vol: "$8.41M" },
-    "30D": { top: "$DMND",   vol: "$98.7M" }
-  };
+  /* ---------- ticker tape (live) ---------- */
+  var tapeEl = document.getElementById('tape');
+  function renderTape(){
+    var top = live.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,14);
+    if(!top.length){ tapeEl.innerHTML='<span>CONNECTING TO ROBINHOOD CHAIN…</span>'; return; }
+    var html='';
+    for(var pass=0; pass<2; pass++){
+      top.forEach(function(t){
+        var up=t.ch24>=0;
+        html += '<span>$'+esc(t.sym)+' <b>'+fPx(t.price)+'</b> <span class="'+(up?'u':'d')+'">'+(up?'▲':'▼')+Math.abs(t.ch24).toFixed(1)+'%</span></span>';
+      });
+      html += '<span>$QUIVR <b style="color:#FFD166">TGE SOON</b> 🏹</span>';
+    }
+    tapeEl.innerHTML = html;
+  }
+
+  /* ---------- live mini board + timeframe chips ---------- */
+  var boardEl = document.getElementById('liveBoard');
   var readout = document.getElementById('tfReadout');
+  function volOf(p){ return p[TFKEY[live.tf]] || 0; }
+  function chgOf(p){ return live.tf==="5M"?p.cm5 : live.tf==="1H"?p.ch1 : p.ch24; }
+  function renderBoard(){
+    if(!live.pools.length){ boardEl.innerHTML='<div class="lbskel"></div><div class="lbskel"></div><div class="lbskel"></div>'; return; }
+    var rows=live.pools.slice().sort(function(a,b){return volOf(b)-volOf(a)}).slice(0,5);
+    boardEl.innerHTML = rows.map(function(p,i){
+      var c=chgOf(p), up=c>=0;
+      return '<a class="lbrow" href="./app.html">'
+        +'<span class="r'+(i<3?' top':'')+'">'+String(i+1).padStart(2,'0')+'</span>'
+        +'<img src="'+(p.img?esc(p.img):avatar(p.sym))+'" data-sym="'+esc(p.sym)+'" alt="" loading="lazy">'
+        +'<span class="t"><b>$'+esc(p.sym)+'</b><span>MC '+fUsd(p.mcap)+'</span></span>'
+        +'<span class="px">$'+fPx(p.price)+'<span class="c '+(up?'u':'d')+'"> '+(up?'+':'')+(+c).toFixed(1)+'%</span></span>'
+        +'<span class="vv">'+fUsd(volOf(p))+'<small>VOL '+live.tf+'</small></span>'
+        +'</a>';
+    }).join('');
+    var age=live.ts? Math.round((Date.now()-live.ts)/1000)+'s ago' : '';
+    var lb=document.getElementById('lbAge');
+    if(lb) lb.textContent = 'live · '+live.pools.length+' tokens tracked · updated '+age;
+  }
+  function typeOut(msg){
+    if(reduced){ readout.textContent=msg; return; }
+    var i=0; readout.textContent='';
+    (function tw(){ if(i<=msg.length){ readout.textContent=msg.slice(0,i++); setTimeout(tw,10); } })();
+  }
+  function updateReadout(){
+    var rows=live.pools.slice().sort(function(a,b){return volOf(b)-volOf(a)});
+    if(!rows.length){ typeOut('> SCANNING ROBINHOOD CHAIN…'); return; }
+    var t=rows[0];
+    typeOut('> RANKING BY '+live.tf+' VOLUME · TOP TARGET: $'+t.sym+' · '+fUsd(volOf(t)));
+  }
   document.querySelectorAll('.tfchip').forEach(function(chip){
     chip.addEventListener('click', function(){
       document.querySelectorAll('.tfchip').forEach(function(c){ c.classList.remove('on'); });
       chip.classList.add('on');
-      var tf = chip.getAttribute('data-tf'), d = tfData[tf];
-      var msg = "> RANKING BY " + tf + " VOLUME · TOP TARGET: " + d.top + " · " + d.vol;
-      if (reduced) { readout.textContent = msg; return; }
-      var i = 0; readout.textContent = "";
-      (function tw(){ if (i <= msg.length) { readout.textContent = msg.slice(0, i++); setTimeout(tw, 10); } })();
+      live.tf = chip.getAttribute('data-tf');
+      renderBoard(); updateReadout();
     });
   });
+
+  /* ---------- hero stat ---------- */
+  function renderHero(){
+    var el=document.getElementById('heroStat'); if(!el) return;
+    if(!live.pools.length){ el.textContent='connecting to the chain…'; return; }
+    var v24=live.pools.reduce(function(a,p){return a+(p.h24||0)},0);
+    el.textContent = live.pools.length+' TOKENS TRACKED · '+fUsd(v24)+' 24H VOLUME';
+  }
+
+  async function tick(){
+    if(document.hidden) return;
+    await pullMarket();
+    renderTape(); renderBoard(); renderHero();
+    if(!readout.dataset.seeded){ readout.dataset.seeded="1"; updateReadout(); }
+  }
+  renderBoard();
+  tick();
+  setInterval(tick, 20000);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) tick(); });
 
   /* ---------- fee calculator ---------- */
   var range = document.getElementById('ethRange');
