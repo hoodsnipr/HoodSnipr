@@ -405,7 +405,7 @@ async function fetchMarket(){
         (pay.gtPages||[]).forEach(function(pg){ parseGTPage(pg, gtOut, seen); });
         var dsOut=parseDSPairs(pay.dsPairs||[], null);
         if(pay.ethUsd>0) state.ethUsd=pay.ethUsd;
-        if(pay.stats) state.chain=pay.stats;
+        if(pay.stats && !state.chainAuthoritative) state.chain=Object.assign({},pay.stats,state.chain||{});
         return { gt:gtOut, ds:dsOut, viaProxy:true };
       }
       throw 0;
@@ -460,8 +460,8 @@ function mergePools(gtP, dsP){
     else map[k]=p;
   });
   return Object.keys(map).map(function(k){return map[k]})
-    .filter(function(p){return p.h24>0 || p.h1>0 || p.m5>0})
-    .filter(function(p){return p.liq>500})       // dust-pool floor
+    .filter(function(p){return (p.h24>0||p.h6>0||p.h1>0||p.m5>0) || p.liq>2000})
+    .filter(function(p){return p.liq>100})       // dust floor, low enough to keep real long-tail
     .filter(function(p){return !isStable(p)})    // no stablecoins
     .filter(function(p){return !isStock(p)})     // no tokenized stocks/ETFs
     .filter(function(p){return !isEthLike(p)});  // no ETH/WETH/LSTs — that's the ammo, not the target
@@ -530,27 +530,45 @@ function fmtNum(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return (n/1e9).t
 // are used only when they're larger (deeper coverage) — the bar can never sit
 // empty just because a function hasn't warmed up.
 function localStats(){
-  var vol=0, tx=0, liq=0, toks={};
-  var all=(state.pools||[]).concat(state.newPools||[]);
-  var seen={};
-  all.forEach(function(p){
+  var vol=0, liq=0, toks={}, seen={};
+  (state.pools||[]).forEach(function(p){
     var k=(p.pool||"").toLowerCase(); if(!k||seen[k])return; seen[k]=1;
     vol+=(+p.h24||0); liq+=(+p.liq||0);
-    if(p.txns24!=null) tx+=(+p.txns24||0);
     if(p.baseToken) toks[p.baseToken.toLowerCase()]=1;
   });
-  return { vol24:vol, txns24:tx, liq:liq, tokenCount:Object.keys(toks).length };
+  return { vol24:vol, liq:liq, tokenCount:Object.keys(toks).length, pools:Object.keys(seen).length };
+}
+// Chain stats come from ONE authoritative place (the /chainstats function:
+// Blockscout for real chain-wide txns, RPC for block height, server-computed
+// DEX totals). Local aggregation is only a cold-start placeholder, and a
+// thin poll can never drag the numbers down — that was the flip-flop.
+async function pullChainStats(){
+  try{
+    var r=await fetch(CFG.API+"/chainstats");
+    if(!r.ok) throw 0;
+    var c=await r.json();
+    if(c && (c.block||c.txns24||c.vol24)){ state.chain=c; state.chainAuthoritative=true; renderChainBar(); return; }
+  }catch(e){}
+  state.chainAuthoritative=false;
 }
 function renderChainBar(){
-  var c=state.chain||{}, l=localStats();
-  var vol=Math.max(c.vol24||0, l.vol24), tx=Math.max(c.txns24||0, l.txns24),
-      liq=Math.max(c.liq||0, l.liq), n=Math.max(c.tokenCount||0, l.tokenCount);
-  var e;
-  if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "—";
-  if((e=$("#cbTx")))  e.textContent = tx>0? fmtNum(tx) : (n?"—":"—");
-  if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "—";
-  if((e=$("#cbBlk"))){ e.className="v blk"; e.textContent = state.block? "#"+state.block.toLocaleString() : "—"; }
-  var t=$("#cbTokens"); if(t) t.textContent = n? n.toLocaleString() : "—";
+  var c=state.chain||{}, l=localStats(), e;
+  // never regress a good reading to a worse one within a session
+  var best=state.bestStats||(state.bestStats={});
+  var vol = c.vol24!=null? c.vol24 : l.vol24;
+  var liq = c.liq!=null? c.liq : l.liq;
+  var n   = c.tokenCount!=null? c.tokenCount : l.tokenCount;
+  if(!state.chainAuthoritative){
+    // cold start: hold the high-water mark so the bar doesn't jitter
+    if(vol>(best.vol||0)) best.vol=vol; else vol=best.vol||vol;
+    if(liq>(best.liq||0)) best.liq=liq; else liq=best.liq||liq;
+    if(n>(best.n||0)) best.n=n; else n=best.n||n;
+  }
+  if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "…";
+  if((e=$("#cbTx")))  e.textContent = c.txns24>0? fmtNum(c.txns24) : "…";
+  if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
+  if((e=$("#cbTokens"))) e.textContent = n>0? n.toLocaleString() : "…";
+  if((e=$("#cbBlk"))) e.textContent = state.block? "#"+state.block.toLocaleString() : (c.block? "#"+c.block.toLocaleString() : "…");
 }
 // block height straight from chain RPC — always available, never proxy-dependent
 async function pollBlock(){
@@ -681,7 +699,10 @@ function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCa
 var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
 function renderPager(total, pages){
   var el=$("#pager"); if(!el)return;
-  if(total<=PAGE_SIZE){ el.innerHTML=""; return; }
+  if(total<=PAGE_SIZE){
+    el.innerHTML='<span class="pinfo">showing all '+total+' tracked token'+(total===1?"":"s")+'</span>';
+    return;
+  }
   var start=state.page*PAGE_SIZE+1, end=Math.min(total,(state.page+1)*PAGE_SIZE);
   var h='<button data-action="page" data-p="'+(state.page-1)+'"'+(state.page===0?" disabled":"")+'>← PREV</button>'
    +'<span class="pinfo">'+start+'–'+end+' of '+total+' · page '+(state.page+1)+'/'+pages+'</span>'
@@ -1093,9 +1114,10 @@ async function connect(){
     save("hs_connected", 1); save("hs_addr", state.wallet);
     var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
     renderWallets();
-    var isNew = !state.profile;
-    if(isNew){ state.profile={ name:"", x:"", pfp:null }; save("hs_profile", state.profile); }
-    toast(isNew?"Signed up · profile created 🪪":"Connected · Robinhood Chain");
+    await loadRemoteProfile();   // an existing profile for this address wins
+    var isNew = !state.profile || (!state.profile.name && !state.profile.x);
+    if(!state.profile){ state.profile={ name:"", x:"", pfp:null }; save("hs_profile", state.profile); }
+    toast(isNew?"Signed up · profile created 🪪":"Welcome back"+(state.profile.name?", "+state.profile.name:"")+" 🏹");
     if(isNew) openProfile();
     syncLeaderboard();
   }catch(e){ toast(e.message||"Connect failed", true); }
@@ -1170,7 +1192,7 @@ function openProfile(){
   renderProfile(); renderPnl();
 }
 function renderWMenu(open){
-  var m=$("#wmenu");
+  var m=$("#wmenu"); if(!m) return;
   if(!state.wallet || !open){ m.innerHTML=""; return; }
   var pr=state.profile||{};
   m.innerHTML='<div class="wmenu">'
@@ -1762,6 +1784,24 @@ $("#tfpills").addEventListener("click",function(e){
   if(state.tf==="d30") ensure30d();
 });
 
+async function loadRemoteProfile(){
+  if(!state.wallet) return;
+  try{
+    var r=await fetch(CFG.API+"/profile?addr="+state.wallet);
+    if(!r.ok) return;
+    var p=await r.json();
+    if(p && (p.name||p.x||p.pfp)){
+      // remote wins for identity fields; keep any local pfp if remote has none
+      state.profile=Object.assign({}, state.profile||{}, {
+        name:p.name||((state.profile||{}).name||""),
+        x:p.x||((state.profile||{}).x||""),
+        pfp:p.pfp||((state.profile||{}).pfp||null)
+      });
+      save("hs_profile", state.profile);
+      renderWMenu(false); renderProfile();
+    }
+  }catch(e){}
+}
 function autoReconnect(){
   // Session restore is PURELY LOCAL: no eth_accounts, no provider creation,
   // no request of any kind at boot. Mobile in-app wallets (MetaMask mobile,
@@ -1772,7 +1812,7 @@ function autoReconnect(){
   if(!load("hs_connected", null) || !addr) return;   // never connected → do nothing
   try{ state.wallet = ethers.getAddress(addr); }catch(e){ return; }
   var b=$("#walletBtn"); b.textContent=short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
-  renderWallets(); syncLeaderboard();
+  renderWallets(); syncLeaderboard(); loadRemoteProfile();
   // provider + signatures happen lazily at the first snipe/loose/profile-save
 }
 
@@ -1803,6 +1843,7 @@ document.addEventListener("visibilitychange", function(){ if(!document.hidden) r
 fetchEthUsd(); refresh(); pollBlock();
 setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
 setInterval(function(){ if(!document.hidden) pollBlock(); }, 5000);
+pullChainStats(); setInterval(function(){ if(!document.hidden) pullChainStats(); }, 20000);
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
 setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
 setInterval(function(){ var vn=$("#v-new"); if(vn && vn.style.display!=="none") refreshNew(true); }, 45000);
