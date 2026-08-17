@@ -43,7 +43,33 @@ body::before{
   pointer-events:none;z-index:95;opacity:0;transition:opacity .4s;
   will-change:transform;
 }
-#reticle.on{opacity:.85}
+#reticle.on{opacity:.95}
+
+/* native cursor hidden only on real pointers — the reticle IS the cursor */
+@media (pointer:fine){
+  body.scoped, body.scoped *{cursor:none}
+  /* keep a real cursor where precision or text entry matters */
+  body.scoped input, body.scoped textarea, body.scoped select{cursor:auto}
+  body.scoped input[type=range]{cursor:pointer}
+}
+/* exact-position center dot — zero lag, this is what you actually aim with */
+#dot{
+  position:fixed;top:0;left:0;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:99px;
+  background:var(--green);box-shadow:0 0 8px var(--green-glow);
+  pointer-events:none;z-index:97;opacity:0;transition:opacity .3s,width .12s,height .12s,margin .12s;
+  will-change:transform;
+}
+#dot.on{opacity:1}
+#dot.hot{width:13px;height:13px;margin:-6.5px 0 0 -6.5px;background:var(--gold);box-shadow:0 0 12px rgba(255,209,102,.6)}
+/* cursor toggle — escape hatch, bottom-right of HUD */
+#cursorToggle{
+  position:fixed;bottom:34px;right:16px;z-index:93;background:transparent;
+  border:1px solid var(--line);color:var(--mute);border-radius:99px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;padding:6px 11px;opacity:.5;
+  transition:opacity .2s,border-color .2s,color .2s;
+}
+#cursorToggle:hover{opacity:1;border-color:var(--green);color:var(--green)}
+@media (pointer:coarse){#cursorToggle{display:none}}
 #reticle svg{width:100%;height:100%;filter:drop-shadow(0 0 6px var(--green-glow))}
 #reticle .rr{transform-origin:center;animation:spin 14s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -224,6 +250,8 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
   </svg>
   <div id="retLabel">TRACKING</div>
 </div>
+<div id="dot" aria-hidden="true"></div>
+<button id="cursorToggle" type="button" aria-label="Toggle mouse cursor visibility">CURSOR: HIDDEN</button>
 
 <!-- HUD -->
 <div class="hud" id="hudTL">HOODSNIPR <b>v0.1</b></div>
@@ -399,21 +427,68 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
   /* ---------- cursor reticle ---------- */
   var ret = document.getElementById('reticle');
   var retLabel = document.getElementById('retLabel');
+  var dot = document.getElementById('dot');
+  var toggle = document.getElementById('cursorToggle');
   var fine = window.matchMedia('(pointer: fine)').matches;
+
   if (fine && !reduced) {
     var rx = innerWidth/2, ry = innerHeight/2, tx = rx, ty = ry;
-    document.addEventListener('mousemove', function(e){ tx = e.clientX; ty = e.clientY; ret.classList.add('on'); });
-    document.addEventListener('mouseleave', function(){ ret.classList.remove('on'); });
+
+    /* The native cursor is hidden and the scope replaces it. Two layers:
+       the outer rings LERP (that's the "settling optic" feel), the center dot
+       tracks EXACTLY. You aim with the dot, so nothing ever feels laggy. */
+    var scoped = true;
+    function setScoped(on){
+      scoped = on;
+      document.body.classList.toggle('scoped', on);
+      toggle.textContent = on ? 'CURSOR: HIDDEN' : 'CURSOR: SHOWN';
+      toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+      if (!on) { ret.classList.remove('on'); dot.classList.remove('on'); }
+    }
+    setScoped(true);
+
+    document.addEventListener('mousemove', function(e){
+      tx = e.clientX; ty = e.clientY;
+      // exact position — no smoothing, this is the real pointer
+      dot.style.transform = 'translate(' + tx + 'px,' + ty + 'px)';
+      if (scoped) { ret.classList.add('on'); dot.classList.add('on'); }
+    }, { passive: true });
+
+    document.addEventListener('mouseleave', function(){ ret.classList.remove('on'); dot.classList.remove('on'); });
+    document.addEventListener('mouseenter', function(){ if (scoped) { ret.classList.add('on'); dot.classList.add('on'); } });
+    // never trap someone with an invisible cursor while a dialog/print/tab-switch is up
+    window.addEventListener('blur', function(){ ret.classList.remove('on'); dot.classList.remove('on'); });
+
     (function loop(){
-      rx += (tx - rx) * 0.14; ry += (ty - ry) * 0.14;
+      rx += (tx - rx) * 0.22; ry += (ty - ry) * 0.22;
       ret.style.transform = 'translate(' + rx + 'px,' + ry + 'px)';
       requestAnimationFrame(loop);
     })();
+
+    // recoil on click — the scope kicks
+    document.addEventListener('mousedown', function(){ if (scoped) ret.style.scale = '0.86'; });
+    document.addEventListener('mouseup',   function(){ ret.style.scale = '1'; });
+
     // reticle reacts to targets
     document.querySelectorAll('a, button, .tier, .tfchip, .shot').forEach(function(el){
-      el.addEventListener('mouseenter', function(){ retLabel.textContent = 'TARGET ACQUIRED'; retLabel.style.color = '#FFD166'; ret.style.filter='drop-shadow(0 0 10px rgba(0,200,5,.6))'; });
-      el.addEventListener('mouseleave', function(){ retLabel.textContent = 'TRACKING'; retLabel.style.color = ''; ret.style.filter=''; });
+      el.addEventListener('mouseenter', function(){
+        retLabel.textContent = 'TARGET ACQUIRED'; retLabel.style.color = '#FFD166';
+        ret.style.filter = 'drop-shadow(0 0 10px rgba(0,200,5,.6))'; dot.classList.add('hot');
+      });
+      el.addEventListener('mouseleave', function(){
+        retLabel.textContent = 'TRACKING'; retLabel.style.color = '';
+        ret.style.filter = ''; dot.classList.remove('hot');
+      });
     });
+
+    // escape hatches: the toggle button, or press Esc
+    toggle.addEventListener('click', function(){ setScoped(!scoped); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') setScoped(false); });
+    // any keyboard navigation restores the cursor — never fight assistive input
+    document.addEventListener('keydown', function(e){ if (e.key === 'Tab') setScoped(false); });
+
+  } else if (toggle) {
+    toggle.style.display = 'none';
   }
 
   /* ---------- ticker tape ---------- */
