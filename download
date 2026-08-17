@@ -1,0 +1,36 @@
+# deps
+node_modules/
+package-lock.json
+yarn.lock
+
+# env & secrets — NEVER commit these
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+wallet.json
+mnemonic.txt
+
+# build output
+dist/
+build/
+.cache/
+.parcel-cache/
+
+# platform
+.netlify/
+.vercel/
+.wrangler/
+
+# os / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*~
+
+# logs
+*.log
+npm-debug.log*
