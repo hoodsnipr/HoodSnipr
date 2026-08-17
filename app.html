@@ -547,6 +547,44 @@ async function enrichSocials(p){
   }catch(e){}
   return p;
 }
+// background socials loader for LIST rows: GT token info, one call per ~2.4s,
+// cached 24h (incl. "tried, none found"), paused while the 30D ranger runs so
+// the two never fight over GeckoTerminal's free-tier rate limit.
+var socQueue=[], socRunning=false;
+function queueSocials(rows){
+  var now=Date.now();
+  rows.forEach(function(p){
+    if(!p.baseToken) return;
+    if(p.site||p.tw||p.tg) return;
+    var k=p.baseToken.toLowerCase(), m=meta[k];
+    if(m && (m.site||m.tw||m.tg)) return;                    // cached hit
+    if(m && m.sT && now-m.sT < 24*3600e3) return;            // cached miss
+    if(socQueue.indexOf(k)<0) socQueue.push(k);
+  });
+  runSocQueue();
+}
+async function runSocQueue(){
+  if(socRunning) return; socRunning=true;
+  while(socQueue.length){
+    if(state.d30Loading){ await new Promise(function(r){setTimeout(r,3000)}); continue; }
+    var k=socQueue.shift();
+    try{
+      var j=await gt("/networks/"+CFG.GT_NET+"/tokens/"+k+"/info");
+      var a=((j.data||{}).attributes)||{};
+      var site=(a.websites&&a.websites[0])||null;
+      var tw=a.twitter_handle? "https://x.com/"+a.twitter_handle : null;
+      var tg=a.telegram_handle? "https://t.me/"+a.telegram_handle : null;
+      meta[k]=Object.assign({},meta[k],{site:site,tw:tw,tg:tg,sT:Date.now()});
+      save("hs_meta",meta);
+      if(site||tw||tg){
+        var fake={baseToken:k,site:site,tw:tw,tg:tg};
+        document.querySelectorAll('[data-soc="'+k+'"]').forEach(function(el){ el.innerHTML=socialLinks(fake,12); });
+      }
+    }catch(e){ meta[k]=Object.assign({},meta[k],{sT:Date.now()}); }
+    await new Promise(function(r){setTimeout(r,2400)});
+  }
+  socRunning=false;
+}
 function socialLinks(p, size){
   var m=metaOf(p)||{};
   var site=p.site||m.site, tw=p.tw||m.tw, tg=p.tg||m.tg;
@@ -576,8 +614,8 @@ function renderBoard(){
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
       +'<div class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
-      +'<div class="tok"><div class="s">$'+esc(p.sym)+socialLinks(p,12)+'</div>'
-      +'<div class="n">MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span> · '+esc(p.dex||p.src)+'</div></div>'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
+      +'<div class="n">MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -585,6 +623,7 @@ function renderBoard(){
   });
   el.innerHTML=h;
   enrichHolders(rows);
+  queueSocials(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
   $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
 }
@@ -647,7 +686,7 @@ function renderNew(){
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
       +'<div class="rank">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
-      +'<div class="tok"><div class="s">$'+esc(p.sym)+socialLinks(p,12)+'</div>'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
       +'<div class="n">🐣 '+ageStr(p.created)+' · MC '+fmtUsd(p.mcap)+' · LIQ '+fmtUsd(p.liq)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(p.h1)+'</div><div class="k">VOL 1H</div></div>'
@@ -657,6 +696,7 @@ function renderNew(){
   el.innerHTML=h;
   var na=$("#newAge"); if(na) na.textContent=state.newTs? Math.round((Date.now()-state.newTs)/1000)+"s ago":"";
   enrichHolders(state.newPools.slice(0,25));
+  queueSocials(state.newPools.slice(0,25));
 }
 
 // ================= TOKEN MODAL + SNIPE =================
@@ -675,7 +715,7 @@ function openToken(poolAddr){
    +'<div class="mhead"><div style="display:flex;gap:11px;align-items:center">'
    +'<img class="timg lg" alt="" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
    +'<div><h2>$'+esc(p.sym)+' <span style="font-size:12px;color:var(--mute)">'+esc(p.tokenName||p.fullName)+'</span></h2>'
-   +'<div class="px">$'+fmtP(p.price)+' · <span class="'+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'% 24H</span> · '+esc(p.dex||"")+'</div></div></div>'
+   +'<div class="px">$'+fmtP(p.price)+' · <span class="'+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'% 24H</span></div></div></div>'
    +'<button class="x" data-action="close">✕</button></div>'
    +'<iframe class="chart" src="'+gtEmbed+'" title="Live chart — GeckoTerminal" loading="lazy"></iframe>'
    +'<div class="mstats">'
