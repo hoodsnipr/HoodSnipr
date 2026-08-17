@@ -159,6 +159,7 @@ canvas.share{display:none}
 
 <div class="tabs" id="tabs">
   <button class="tab on" data-tab="board">🎯 Trending</button>
+  <button class="tab" data-tab="new">🆕 New</button>
   <button class="tab" data-tab="port">💼 Portfolio</button>
   <button class="tab" data-tab="wallet">👝 Wallets</button>
   <button class="tab" data-tab="ranks">🏆 Ranks</button>
@@ -178,6 +179,13 @@ canvas.share{display:none}
     </div>
     <div class="board" id="board"></div>
     <div class="note">Live pool data merged from GeckoTerminal + DexScreener for Robinhood Chain (4663). Refreshes ~30s.<br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
+  </div>
+
+  <!-- ============ NEW LAUNCHES ============ -->
+  <div id="v-new" style="display:none">
+    <div class="tfbar"><div class="src">LAUNCHED IN THE LAST HOUR · ROBINHOOD CHAIN</div><div class="src" id="newAge"></div></div>
+    <div class="board" id="newBoard"></div>
+    <div class="note">Fresh pools from GeckoTerminal, same stock/stable/ETH filters. Brand-new tokens are the highest-risk trades on any chain — most go to zero, many are rugs. Snipe accordingly.</div>
   </div>
 
   <!-- ============ PORTFOLIO ============ -->
@@ -266,6 +274,7 @@ var CFG = {
   API: "/.netlify/functions",
   // Board filters — tokenized stocks + stablecoins are not snipe targets.
   FILTERS: {
+    ethSyms: ["WETH","ETH","WSTETH","STETH","RETH","CBETH","EZETH","WEETH","METH","OETH","FRXETH","SFRXETH"],
     stableSyms: ["USDC","USDT","USDG","DAI","USDE","FDUSD","USD1","PYUSD","TUSD","USDS","GHO","FRAX","LUSD","BUSD","USDB","WUSD"],
     stockSyms: ["AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","GOOG","META","AMD","NFLX","COIN","HOOD","SPY","QQQ","PLTR","MSTR","GME","AMC","INTC","BRK","JPM","V","MA","DIS","BA","XOM","WMT","KO","PFE","T","F","NIO","BABA","SOFI","RIVN","LCID","CRCL","OPEN","UNH","LLY","AVGO","ORCL","CRM","ADBE","ABNB","UBER","SHOP","SQ","PYPL","SNAP","RDDT","DJT","SMCI","ARM","MU","QCOM","TSM","ASML","NVO","SPOT","RBLX","DKNG","MARA","RIOT","CLSK","IBIT","GLD","SLV","TLT","VOO","VTI","IWM","DIA"],
     stockDexes: ["nado"],                 // stock-token DEXs by GT dex id — extend as you spot them
@@ -336,6 +345,8 @@ async function fetchGTPools(){
           m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
           cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
           liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
+          mcap:+a.market_cap_usd||+a.fdv_usd||null,
+          created:a.pool_created_at||null,
           src:"GT", dex: rel.dex&&rel.dex.data ? rel.dex.data.id : "", dsUrl:null
         });
       });
@@ -376,6 +387,11 @@ async function fetchDSPools(){
         m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
         cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
         liq:+(p.liquidity&&p.liquidity.usd||0), fdv:+p.fdv||null,
+        mcap:+p.marketCap||+p.fdv||null,
+        created:p.pairCreatedAt? new Date(p.pairCreatedAt).toISOString() : null,
+        site:(p.info&&p.info.websites&&p.info.websites[0]&&p.info.websites[0].url)||null,
+        tw:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="twitter"}).map(function(so){return so.url})[0]||null,
+        tg:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="telegram"}).map(function(so){return so.url})[0]||null,
         src:"DS", dex:p.dexId||"", dsUrl:p.url||null
       });
     });
@@ -390,14 +406,21 @@ function mergePools(gtP, dsP){
     var k=(p.baseToken||p.pool||"").toLowerCase();
     if(map[k]){ map[k].dsUrl=p.dsUrl; map[k].src="GT+DS";
       if(!map[k].price&&p.price)map[k].price=p.price;
-      if(!map[k].img&&p.img)map[k].img=p.img; }
+      if(!map[k].img&&p.img)map[k].img=p.img;
+      if(!map[k].mcap&&p.mcap)map[k].mcap=p.mcap;
+      if(!map[k].site)map[k].site=p.site; if(!map[k].tw)map[k].tw=p.tw; if(!map[k].tg)map[k].tg=p.tg; }
     else map[k]=p;
   });
   return Object.keys(map).map(function(k){return map[k]})
     .filter(function(p){return p.h24>0 || p.h1>0 || p.m5>0})
     .filter(function(p){return p.liq>500})       // dust-pool floor
     .filter(function(p){return !isStable(p)})    // no stablecoins
-    .filter(function(p){return !isStock(p)});    // no tokenized stocks/ETFs
+    .filter(function(p){return !isStock(p)})     // no tokenized stocks/ETFs
+    .filter(function(p){return !isEthLike(p)});  // no ETH/WETH/LSTs — that's the ammo, not the target
+}
+function isEthLike(p){
+  if(p.baseToken && p.baseToken.toLowerCase()===CFG.UNI.weth.toLowerCase()) return true;
+  return CFG.FILTERS.ethSyms.indexOf((p.sym||"").toUpperCase())>=0;
 }
 // ---- stock / stable filters ----
 function isStable(p){
@@ -481,8 +504,63 @@ async function ensure30d(){
   if(state.tf==="d30") renderBoard();
 }
 
+// ================= TOKEN METADATA (holders + socials, cached) =================
+var meta = load("hs_meta", {});   // addr -> {h:holders, site, tw, tg, t:ts}
+function metaOf(p){ return meta[(p.baseToken||"").toLowerCase()] || null; }
+async function enrichHolders(rows){
+  // holders come from Blockscout; cheap, cached 10 min, small concurrency
+  var todo = rows.filter(function(p){
+    var m=metaOf(p); return p.baseToken && (!m || Date.now()-m.t > 10*60e3 || m.h==null);
+  }).slice(0, 25);
+  var i=0;
+  async function worker(){
+    while(i<todo.length){
+      var p=todo[i++]; var k=p.baseToken.toLowerCase();
+      try{
+        var r=await fetch(CFG.EXPLORER_API+"/tokens/"+p.baseToken);
+        if(r.ok){
+          var j=await r.json();
+          var h=parseInt(j.holders_count!=null?j.holders_count:j.holders,10);
+          meta[k]=Object.assign({},meta[k],{h:isNaN(h)?null:h,t:Date.now()});
+          var el=document.querySelector('[data-holders="'+k+'"]');
+          if(el && meta[k].h!=null) el.textContent="👥 "+meta[k].h.toLocaleString();
+        }
+      }catch(e){}
+    }
+  }
+  await Promise.all([worker(),worker(),worker(),worker()]);
+  save("hs_meta", meta);
+}
+async function enrichSocials(p){
+  // GT token info — one call, only when the modal opens
+  var k=(p.baseToken||"").toLowerCase(); var m=meta[k];
+  if(p.site||p.tw||p.tg) return p;
+  if(m && (m.site||m.tw||m.tg)){ p.site=m.site; p.tw=m.tw; p.tg=m.tg; return p; }
+  try{
+    var j=await gt("/networks/"+CFG.GT_NET+"/tokens/"+p.baseToken+"/info");
+    var a=((j.data||{}).attributes)||{};
+    p.site=(a.websites&&a.websites[0])||null;
+    p.tw=a.twitter_handle? "https://x.com/"+a.twitter_handle : null;
+    p.tg=a.telegram_handle? "https://t.me/"+a.telegram_handle : null;
+    meta[k]=Object.assign({},meta[k],{site:p.site,tw:p.tw,tg:p.tg,t:Date.now()});
+    save("hs_meta",meta);
+  }catch(e){}
+  return p;
+}
+function socialLinks(p, size){
+  var m=metaOf(p)||{};
+  var site=p.site||m.site, tw=p.tw||m.tw, tg=p.tg||m.tg;
+  var st='style="text-decoration:none;font-size:'+(size||12)+'px;margin-left:6px"';
+  var h="";
+  if(site) h+='<a '+st+' data-action="ext" href="'+esc(site)+'" target="_blank" rel="noopener" title="Website">🌐</a>';
+  if(tw)   h+='<a '+st+' data-action="ext" href="'+esc(tw)+'" target="_blank" rel="noopener" title="X">𝕏</a>';
+  if(tg)   h+='<a '+st+' data-action="ext" href="'+esc(tg)+'" target="_blank" rel="noopener" title="Telegram">✈️</a>';
+  return h;
+}
+
 // ================= BOARD =================
 function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
+var TF_LABEL={m5:"5M",h1:"1H",h24:"24H",d30:"30D"};
 function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:p.ch24 }
 function renderBoard(){
   var el=$("#board");
@@ -498,22 +576,96 @@ function renderBoard(){
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
       +'<div class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
-      +'<div class="tok"><div class="s">$'+esc(p.sym)+'</div><div class="n">'+esc(p.tokenName||p.fullName)+' · '+esc(p.dex||p.src)+'</div></div>'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+socialLinks(p,12)+'</div>'
+      +'<div class="n">MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span> · '+esc(p.dex||p.src)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
-      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">vol '+(state.tf==="d30"?"30D":state.tf.toUpperCase())+'</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
       +'</div>';
   });
   el.innerHTML=h;
+  enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
   $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
+}
+
+// ================= NEW LAUNCHES =================
+state.newPools=[]; state.newLoading=false; state.newTs=0;
+async function refreshNew(force){
+  if(state.newLoading) return;
+  if(!force && Date.now()-state.newTs<25000){ renderNew(); return; }
+  state.newLoading=true;
+  var nb=$("#newBoard"); if(nb && !state.newPools.length) nb.innerHTML='<div class="skel"></div>'.repeat(5);
+  try{
+    var got=[], seen={};
+    for(var page=1;page<=2;page++){
+      var j=await gt("/networks/"+CFG.GT_NET+"/new_pools?page="+page+"&include=base_token");
+      var inc={};
+      (j.included||[]).forEach(function(t){ if(t.type==="token") inc[t.id]={img:(t.attributes||{}).image_url||null,sym:(t.attributes||{}).symbol||null,name:(t.attributes||{}).name||null}; });
+      (j.data||[]).forEach(function(pp){
+        var a=pp.attributes||{}, id=(a.address||"").toLowerCase();
+        if(!id||seen[id])return; seen[id]=1;
+        var rel=pp.relationships||{}, btId=rel.base_token&&rel.base_token.data?rel.base_token.data.id:null;
+        var m=(btId&&inc[btId])||{};
+        var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
+        got.push({ pool:a.address, fullName:a.name||"",
+          sym:m.sym||(a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+          tokenName:m.name||"", img:(m.img&&m.img!=="missing.png")?m.img:null,
+          baseToken:btId?btId.split("_").pop():null,
+          price:+a.base_token_price_usd||null,
+          m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
+          cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
+          liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
+          mcap:+a.market_cap_usd||+a.fdv_usd||null,
+          created:a.pool_created_at||null,
+          src:"GT", dex:rel.dex&&rel.dex.data?rel.dex.data.id:"", dsUrl:null });
+      });
+    }
+    var hourAgo=Date.now()-3600e3;
+    state.newPools=got
+      .filter(function(p){return p.created && new Date(p.created).getTime()>=hourAgo})
+      .filter(function(p){return !isStable(p)&&!isStock(p)&&!isEthLike(p)})
+      .sort(function(a,b){return new Date(b.created)-new Date(a.created)});
+    state.newTs=Date.now();
+  }catch(e){}
+  state.newLoading=false;
+  renderNew();
+}
+function ageStr(iso){
+  var m=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/60000));
+  return m<1?"just now":m+"m ago";
+}
+function renderNew(){
+  var el=$("#newBoard"); if(!el)return;
+  if(!state.newPools.length){
+    el.innerHTML='<div class="empty">'+(state.newLoading?"Scanning fresh pools…":"Nothing launched in the last hour that survives the filters. The chain naps too.")+'</div>';
+    return;
+  }
+  var h="";
+  state.newPools.slice(0,25).forEach(function(p,i){
+    var c=p.cm5||p.ch1, up=c>=0;
+    h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
+      +'<div class="rank">'+String(i+1).padStart(2,"0")+'</div>'
+      +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+socialLinks(p,12)+'</div>'
+      +'<div class="n">🐣 '+ageStr(p.created)+' · MC '+fmtUsd(p.mcap)+' · LIQ '+fmtUsd(p.liq)+'</div></div>'
+      +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(p.h1)+'</div><div class="k">VOL 1H</div></div>'
+      +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
+      +'</div>';
+  });
+  el.innerHTML=h;
+  var na=$("#newAge"); if(na) na.textContent=state.newTs? Math.round((Date.now()-state.newTs)/1000)+"s ago":"";
+  enrichHolders(state.newPools.slice(0,25));
 }
 
 // ================= TOKEN MODAL + SNIPE =================
 var modal={ pool:null, mode:"wallet", slip:CFG.UNI.defaultSlippageBps, quote:null };
 var uniVerified=null; // null=unknown, true/false after runtime check
 function openToken(poolAddr){
-  var p=state.pools.find(function(x){return (x.pool||"").toLowerCase()===(poolAddr||"").toLowerCase()});
+  var key=(poolAddr||"").toLowerCase();
+  var p=state.pools.find(function(x){return (x.pool||"").toLowerCase()===key})
+     || state.newPools.find(function(x){return (x.pool||"").toLowerCase()===key});
   if(!p) return;
   modal.pool=p; modal.mode = state.wallet?"wallet":(state.burner?"burner":"wallet");
   var gtEmbed="https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool+"?embed=1&info=0&swaps=0&light_chart=0";
@@ -527,11 +679,13 @@ function openToken(poolAddr){
    +'<button class="x" data-action="close">✕</button></div>'
    +'<iframe class="chart" src="'+gtEmbed+'" title="Live chart — GeckoTerminal" loading="lazy"></iframe>'
    +'<div class="mstats">'
+     +'<div class="ms"><div class="k">MARKET CAP</div><div class="v">'+fmtUsd(p.mcap||p.fdv)+'</div></div>'
+     +'<div class="ms"><div class="k">HOLDERS</div><div class="v" id="mHolders">'+((metaOf(p)||{}).h!=null?metaOf(p).h.toLocaleString():"…")+'</div></div>'
      +'<div class="ms"><div class="k">LIQ</div><div class="v">'+fmtUsd(p.liq)+'</div></div>'
-     +'<div class="ms"><div class="k">FDV</div><div class="v">'+fmtUsd(p.fdv)+'</div></div>'
      +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
      +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
    +'</div>'
+   +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
    +'<div class="paytog">'
      +'<button data-action="paymode" data-m="wallet" class="'+(modal.mode==="wallet"?"on":"")+'">🔗 Connected</button>'
      +'<button data-action="paymode" data-m="burner" class="'+(modal.mode==="burner"?"on":"")+'">🏹 HoodSnipr wallet</button>'
@@ -548,6 +702,12 @@ function openToken(poolAddr){
   modal.quote=null;
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; updFees(); });
+  // lazy metadata: socials via GT info, holders via Blockscout
+  enrichSocials(p).then(function(){ var el=$("#mSocials"); if(el) el.innerHTML=socialLinks(p,16); });
+  if(p.baseToken) enrichHolders([p]).then(function(){
+    var m=metaOf(p), el=$("#mHolders");
+    if(el && m && m.h!=null) el.textContent=m.h.toLocaleString();
+  });
 }
 var quoteSeq=0;
 function updFees(){
@@ -746,10 +906,11 @@ async function fire(){
 }
 function recordTrade(p, ethIn, fee, mode, tokensOut, txHash){
   var t={ sym:p.sym, baseToken:p.baseToken, pool:p.pool, ethIn:ethIn, fee:fee,
+    usdIn: ethIn*state.ethUsd,           // cost basis frozen at trade time
     entryPrice:p.price, ts:Date.now(), mode:mode,
     tokens: tokensOut, tx: txHash||null };
   state.trades.unshift(t); save("hs_trades", state.trades);
-  renderPnl(); syncLeaderboard();
+  renderPnl(); syncLeaderboard(); loadPortfolio();
 }
 function closeModal(){ $("#modalRoot").innerHTML=""; modal.pool=null; }
 
@@ -761,6 +922,7 @@ async function connect(){
     state.wallet = ethers.getAddress(accts[0]);
     await ensureChain();
     state.provider = new ethers.BrowserProvider(window.ethereum);
+    save("hs_connected", 1);
     var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
     renderWallets();
     var isNew = !state.profile;
@@ -852,6 +1014,7 @@ function renderWMenu(open){
 }
 function disconnect(){
   state.wallet=null; state.provider=null;
+  try{ localStorage.removeItem("hs_connected"); }catch(e){}
   var b=$("#walletBtn"); b.textContent="Connect wallet"; b.className="wbtn"; b.setAttribute("data-action","connect");
   renderWMenu(false); renderWallets();
   toast("Disconnected");
@@ -927,7 +1090,7 @@ function renderPnl(){
       +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+r.usd.toFixed(2)+' <span style="font-size:11px">('+(up?"+":"")+r.pct.toFixed(1)+'%)</span></div>'
       +'<button class="obtn" style="padding:6px 10px;font-size:11px" data-action="share" data-i="'+i+'">Share</button></div>';
   }).join("");
-  var shown = port.pnlUsd!=null ? port.pnlUsd : tot;
+  var lp=tradePnl(); var shown = lp.pnl!=null ? lp.pnl : tot;
   var up=shown>=0;
   box.innerHTML='<div style="font-family:var(--mono);font-size:13px;margin-bottom:8px">TOTAL PNL: <b class="'+(up?"up":"dn")+'">'+(up?"+":"−")+"$"+Math.abs(shown).toFixed(2)+'</b></div>'+h
    +'<div class="frow"><button class="sbtn" data-action="share" data-i="-1">📤 Share total PnL to X</button></div>';
@@ -989,8 +1152,7 @@ function shareCard(i){
 // ================= LEADERBOARD =================
 async function syncLeaderboard(){
   if(!state.wallet) return;
-  var tot = port.pnlUsd!=null ? port.pnlUsd
-    : state.trades.filter(function(t){return t.side!=="sell"}).reduce(function(a,t){return a+pnlOf(t).usd},0);
+  var tot = tradePnl().pnl || 0;
   try{
     await fetch(CFG.API+"/leaderboard",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({addr:state.wallet,pnl:+tot.toFixed(2),trades:state.trades.length})});
@@ -1038,71 +1200,113 @@ async function fetchPrices(addrs){
   }
   return out;
 }
-async function walletHoldings(addr, tag){
-  // primary: Blockscout token-balances; fallback: scan known tokens from trades+board
-  var rows=[];
+async function discoverTokens(addr){
+  // Blockscout DISCOVERS which tokens an address has touched; balances are
+  // then read from RPC directly, because the indexer lags the chain and a
+  // just-loosed token would otherwise show its stale pre-sell amount.
+  var found={};
   try{
     var r=await fetch(CFG.EXPLORER_API+"/addresses/"+addr+"/token-balances");
-    if(!r.ok) throw 0;
-    var j=await r.json();
-    (j||[]).forEach(function(it){
-      var t=it.token||{};
-      if((t.type||"")!=="ERC-20") return;
-      var dec=+(t.decimals||18), bal=+ethers.formatUnits(it.value||"0",dec);
-      if(bal<=0) return;
-      rows.push({ wallet:tag, addr:(t.address||t.address_hash||"").toLowerCase(), sym:t.symbol||"?",
-        name:t.name||"", img:t.icon_url||null, dec:dec, bal:bal });
-    });
-  }catch(e){
-    // fallback scan: candidates = trade tokens + trending board tokens
-    var cands={};
-    state.trades.forEach(function(t){ if(t.baseToken)cands[t.baseToken.toLowerCase()]={sym:t.sym}; });
-    state.pools.forEach(function(p){ if(p.baseToken)cands[p.baseToken.toLowerCase()]={sym:p.sym,img:p.img}; });
-    var pr=rpc(), keys=Object.keys(cands);
-    await Promise.all(keys.map(async function(k){
-      try{
-        var c=new ethers.Contract(k,["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)"],pr);
-        var b=await c.balanceOf(addr);
-        if(b>0n){ var d=Number(await c.decimals().catch(function(){return 18}));
-          rows.push({wallet:tag,addr:k,sym:cands[k].sym||"?",name:"",img:cands[k].img||null,dec:d,bal:+ethers.formatUnits(b,d)}); }
-      }catch(e2){}
-    }));
-  }
+    if(r.ok){
+      var j=await r.json();
+      (j||[]).forEach(function(it){
+        var t=it.token||{};
+        if((t.type||"")!=="ERC-20") return;
+        var a=(t.address||t.address_hash||"").toLowerCase();
+        if(a) found[a]={ sym:t.symbol||"?", name:t.name||"", img:t.icon_url||null, dec:+(t.decimals||18) };
+      });
+    }
+  }catch(e){}
+  // union with everything the app itself knows about — covers indexer misses
+  state.trades.forEach(function(t){ if(t.baseToken){ var k=t.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:t.sym,name:"",img:null,dec:null}; } });
+  state.pools.forEach(function(p){ if(p.baseToken){ var k=p.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:p.sym,name:p.tokenName||"",img:p.img,dec:null}; else if(!found[k].img) found[k].img=p.img; } });
+  return found;
+}
+var decCache = load("hs_dec", {});
+async function rpcBalances(addr, tokens, tag){
+  var pr=rpc(), keys=Object.keys(tokens), rows=[];
+  await Promise.all(keys.map(async function(k){
+    try{
+      var c=new ethers.Contract(k,["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)"],pr);
+      var b=await c.balanceOf(addr);
+      if(b<=0n) return;
+      var d=tokens[k].dec;
+      if(d==null){
+        if(decCache[k]!=null) d=decCache[k];
+        else { d=Number(await c.decimals().catch(function(){return 18})); decCache[k]=d; }
+      }
+      rows.push({ wallet:tag, addr:k, sym:tokens[k].sym||"?", name:tokens[k].name||"",
+        img:tokens[k].img||null, dec:d, bal:+ethers.formatUnits(b,d) });
+    }catch(e){}
+  }));
+  save("hs_dec", decCache);
   return rows;
 }
 async function loadPortfolio(){
-  if(port.loading) return; port.loading=true;
+  if(port.loading) return;
+  port.loading=true;
+  var rbtn=document.querySelector('[data-action="port-refresh"]');
+  if(rbtn){ rbtn.textContent="↻ Refreshing…"; rbtn.disabled=true; }
   var hb=$("#holdBox"); if(hb && !port.holdings.length) hb.innerHTML='<div class="skel"></div>'.repeat(3);
   try{
     await fetchEthUsd();
-    var jobs=[], pr=rpc();
-    if(state.wallet){ jobs.push(walletHoldings(state.wallet,"connected")); jobs.push(pr.getBalance(state.wallet).then(function(b){port.ethBal.connected=+ethers.formatEther(b)})); }
-    if(state.burner){ jobs.push(walletHoldings(state.burner.addr,"burner")); jobs.push(pr.getBalance(state.burner.addr).then(function(b){port.ethBal.burner=+ethers.formatEther(b)})); }
-    var res=await Promise.all(jobs);
-    var rows=[]; res.forEach(function(r){ if(Array.isArray(r)) rows=rows.concat(r); });
+    var pr=rpc(), rows=[];
+    if(state.wallet){
+      var toksC=await discoverTokens(state.wallet);
+      var got=await Promise.all([ rpcBalances(state.wallet,toksC,"connected"), pr.getBalance(state.wallet) ]);
+      rows=rows.concat(got[0]); port.ethBal.connected=+ethers.formatEther(got[1]);
+    } else { delete port.ethBal.connected; }
+    if(state.burner){
+      var toksB=await discoverTokens(state.burner.addr);
+      var gotB=await Promise.all([ rpcBalances(state.burner.addr,toksB,"burner"), pr.getBalance(state.burner.addr) ]);
+      rows=rows.concat(gotB[0]); port.ethBal.burner=+ethers.formatEther(gotB[1]);
+    } else { delete port.ethBal.burner; }
     // price: board first, then GT batch for the rest
     var boardPx={}, boardImg={};
     state.pools.forEach(function(p){ if(p.baseToken){ boardPx[p.baseToken.toLowerCase()]=p.price; boardImg[p.baseToken.toLowerCase()]=p.img; } });
-    var missing=rows.filter(function(h){return !boardPx[h.addr]}).map(function(h){return h.addr});
+    var missing=rows.filter(function(h){return boardPx[h.addr]==null}).map(function(h){return h.addr});
     var extra = missing.length? await fetchPrices(missing) : {};
     rows.forEach(function(h){
       h.price = boardPx[h.addr]!=null? boardPx[h.addr] : (extra[h.addr]||null);
       if(!h.img) h.img=boardImg[h.addr]||null;
-      h.valUsd = h.price? h.bal*h.price : null;
+      h.valUsd = h.price!=null? h.bal*h.price : null;
     });
     rows.sort(function(a,b){return (b.valUsd||0)-(a.valUsd||0)});
     port.holdings=rows;
+    port.priceMap={}; rows.forEach(function(h){ if(h.price!=null) port.priceMap[h.addr]=h.price; });
+    Object.keys(boardPx).forEach(function(k){ if(boardPx[k]!=null) port.priceMap[k]=boardPx[k]; });
     var ethUsdTotal=((port.ethBal.connected||0)+(port.ethBal.burner||0))*state.ethUsd;
     port.totalUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0) + ethUsdTotal;
-    // portfolio-level PnL: (current value + realized ETH out) - lifetime ETH in
-    var inEth=state.trades.filter(function(t){return t.side!=="sell"}).reduce(function(a,t){return a+t.ethIn},0);
-    var outEth=state.trades.filter(function(t){return t.side==="sell"}).reduce(function(a,t){return a+(t.ethOut||0)},0);
-    var tokUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0);
-    port.pnlUsd = inEth>0 ? (tokUsd + outEth*state.ethUsd) - inEth*state.ethUsd : null;
+    port.pnlUsd = tradePnl().pnl;
     snapshotPv();
   }catch(e){}
-  port.loading=false;
+  finally{
+    port.loading=false;
+    if(rbtn){ rbtn.textContent="↻ Refresh holdings"; rbtn.disabled=false; }
+  }
   renderPortfolio();
+}
+// ---- ledger-based PnL: only HoodSnipr trades, positions net of sells ----
+function tradePnl(){
+  var pos={}, usdIn=0, ethIn=0, usdOut=0;
+  state.trades.forEach(function(t){
+    var k=(t.baseToken||"").toLowerCase(); if(!k) return;
+    if(t.side==="sell"){
+      usdOut += (t.usdOut!=null? t.usdOut : (t.ethOut||0)*state.ethUsd);
+      pos[k]=(pos[k]||0)-(t.tokensSold||0);
+    }else{
+      usdIn += (t.usdIn!=null? t.usdIn : t.ethIn*state.ethUsd);
+      ethIn += t.ethIn;
+      pos[k]=(pos[k]||0)+(t.tokens||0);
+    }
+  });
+  var open=0;
+  Object.keys(pos).forEach(function(k){
+    var q=Math.max(0,pos[k]);
+    var px=(port.priceMap&&port.priceMap[k])!=null? port.priceMap[k] : null;
+    if(q>0 && px!=null) open+=q*px;
+  });
+  return { pnl: state.trades.length? (open+usdOut-usdIn) : null, usdIn:usdIn, ethIn:ethIn, usdOut:usdOut, openUsd:open };
 }
 function snapshotPv(){
   var series=load("hs_pv",[]);
@@ -1133,12 +1337,13 @@ function renderPvChart(){
 }
 function renderPortfolio(){
   var st=$("#pStats"); if(!st)return;
-  var inEth=state.trades.filter(function(t){return t.side!=="sell"}).reduce(function(a,t){return a+t.ethIn},0);
-  var pnl=port.pnlUsd, up=(pnl||0)>=0;
+  var L=tradePnl();
+  var pnl=L.pnl, up=(pnl||0)>=0;
+  port.pnlUsd=pnl;
   st.innerHTML=
    '<div class="pst"><div class="k">TOTAL VALUE</div><div class="v">$'+port.totalUsd.toFixed(2)+'</div><div class="s">tokens + ETH, both wallets</div></div>'
-  +'<div class="pst"><div class="k">LIFETIME INVESTED</div><div class="v">'+inEth.toFixed(4)+' ETH</div><div class="s">≈ $'+(inEth*state.ethUsd).toFixed(2)+' at current ETH</div></div>'
-  +'<div class="pst"><div class="k">TOTAL PNL</div><div class="v '+(up?"up":"dn")+'">'+(pnl==null?"—":((up?"+":"−")+"$"+Math.abs(pnl).toFixed(2)))+'</div><div class="s">value + realized − invested</div></div>';
+  +'<div class="pst"><div class="k">LIFETIME INVESTED</div><div class="v">'+L.ethIn.toFixed(4)+' ETH</div><div class="s">$'+L.usdIn.toFixed(2)+' at time of each snipe</div></div>'
+  +'<div class="pst"><div class="k">TOTAL PNL</div><div class="v '+(up?"up":"dn")+'">'+(pnl==null?"—":((up?"+":"−")+"$"+Math.abs(pnl).toFixed(2)))+'</div><div class="s">open positions + realized − invested</div></div>';
   renderPvChart();
   var hb=$("#holdBox"); if(!hb)return;
   if(!state.wallet && !state.burner){ hb.innerHTML='<div class="empty">Connect a wallet or arm your burner, then refresh.</div>'; return; }
@@ -1309,11 +1514,16 @@ async function fireLoose(){
     await ftx.wait();
 
     state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:outEth,
+      usdOut: outEth*state.ethUsd,        // proceeds frozen at trade time
       fee:+ethers.formatEther(feeWei), tokensSold:amt, ts:Date.now(),
       mode:x.wallet==="connected"?"wallet":"burner", tx:rcpt.hash });
     save("hs_trades", state.trades);
+    // optimistic: shrink the holding instantly, RPC truth follows right behind
+    x.bal=Math.max(0,x.bal-amt); if(x.price!=null)x.valUsd=x.bal*x.price;
+    renderPortfolio();
     toast("Loosed "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" $"+x.sym+" → "+(outEth-+ethers.formatEther(feeWei)).toFixed(5)+" ETH 🏹");
     closeModal(); renderPnl(); loadPortfolio(); syncLeaderboard();
+    setTimeout(loadPortfolio, 8000); // second pass once indexer-priced data settles
   }catch(e){
     var m=(e&&(e.shortMessage||e.reason||e.message))||"Loose failed";
     if(/user rejected|denied/i.test(m)) m="Signature rejected in wallet";
@@ -1327,6 +1537,7 @@ document.addEventListener("click", function(e){
   if(!e.target.closest(".wwrap")) renderWMenu(false);
   var el=e.target.closest("[data-action]"); if(!el) return;
   var a=el.getAttribute("data-action");
+  if(a==="ext") return; // social links: let the browser navigate, don't open the modal
   if(a==="connect") connect();
   else if(a==="wmenu"){ e.stopPropagation(); renderWMenu(!$("#wmenu").firstChild); }
   else if(a==="wp-profile"){ renderWMenu(false); openProfile(); }
@@ -1357,10 +1568,11 @@ $("#tabs").addEventListener("click",function(e){
   var b=e.target.closest(".tab"); if(!b)return;
   $$(".tab").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
   var v=b.getAttribute("data-tab");
-  ["board","port","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
+  ["board","new","port","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
   if(v==="ranks") renderRanks();
   if(v==="wallet") renderWallets();
   if(v==="port"){ renderPortfolio(); loadPortfolio(); }
+  if(v==="new") refreshNew(false);
 });
 $("#tfpills").addEventListener("click",function(e){
   var b=e.target.closest(".tf"); if(!b)return;
@@ -1369,6 +1581,19 @@ $("#tfpills").addEventListener("click",function(e){
   renderBoard();
   if(state.tf==="d30") ensure30d();
 });
+
+async function autoReconnect(){
+  if(!window.ethereum || !load("hs_connected", null)) return;
+  try{
+    var accts = await window.ethereum.request({ method:"eth_accounts" }); // silent — no popup
+    if(!accts || !accts.length) return;
+    state.wallet = ethers.getAddress(accts[0]);
+    state.provider = new ethers.BrowserProvider(window.ethereum);
+    var b=$("#walletBtn"); b.textContent=short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
+    renderWallets(); syncLeaderboard();
+    // chain switching stays lazy — first snipe/loose calls ensureChain, so boot is prompt-free
+  }catch(e){}
+}
 
 // keep provider honest if the user flips chain/account in the wallet UI
 if(window.ethereum && window.ethereum.on){
@@ -1383,7 +1608,19 @@ if(window.ethereum && window.ethereum.on){
 
 // ================= BOOT =================
 state.burner = load("hs_burner", null);
+// One-time ledger migration: drop every trade without a confirmed tx hash.
+// (Prototype/link-out-era records never swapped onchain and were poisoning
+// lifetime-invested + PnL.) Only real receipts count from here on.
+(function(){
+  var before=state.trades.length;
+  state.trades = state.trades.filter(function(t){ return !!t.tx; });
+  if(state.trades.length!==before) save("hs_trades", state.trades);
+})();
+autoReconnect();
 fetchEthUsd(); refresh(); setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
+// portfolio stays fresh on its own while the tab is open — no button mashing needed
+setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
+setInterval(function(){ var vn=$("#v-new"); if(vn && vn.style.display!=="none") refreshNew(true); }, 45000);
 setInterval(function(){ if(state.lastUpdate){var a=Math.round((Date.now()-state.lastUpdate)/1000);$("#ageTxt").textContent=a<60?a+"s ago":Math.round(a/60)+"m ago";} },5000);
 renderWallets();
 })();
