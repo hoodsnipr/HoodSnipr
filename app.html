@@ -280,7 +280,7 @@ var CFG = {
     stockDexes: ["nado"],                 // stock-token DEXs by GT dex id — extend as you spot them
     namePatterns: [/xstock/i, /stock/i, /tokenized/i, /equity/i, /etf/i, /shares?/i]
   },
-  REFRESH_MS: 30000,
+  REFRESH_MS: 15000,   // edge cache makes 15s polling cost ~nothing upstream
   ETH_USD_FALLBACK: 3400
 };
 // The fee route and router set are load-bearing — freeze every layer.
@@ -312,47 +312,99 @@ async function gt(path){
   if(!r.ok) throw new Error("GT "+r.status);
   return r.json();
 }
-async function fetchGTPools(){
+function parseGTPage(j, out, seen){
+  var inc={};
+  (j.included||[]).forEach(function(t){
+    if(t.type==="token") inc[t.id]={ img:(t.attributes||{}).image_url||null,
+      sym:(t.attributes||{}).symbol||null, name:(t.attributes||{}).name||null };
+  });
+  (j.data||[]).forEach(function(p){
+    var a=p.attributes||{}, id=(a.address||p.id||"").toLowerCase();
+    if(!id||seen[id])return; seen[id]=1;
+    var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
+    var rel=p.relationships||{};
+    var btId = rel.base_token&&rel.base_token.data ? rel.base_token.data.id : null;
+    var meta_ = (btId && inc[btId]) || {};
+    out.push({
+      pool:a.address, fullName:a.name||"",
+      sym: meta_.sym || (a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+      tokenName: meta_.name || "",
+      img: (meta_.img && meta_.img!=="missing.png") ? meta_.img : null,
+      baseToken: btId ? btId.split("_").pop() : null,
+      price:+a.base_token_price_usd||null,
+      m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
+      cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
+      liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
+      mcap:+a.market_cap_usd||+a.fdv_usd||null,
+      created:a.pool_created_at||null,
+      src:"GT", dex: rel.dex&&rel.dex.data ? rel.dex.data.id : "", dsUrl:null
+    });
+  });
+}
+function parseDSPairs(pairs, chain){
+  var out=[], seen={};
+  (pairs||[]).forEach(function(p){
+    if(chain && p.chainId!==chain) return;
+    if(!chain && !/robinhood/i.test(p.chainId||"")) return;
+    var id=(p.pairAddress||"").toLowerCase();
+    if(!id||seen[id])return; seen[id]=1;
+    out.push({
+      pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?",
+      fullName:((p.baseToken||{}).symbol||"")+" / "+((p.quoteToken||{}).symbol||""),
+      tokenName:(p.baseToken||{}).name||"",
+      img:(p.info&&p.info.imageUrl)||null,
+      baseToken:(p.baseToken||{}).address||null,
+      price:+p.priceUsd||null,
+      m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
+      cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+      liq:+(p.liquidity&&p.liquidity.usd||0), fdv:+p.fdv||null,
+      mcap:+p.marketCap||+p.fdv||null,
+      created:p.pairCreatedAt? new Date(p.pairCreatedAt).toISOString() : null,
+      site:(p.info&&p.info.websites&&p.info.websites[0]&&p.info.websites[0].url)||null,
+      tw:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="twitter"}).map(function(so){return so.url})[0]||null,
+      tg:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="telegram"}).map(function(so){return so.url})[0]||null,
+      src:"DS", dex:p.dexId||"", dsUrl:p.url||null
+    });
+  });
+  return out;
+}
+// PROXY-FIRST: one shared server-side cache feeds every user. Direct indexer
+// calls survive only as a fallback (local file testing / function cold-fail).
+var proxyDown=false;
+async function fetchMarket(){
+  if(!proxyDown){
+    try{
+      var r=await fetch(CFG.API+"/market");
+      if(r.ok){
+        var pay=await r.json();
+        var gtOut=[], seen={};
+        (pay.gtPages||[]).forEach(function(pg){ parseGTPage(pg, gtOut, seen); });
+        var dsOut=parseDSPairs(pay.dsPairs||[], null);
+        if(pay.ethUsd>0) state.ethUsd=pay.ethUsd;
+        return { gt:gtOut, ds:dsOut, viaProxy:true };
+      }
+      throw 0;
+    }catch(e){ proxyDown=true; setTimeout(function(){proxyDown=false},60000); }
+  }
+  // ---- direct fallback ----
   var urls = [
     "/networks/"+CFG.GT_NET+"/trending_pools?page=1&include=base_token",
     "/networks/"+CFG.GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token",
     "/networks/"+CFG.GT_NET+"/pools?page=2&sort=h24_volume_usd_desc&include=base_token"
   ];
-  var out=[], seen={};
+  var gtOut2=[], seen2={};
   for(var i=0;i<urls.length;i++){
-    try{
-      var j = await gt(urls[i]);
-      // sideloaded token records carry image_url + canonical symbol/name
-      var inc={};
-      (j.included||[]).forEach(function(t){
-        if(t.type==="token") inc[t.id]={ img:(t.attributes||{}).image_url||null,
-          sym:(t.attributes||{}).symbol||null, name:(t.attributes||{}).name||null };
-      });
-      (j.data||[]).forEach(function(p){
-        var a=p.attributes||{}, id=(a.address||p.id||"").toLowerCase();
-        if(!id||seen[id])return; seen[id]=1;
-        var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
-        var rel=p.relationships||{};
-        var btId = rel.base_token&&rel.base_token.data ? rel.base_token.data.id : null;
-        var meta = (btId && inc[btId]) || {};
-        out.push({
-          pool:a.address, fullName:a.name||"",
-          sym: meta.sym || (a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
-          tokenName: meta.name || "",
-          img: (meta.img && meta.img!=="missing.png") ? meta.img : null,
-          baseToken: btId ? btId.split("_").pop() : null,
-          price:+a.base_token_price_usd||null,
-          m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
-          cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
-          liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
-          mcap:+a.market_cap_usd||+a.fdv_usd||null,
-          created:a.pool_created_at||null,
-          src:"GT", dex: rel.dex&&rel.dex.data ? rel.dex.data.id : "", dsUrl:null
-        });
-      });
-    }catch(e){ /* one page failing shouldn't kill the board */ }
+    try{ parseGTPage(await gt(urls[i]), gtOut2, seen2); }catch(e){}
   }
-  return out;
+  var dsOut2=[];
+  try{
+    var chain=await probeDSChain();
+    if(chain){
+      var rr=await fetch(CFG.DS+"/latest/dex/search?q=WETH");
+      dsOut2=parseDSPairs(((await rr.json())||{}).pairs, chain);
+    }
+  }catch(e){}
+  return { gt:gtOut2, ds:dsOut2, viaProxy:false };
 }
 async function probeDSChain(){
   if(state.dsChain) return state.dsChain;
@@ -365,38 +417,6 @@ async function probeDSChain(){
     }catch(e){}
   }
   return null;
-}
-async function fetchDSPools(){
-  var chain = await probeDSChain();
-  if(!chain) return [];
-  var out=[], seen={};
-  try{
-    var r = await fetch(CFG.DS+"/latest/dex/search?q=WETH");
-    var j = await r.json();
-    (j.pairs||[]).forEach(function(p){
-      if(p.chainId!==chain) return;
-      var id=(p.pairAddress||"").toLowerCase();
-      if(!id||seen[id])return; seen[id]=1;
-      out.push({
-        pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?",
-        fullName:((p.baseToken||{}).symbol||"")+" / "+((p.quoteToken||{}).symbol||""),
-        tokenName:(p.baseToken||{}).name||"",
-        img:(p.info&&p.info.imageUrl)||null,
-        baseToken:(p.baseToken||{}).address||null,
-        price:+p.priceUsd||null,
-        m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
-        cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
-        liq:+(p.liquidity&&p.liquidity.usd||0), fdv:+p.fdv||null,
-        mcap:+p.marketCap||+p.fdv||null,
-        created:p.pairCreatedAt? new Date(p.pairCreatedAt).toISOString() : null,
-        site:(p.info&&p.info.websites&&p.info.websites[0]&&p.info.websites[0].url)||null,
-        tw:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="twitter"}).map(function(so){return so.url})[0]||null,
-        tg:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="telegram"}).map(function(so){return so.url})[0]||null,
-        src:"DS", dex:p.dexId||"", dsUrl:p.url||null
-      });
-    });
-  }catch(e){}
-  return out;
 }
 function mergePools(gtP, dsP){
   // GT primary; DS fills gaps + adds its chart URL. Key by base token, fall back to pool.
@@ -461,21 +481,28 @@ document.addEventListener("error",function(e){
     t.dataset.fb="1"; t.src=letterAvatar(t.dataset.sym||"?");
   }
 },true);
+var failStreak=0;
 async function refresh(){
+  if(document.hidden) return;   // don't burn quota for a tab nobody's watching
   try{
-    var results = await Promise.all([fetchGTPools(), fetchDSPools()]);
-    var merged = mergePools(results[0], results[1]);
+    var mk = await fetchMarket();
+    var merged = mergePools(mk.gt, mk.ds);
     if(merged.length){
-      state.pools=merged; state.lastUpdate=Date.now();
-      state.srcs=[]; if(results[0].length)state.srcs.push("GECKOTERMINAL"); if(results[1].length)state.srcs.push("DEXSCREENER");
-    }
-    setLive(merged.length>0);
-  }catch(e){ setLive(false); }
+      state.pools=merged; state.lastUpdate=Date.now(); failStreak=0;
+      state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
+      if(mk.viaProxy) state.srcs.push("EDGE-CACHED");
+    } else failStreak++;
+  }catch(e){ failStreak++; }
+  setLive();
   renderBoard();
 }
-function setLive(ok){
-  $("#liveDot").className="live"+(ok?"":" err");
-  $("#liveTxt").textContent = ok?"LIVE":"RETRYING";
+function setLive(){
+  // Data <90s old is still LIVE even if one poll hiccuped; only a real,
+  // sustained outage shows RETRYING. No more flicker on a single 429.
+  var fresh = state.lastUpdate && (Date.now()-state.lastUpdate) < 90000;
+  var el=$("#liveDot");
+  if(fresh){ el.className="live"; $("#liveTxt").textContent = failStreak>0 ? "LIVE·SYNC" : "LIVE"; }
+  else { el.className="live err"; $("#liveTxt").textContent="RETRYING"; }
   $("#srcTxt").textContent = state.srcs.join(" + ")||"—";
 }
 // ---- 30D: lazy per-pool daily-OHLCV sums via GT, cached 6h ----
@@ -489,13 +516,21 @@ async function ensure30d(){
     var p=top[i], key=(p.pool||"").toLowerCase();
     if(cache[key] && now-cache[key].t < 6*3600e3){ state.d30[key]=cache[key].v; done++; continue; }
     try{
-      var j=await gt("/networks/"+CFG.GT_NET+"/pools/"+p.pool+"/ohlcv/day?limit=30");
-      var list=(((j.data||{}).attributes)||{}).ohlcv_list||[];
-      var v=list.reduce(function(a,c){return a+(+c[5]||0)},0);
+      var v=null, viaProxy=false;
+      try{
+        var pr=await fetch(CFG.API+"/ohlcv?pool="+p.pool);
+        if(pr.ok){ v=(await pr.json()).v; viaProxy=true; }
+      }catch(e0){}
+      if(v==null){
+        var j=await gt("/networks/"+CFG.GT_NET+"/pools/"+p.pool+"/ohlcv/day?limit=30");
+        var list=(((j.data||{}).attributes)||{}).ohlcv_list||[];
+        v=list.reduce(function(a,c){return a+(+c[5]||0)},0);
+      }
       state.d30[key]=v; cache[key]={v:v,t:now}; done++;
       var pe=$("#board .progress"); pe&&(pe.textContent="RANGING 30D VOLUME… "+done+"/"+top.length);
       if(state.tf==="d30") renderBoard();
-      await new Promise(function(r){setTimeout(r,2100)}); // GT free tier ≈30 req/min
+      // proxy answers are shared-cached — barely throttle; direct GT stays slow
+      await new Promise(function(r){setTimeout(r, viaProxy?250:2100)});
     }catch(e){ /* keep going */ }
     if(state.tf!=="d30") break; // user left — stop burning quota
   }
@@ -507,28 +542,45 @@ async function ensure30d(){
 // ================= TOKEN METADATA (holders + socials, cached) =================
 var meta = load("hs_meta", {});   // addr -> {h:holders, site, tw, tg, t:ts}
 function metaOf(p){ return meta[(p.baseToken||"").toLowerCase()] || null; }
-async function enrichHolders(rows){
-  // holders come from Blockscout; cheap, cached 10 min, small concurrency
-  var todo = rows.filter(function(p){
-    var m=metaOf(p); return p.baseToken && (!m || Date.now()-m.t > 10*60e3 || m.h==null);
-  }).slice(0, 25);
-  var i=0;
-  async function worker(){
-    while(i<todo.length){
-      var p=todo[i++]; var k=p.baseToken.toLowerCase();
-      try{
-        var r=await fetch(CFG.EXPLORER_API+"/tokens/"+p.baseToken);
-        if(r.ok){
-          var j=await r.json();
-          var h=parseInt(j.holders_count!=null?j.holders_count:j.holders,10);
-          meta[k]=Object.assign({},meta[k],{h:isNaN(h)?null:h,t:Date.now()});
-          var el=document.querySelector('[data-holders="'+k+'"]');
-          if(el && meta[k].h!=null) el.textContent="👥 "+meta[k].h.toLocaleString();
-        }
-      }catch(e){}
+async function enrichHolders(rows){ return enrichMeta(rows); }
+async function enrichMeta(rows){
+  // one batched call for holders + socials, served from the shared edge cache
+  var now=Date.now();
+  var need = rows.filter(function(p){
+    if(!p.baseToken) return false;
+    var m=meta[p.baseToken.toLowerCase()];
+    var needH=!m || m.hT==null || now-m.hT>10*60e3 || m.h==null;
+    var needS=(!p.site&&!p.tw&&!p.tg) && (!m || (!m.site&&!m.tw&&!m.tg)) && (!m || m.sT==null || now-m.sT>24*3600e3);
+    return needH||needS;
+  }).map(function(p){return p.baseToken.toLowerCase()});
+  need=need.filter(function(a,i){return need.indexOf(a)===i});
+  for(var i=0;i<need.length;i+=10){
+    var batch=need.slice(i,i+10);
+    var got=null;
+    try{
+      var r=await fetch(CFG.API+"/tokenmeta?addrs="+batch.join(","));
+      if(r.ok) got=await r.json();
+    }catch(e){}
+    if(!got){
+      // fallback: direct Blockscout for holders only, small concurrency
+      got={};
+      await Promise.all(batch.slice(0,6).map(async function(a){
+        try{
+          var rr=await fetch(CFG.EXPLORER_API+"/tokens/"+a);
+          if(rr.ok){ var t=await rr.json(); var h=parseInt(t.holders_count!=null?t.holders_count:t.holders,10); got[a]={h:isNaN(h)?null:h}; }
+        }catch(e2){}
+      }));
     }
+    Object.keys(got).forEach(function(a){
+      var v=got[a]||{};
+      meta[a]=Object.assign({},meta[a],{ h:v.h!=null?v.h:(meta[a]||{}).h, hT:now,
+        site:v.site||(meta[a]||{}).site||null, tw:v.tw||(meta[a]||{}).tw||null, tg:v.tg||(meta[a]||{}).tg||null,
+        sT:(v.site!==undefined)?now:(meta[a]||{}).sT });
+      var m=meta[a];
+      if(m.h!=null) document.querySelectorAll('[data-holders="'+a+'"]').forEach(function(el){ el.textContent="👥 "+m.h.toLocaleString(); });
+      if(m.site||m.tw||m.tg) document.querySelectorAll('[data-soc="'+a+'"]').forEach(function(el){ el.innerHTML=socialLinks({baseToken:a,site:m.site,tw:m.tw,tg:m.tg},12); });
+    });
   }
-  await Promise.all([worker(),worker(),worker(),worker()]);
   save("hs_meta", meta);
 }
 async function enrichSocials(p){
@@ -546,44 +598,6 @@ async function enrichSocials(p){
     save("hs_meta",meta);
   }catch(e){}
   return p;
-}
-// background socials loader for LIST rows: GT token info, one call per ~2.4s,
-// cached 24h (incl. "tried, none found"), paused while the 30D ranger runs so
-// the two never fight over GeckoTerminal's free-tier rate limit.
-var socQueue=[], socRunning=false;
-function queueSocials(rows){
-  var now=Date.now();
-  rows.forEach(function(p){
-    if(!p.baseToken) return;
-    if(p.site||p.tw||p.tg) return;
-    var k=p.baseToken.toLowerCase(), m=meta[k];
-    if(m && (m.site||m.tw||m.tg)) return;                    // cached hit
-    if(m && m.sT && now-m.sT < 24*3600e3) return;            // cached miss
-    if(socQueue.indexOf(k)<0) socQueue.push(k);
-  });
-  runSocQueue();
-}
-async function runSocQueue(){
-  if(socRunning) return; socRunning=true;
-  while(socQueue.length){
-    if(state.d30Loading){ await new Promise(function(r){setTimeout(r,3000)}); continue; }
-    var k=socQueue.shift();
-    try{
-      var j=await gt("/networks/"+CFG.GT_NET+"/tokens/"+k+"/info");
-      var a=((j.data||{}).attributes)||{};
-      var site=(a.websites&&a.websites[0])||null;
-      var tw=a.twitter_handle? "https://x.com/"+a.twitter_handle : null;
-      var tg=a.telegram_handle? "https://t.me/"+a.telegram_handle : null;
-      meta[k]=Object.assign({},meta[k],{site:site,tw:tw,tg:tg,sT:Date.now()});
-      save("hs_meta",meta);
-      if(site||tw||tg){
-        var fake={baseToken:k,site:site,tw:tw,tg:tg};
-        document.querySelectorAll('[data-soc="'+k+'"]').forEach(function(el){ el.innerHTML=socialLinks(fake,12); });
-      }
-    }catch(e){ meta[k]=Object.assign({},meta[k],{sT:Date.now()}); }
-    await new Promise(function(r){setTimeout(r,2400)});
-  }
-  socRunning=false;
 }
 function socialLinks(p, size){
   var m=metaOf(p)||{};
@@ -623,7 +637,6 @@ function renderBoard(){
   });
   el.innerHTML=h;
   enrichHolders(rows);
-  queueSocials(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
   $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
 }
@@ -696,7 +709,6 @@ function renderNew(){
   el.innerHTML=h;
   var na=$("#newAge"); if(na) na.textContent=state.newTs? Math.round((Date.now()-state.newTs)/1000)+"s ago":"";
   enrichHolders(state.newPools.slice(0,25));
-  queueSocials(state.newPools.slice(0,25));
 }
 
 // ================= TOKEN MODAL + SNIPE =================
@@ -1657,6 +1669,7 @@ state.burner = load("hs_burner", null);
   if(state.trades.length!==before) save("hs_trades", state.trades);
 })();
 autoReconnect();
+document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
 fetchEthUsd(); refresh(); setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
 setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
