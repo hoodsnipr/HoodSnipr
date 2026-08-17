@@ -33,6 +33,21 @@
   web intent, so the flow is download → auto-opened compose → user attaches.
   That is the same flow every PnL-card product uses.
 
+## v0.2.1 additions
+
+- **Stocks + stablecoins filtered off the board.** Symbol lists, xStocks-style
+  `TICKERx` detection, name patterns (stock/etf/tokenized/equity), a stock-DEX
+  blocklist (`nado`), and a pinned-to-$1 heuristic. All tunable in
+  `CFG.FILTERS` — if a stock slips through, add its ticker or its DEX id.
+- **Token logos everywhere.** GT requests now sideload `include=base_token`
+  (image_url + canonical symbol/name); DexScreener contributes `info.imageUrl`.
+  Tokens with no logo get a generated scope-ring letter avatar; broken image
+  URLs auto-swap to the avatar via a capture-phase error handler (CSP-safe).
+- **Profile moved into the header.** Connecting a wallet IS signup — first
+  connect creates the profile and opens it. The connected address button
+  becomes a dropdown: My profile / Leaderboard / Disconnect. The Profile tab
+  is gone.
+
 ## What YOU must configure (CFG block at the top of app.html)
 
 1. **`FEE_WALLET`** — currently `""` = dev mode, fee transfer skipped and the

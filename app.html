@@ -39,6 +39,12 @@ header{display:flex;align-items:center;justify-content:space-between;padding:14p
 .live.err i{background:var(--red);animation:none}
 .wbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:9px 15px;border-radius:99px}
 .wbtn.on{background:var(--panel2);color:var(--green);border:1px solid var(--green);font-family:var(--mono)}
+.wwrap{position:relative}
+.wmenu{position:absolute;top:calc(100% + 8px);right:0;background:var(--panel2);border:1px solid var(--line);border-radius:14px;min-width:190px;overflow:hidden;box-shadow:0 12px 34px rgba(0,0,0,.5);animation:pop .15s ease-out;z-index:60}
+.wmenu button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:12px 15px;font-size:13px;font-weight:700;color:var(--text)}
+.wmenu button:hover{background:var(--panel)}
+.wmenu button.danger{color:var(--red)}
+.wmenu .who{padding:11px 15px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--mute)}
 
 .tabs{display:flex;gap:8px;padding:14px 16px 0;max-width:900px;margin:0 auto;flex-wrap:wrap}
 .tab{background:transparent;color:var(--mute);border:1px solid var(--line);font-weight:700;font-size:13px;padding:8px 14px;border-radius:99px}
@@ -58,6 +64,8 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .row:hover{background:var(--panel2)}
 .rank{font-family:var(--mono);font-size:11px;color:var(--mute);width:22px}
 .rank.top{color:var(--gold)}
+.timg{width:34px;height:34px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
+.timg.lg{width:44px;height:44px}
 .tok{flex:1;min-width:0}
 .tok .s{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tok .n{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -135,14 +143,13 @@ canvas.share{display:none}
   </a>
   <div class="hstat">
     <div class="live" id="liveDot"><i></i><span id="liveTxt">LIVE</span></div>
-    <button class="wbtn" id="walletBtn" data-action="connect">Connect wallet</button>
+    <div class="wwrap"><button class="wbtn" id="walletBtn" data-action="connect">Connect wallet</button><div id="wmenu"></div></div>
   </div>
 </header>
 
 <div class="tabs" id="tabs">
   <button class="tab on" data-tab="board">🎯 Trending</button>
   <button class="tab" data-tab="wallet">👝 Wallets</button>
-  <button class="tab" data-tab="profile">🪪 Profile</button>
   <button class="tab" data-tab="ranks">🏆 Ranks</button>
 </div>
 
@@ -173,18 +180,6 @@ canvas.share{display:none}
       <h3>🏹 HoodSnipr wallet <span style="font-family:var(--mono);font-size:10px;color:var(--gold)">BURNER</span></h3>
       <p class="hint">A throwaway wallet generated <b>in your browser</b>. Send Robinhood-Chain ETH to it and snipe without connecting anything. Keys never leave this device — HoodSnipr cannot see or recover them. Export the key before clearing browser data, and keep only what you're actively sniping with.</p>
       <div id="bwBox"></div>
-    </div>
-  </div>
-
-  <!-- ============ PROFILE ============ -->
-  <div id="v-profile" style="display:none">
-    <div class="card">
-      <h3>🪪 Snipr profile</h3>
-      <div id="profBox"></div>
-    </div>
-    <div class="card">
-      <h3>📜 My snipes & PnL</h3>
-      <div id="pnlBox"><div class="empty">No snipes recorded yet.</div></div>
     </div>
   </div>
 
@@ -233,6 +228,13 @@ var CFG = {
   DS: "https://api.dexscreener.com",
   DS_CHAINS: ["robinhoodchain", "robinhood"],   // slug probed at runtime
   API: "/.netlify/functions",
+  // Board filters — tokenized stocks + stablecoins are not snipe targets.
+  FILTERS: {
+    stableSyms: ["USDC","USDT","USDG","DAI","USDE","FDUSD","USD1","PYUSD","TUSD","USDS","GHO","FRAX","LUSD","BUSD","USDB","WUSD"],
+    stockSyms: ["AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","GOOG","META","AMD","NFLX","COIN","HOOD","SPY","QQQ","PLTR","MSTR","GME","AMC","INTC","BRK","JPM","V","MA","DIS","BA","XOM","WMT","KO","PFE","T","F","NIO","BABA","SOFI","RIVN","LCID","CRCL","OPEN","UNH","LLY","AVGO","ORCL","CRM","ADBE","ABNB","UBER","SHOP","SQ","PYPL","SNAP","RDDT","DJT","SMCI","ARM","MU","QCOM","TSM","ASML","NVO","SPOT","RBLX","DKNG","MARA","RIOT","CLSK","IBIT","GLD","SLV","TLT","VOO","VTI","IWM","DIA"],
+    stockDexes: ["nado"],                 // stock-token DEXs by GT dex id — extend as you spot them
+    namePatterns: [/xstock/i, /stock/i, /tokenized/i, /equity/i, /etf/i, /shares?/i]
+  },
   REFRESH_MS: 30000,
   ETH_USD_FALLBACK: 3400
 };
@@ -265,23 +267,33 @@ async function gt(path){
 }
 async function fetchGTPools(){
   var urls = [
-    "/networks/"+CFG.GT_NET+"/trending_pools?page=1",
-    "/networks/"+CFG.GT_NET+"/pools?page=1&sort=h24_volume_usd_desc",
-    "/networks/"+CFG.GT_NET+"/pools?page=2&sort=h24_volume_usd_desc"
+    "/networks/"+CFG.GT_NET+"/trending_pools?page=1&include=base_token",
+    "/networks/"+CFG.GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token",
+    "/networks/"+CFG.GT_NET+"/pools?page=2&sort=h24_volume_usd_desc&include=base_token"
   ];
   var out=[], seen={};
   for(var i=0;i<urls.length;i++){
     try{
       var j = await gt(urls[i]);
+      // sideloaded token records carry image_url + canonical symbol/name
+      var inc={};
+      (j.included||[]).forEach(function(t){
+        if(t.type==="token") inc[t.id]={ img:(t.attributes||{}).image_url||null,
+          sym:(t.attributes||{}).symbol||null, name:(t.attributes||{}).name||null };
+      });
       (j.data||[]).forEach(function(p){
         var a=p.attributes||{}, id=(a.address||p.id||"").toLowerCase();
         if(!id||seen[id])return; seen[id]=1;
         var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
         var rel=p.relationships||{};
+        var btId = rel.base_token&&rel.base_token.data ? rel.base_token.data.id : null;
+        var meta = (btId && inc[btId]) || {};
         out.push({
           pool:a.address, fullName:a.name||"",
-          sym:(a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
-          baseToken: rel.base_token&&rel.base_token.data ? rel.base_token.data.id.split("_").pop() : null,
+          sym: meta.sym || (a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+          tokenName: meta.name || "",
+          img: (meta.img && meta.img!=="missing.png") ? meta.img : null,
+          baseToken: btId ? btId.split("_").pop() : null,
           price:+a.base_token_price_usd||null,
           m5:+(vol.m5||0), h1:+(vol.h1||0), h24:+(vol.h24||0),
           cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch24:+(chg.h24||0),
@@ -319,6 +331,8 @@ async function fetchDSPools(){
       out.push({
         pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?",
         fullName:((p.baseToken||{}).symbol||"")+" / "+((p.quoteToken||{}).symbol||""),
+        tokenName:(p.baseToken||{}).name||"",
+        img:(p.info&&p.info.imageUrl)||null,
         baseToken:(p.baseToken||{}).address||null,
         price:+p.priceUsd||null,
         m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h24:+(p.volume&&p.volume.h24||0),
@@ -336,13 +350,56 @@ function mergePools(gtP, dsP){
   gtP.forEach(function(p){ map[(p.baseToken||p.pool||"").toLowerCase()]=p; });
   dsP.forEach(function(p){
     var k=(p.baseToken||p.pool||"").toLowerCase();
-    if(map[k]){ map[k].dsUrl=p.dsUrl; map[k].src="GT+DS"; if(!map[k].price&&p.price)map[k].price=p.price; }
+    if(map[k]){ map[k].dsUrl=p.dsUrl; map[k].src="GT+DS";
+      if(!map[k].price&&p.price)map[k].price=p.price;
+      if(!map[k].img&&p.img)map[k].img=p.img; }
     else map[k]=p;
   });
   return Object.keys(map).map(function(k){return map[k]})
     .filter(function(p){return p.h24>0 || p.h1>0 || p.m5>0})
-    .filter(function(p){return p.liq>500}); // dust-pool floor
+    .filter(function(p){return p.liq>500})       // dust-pool floor
+    .filter(function(p){return !isStable(p)})    // no stablecoins
+    .filter(function(p){return !isStock(p)});    // no tokenized stocks/ETFs
 }
+// ---- stock / stable filters ----
+function isStable(p){
+  var s=(p.sym||"").toUpperCase().replace(/^W/,"");
+  if(CFG.FILTERS.stableSyms.indexOf(s)>=0 || CFG.FILTERS.stableSyms.indexOf((p.sym||"").toUpperCase())>=0) return true;
+  // heuristic: USD-ish name pinned to $1 and barely moving
+  var nm=((p.tokenName||"")+" "+(p.sym||"")).toUpperCase();
+  if(nm.indexOf("USD")>=0 && p.price>0.97 && p.price<1.03 && Math.abs(p.ch24)<1.5) return true;
+  return false;
+}
+function isStock(p){
+  if(p.dex && CFG.FILTERS.stockDexes.indexOf(String(p.dex).toLowerCase())>=0) return true;
+  var raw=(p.sym||""), up=raw.toUpperCase();
+  // xStocks-style: real ticker + trailing lowercase x (AAPLx, TSLAx)
+  var base = /x$/.test(raw) && raw.length>2 ? up.slice(0,-1) : up;
+  if(CFG.FILTERS.stockSyms.indexOf(base)>=0) return true;
+  var nm=(p.tokenName||"")+" "+p.fullName;
+  for(var i=0;i<CFG.FILTERS.namePatterns.length;i++) if(CFG.FILTERS.namePatterns[i].test(nm)) return true;
+  return false;
+}
+// ---- letter-avatar fallback for tokens with no logo ----
+var _avCache={};
+function letterAvatar(sym){
+  var ch=(sym||"?").replace(/^\$/,"").charAt(0).toUpperCase()||"?";
+  if(_avCache[ch]) return _avCache[ch];
+  var c=document.createElement("canvas"); c.width=c.height=64;
+  var g=c.getContext("2d");
+  g.fillStyle="#1B1F24"; g.beginPath(); g.arc(32,32,32,0,6.2832); g.fill();
+  g.strokeStyle="#00C805"; g.lineWidth=3; g.beginPath(); g.arc(32,32,30,0,6.2832); g.stroke();
+  g.fillStyle="#00C805"; g.font="700 30px 'Space Grotesk',sans-serif";
+  g.textAlign="center"; g.textBaseline="middle"; g.fillText(ch,32,34);
+  return (_avCache[ch]=c.toDataURL("image/png"));
+}
+// swap broken remote logos for letter avatars (capture-phase; CSP-safe)
+document.addEventListener("error",function(e){
+  var t=e.target;
+  if(t && t.classList && t.classList.contains("timg") && !t.dataset.fb){
+    t.dataset.fb="1"; t.src=letterAvatar(t.dataset.sym||"?");
+  }
+},true);
 async function refresh(){
   try{
     var results = await Promise.all([fetchGTPools(), fetchDSPools()]);
@@ -402,7 +459,8 @@ function renderBoard(){
     var c=chgFor(p), up=c>=0;
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
       +'<div class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</div>'
-      +'<div class="tok"><div class="s">$'+esc(p.sym)+'</div><div class="n">'+esc(p.fullName)+' · '+esc(p.dex||p.src)+'</div></div>'
+      +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+'</div><div class="n">'+esc(p.tokenName||p.fullName)+' · '+esc(p.dex||p.src)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">vol '+(state.tf==="d30"?"30D":state.tf.toUpperCase())+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -423,8 +481,10 @@ function openToken(poolAddr){
   var c=p.ch24, up=c>=0;
   $("#modalRoot").innerHTML=
   '<div class="modal-bg" data-action="closebg"><div class="modal">'
-   +'<div class="mhead"><div><h2>$'+esc(p.sym)+' <span style="font-size:12px;color:var(--mute)">'+esc(p.fullName)+'</span></h2>'
-   +'<div class="px">$'+fmtP(p.price)+' · <span class="'+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'% 24H</span> · '+esc(p.dex||"")+'</div></div>'
+   +'<div class="mhead"><div style="display:flex;gap:11px;align-items:center">'
+   +'<img class="timg lg" alt="" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+   +'<div><h2>$'+esc(p.sym)+' <span style="font-size:12px;color:var(--mute)">'+esc(p.tokenName||p.fullName)+'</span></h2>'
+   +'<div class="px">$'+fmtP(p.price)+' · <span class="'+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'% 24H</span> · '+esc(p.dex||"")+'</div></div></div>'
    +'<button class="x" data-action="close">✕</button></div>'
    +'<iframe class="chart" src="'+gtEmbed+'" title="Live chart — GeckoTerminal" loading="lazy"></iframe>'
    +'<div class="mstats">'
@@ -524,8 +584,13 @@ async function connect(){
     var accts = await window.ethereum.request({ method:"eth_requestAccounts" });
     state.wallet = ethers.getAddress(accts[0]);
     await ensureChain();
-    $("#walletBtn").textContent = short(state.wallet); $("#walletBtn").className="wbtn on";
-    renderWallets(); renderProfile(); toast("Connected · Robinhood Chain");
+    var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
+    renderWallets();
+    var isNew = !state.profile;
+    if(isNew){ state.profile={ name:"", x:"", pfp:null }; save("hs_profile", state.profile); }
+    toast(isNew?"Signed up · profile created 🪪":"Connected · Robinhood Chain");
+    if(isNew) openProfile();
+    syncLeaderboard();
   }catch(e){ toast(e.message||"Connect failed", true); }
 }
 async function ensureChain(){
@@ -581,6 +646,33 @@ function createBurner(pk){
 }
 
 // ================= PROFILE / PNL / SHARE =================
+function openProfile(){
+  $("#modalRoot").innerHTML=
+   '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><h2>🪪 Snipr profile</h2><button class="x" data-action="close">✕</button></div>'
+   +'<div id="profBox"></div>'
+   +'<h3 style="font-size:15px;margin:18px 0 6px">📜 My snipes & PnL</h3>'
+   +'<div id="pnlBox"></div>'
+   +'</div></div>';
+  renderProfile(); renderPnl();
+}
+function renderWMenu(open){
+  var m=$("#wmenu");
+  if(!state.wallet || !open){ m.innerHTML=""; return; }
+  var pr=state.profile||{};
+  m.innerHTML='<div class="wmenu">'
+    +'<div class="who">'+esc(pr.name||"Unnamed Snipr")+'<br>'+short(state.wallet)+'</div>'
+    +'<button data-action="wp-profile">🪪 My profile</button>'
+    +'<button data-action="wp-ranks">🏆 Leaderboard</button>'
+    +'<button class="danger" data-action="wp-disconnect">✕ Disconnect</button>'
+    +'</div>';
+}
+function disconnect(){
+  state.wallet=null; state.provider=null;
+  var b=$("#walletBtn"); b.textContent="Connect wallet"; b.className="wbtn"; b.setAttribute("data-action","connect");
+  renderWMenu(false); renderWallets();
+  toast("Disconnected");
+}
 function renderProfile(){
   var box=$("#profBox"); if(!box)return; var pr=state.profile||{};
   box.innerHTML=
@@ -628,7 +720,7 @@ async function saveProfile(){
       toast("Profile claimed ✍️");
     }catch(e){ toast("Saved locally (leaderboard backend offline)", true); }
   }else toast("Saved locally");
-  renderProfile(); syncLeaderboard();
+  renderProfile(); renderWMenu(false); syncLeaderboard();
 }
 function pnlOf(t){
   var p=state.pools.find(function(x){return x.baseToken&&t.baseToken&&x.baseToken.toLowerCase()===t.baseToken.toLowerCase()});
@@ -734,9 +826,14 @@ async function renderRanks(){
 
 // ================= EVENTS (delegated — CSP-safe, no inline handlers) =================
 document.addEventListener("click", function(e){
+  if(!e.target.closest(".wwrap")) renderWMenu(false);
   var el=e.target.closest("[data-action]"); if(!el) return;
   var a=el.getAttribute("data-action");
   if(a==="connect") connect();
+  else if(a==="wmenu"){ e.stopPropagation(); renderWMenu(!$("#wmenu").firstChild); }
+  else if(a==="wp-profile"){ renderWMenu(false); openProfile(); }
+  else if(a==="wp-ranks"){ renderWMenu(false); $$(".tab").forEach(function(t){t.classList.toggle("on",t.getAttribute("data-tab")==="ranks")}); ["board","wallet","ranks"].forEach(function(k){$("#v-"+k).style.display=k==="ranks"?"":"none"}); renderRanks(); }
+  else if(a==="wp-disconnect") disconnect();
   else if(a==="open"){ e.stopPropagation(); openToken(el.getAttribute("data-pool")); }
   else if(a==="close") closeModal();
   else if(a==="closebg"){ if(e.target===el) closeModal(); }
@@ -756,9 +853,8 @@ $("#tabs").addEventListener("click",function(e){
   var b=e.target.closest(".tab"); if(!b)return;
   $$(".tab").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
   var v=b.getAttribute("data-tab");
-  ["board","wallet","profile","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
+  ["board","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
   if(v==="ranks") renderRanks();
-  if(v==="profile"){ renderProfile(); renderPnl(); }
   if(v==="wallet") renderWallets();
 });
 $("#tfpills").addEventListener("click",function(e){
@@ -773,7 +869,7 @@ $("#tfpills").addEventListener("click",function(e){
 state.burner = load("hs_burner", null);
 refresh(); setInterval(refresh, CFG.REFRESH_MS);
 setInterval(function(){ if(state.lastUpdate){var a=Math.round((Date.now()-state.lastUpdate)/1000);$("#ageTxt").textContent=a<60?a+"s ago":Math.round(a/60)+"m ago";} },5000);
-renderWallets(); renderProfile(); renderPnl();
+renderWallets();
 })();
 </script>
 </body>
