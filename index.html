@@ -22,7 +22,10 @@
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{background:var(--void);color:var(--bone);font-family:var(--body);overflow-x:hidden}
+body{
+  background:var(--void);color:var(--bone);font-family:var(--body);overflow-x:hidden;
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
+}
 ::selection{background:var(--green);color:#000}
 a{color:inherit}
 button{font-family:inherit;cursor:pointer;border:none}
@@ -89,7 +92,8 @@ body::before{
 
 /* ===== nav ===== */
 nav{
-  position:fixed;top:0;left:0;right:0;z-index:80;display:flex;justify-content:center;padding:34px 0 0;
+  position:fixed;top:0;left:0;right:0;z-index:80;display:flex;justify-content:center;
+  padding:calc(24px + env(safe-area-inset-top)) 12px 0;
 }
 .navpill{
   display:flex;align-items:center;gap:18px;background:rgba(14,17,20,.8);backdrop-filter:blur(10px);
@@ -167,8 +171,9 @@ section{max-width:1020px;margin:0 auto;padding:110px 20px}
 .shot .ic{font-size:26px;position:absolute;top:20px;right:20px;opacity:.85}
 
 /* ===== timeframes strip ===== */
-.tfrow{display:flex;gap:10px;margin-top:40px;flex-wrap:wrap}
-.tfchip{flex:1;min-width:120px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 16px;text-align:center;cursor:pointer;transition:all .2s}
+.tfrow{display:flex;gap:10px;margin-top:40px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:4px}
+.tfrow::-webkit-scrollbar{display:none}
+.tfchip{flex:0 0 auto;min-width:112px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 16px;text-align:center;cursor:pointer;transition:all .2s}
 .tfchip:hover,.tfchip.on{border-color:var(--green);background:var(--green-dim)}
 .tfchip .t{font-family:var(--disp);font-weight:800;font-size:22px}
 .tfchip .s{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.12em;margin-top:6px}

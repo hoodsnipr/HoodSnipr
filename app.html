@@ -18,7 +18,15 @@
   --body:'Space Grotesk',system-ui,sans-serif;--mono:'DM Mono',monospace;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--void);color:var(--text);font-family:var(--body);min-height:100vh}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--void);color:var(--text);font-family:var(--body);min-height:100vh;
+  overflow-x:hidden;
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
+}
+/* every horizontal strip scrolls instead of wrapping — no more stacked rows */
+.xscroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.xscroll::-webkit-scrollbar{display:none}
 ::selection{background:var(--green);color:#000}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 input{font-family:var(--mono);outline:none}
@@ -28,16 +36,22 @@ a{color:inherit}
 @keyframes shimmer{to{background-position:-200% 0}}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(12,14,16,.95);backdrop-filter:blur(8px);z-index:20}
+header{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top));
+  border-bottom:1px solid var(--line);position:sticky;top:0;
+  background:rgba(12,14,16,.96);backdrop-filter:blur(10px);z-index:30
+}
 .logo{display:flex;align-items:center;gap:10px;text-decoration:none}
-.logo b{font-weight:700;font-size:19px;letter-spacing:-.02em}
+.logo{min-width:0}
+.logo b{font-weight:700;font-size:19px;letter-spacing:-.02em;white-space:nowrap}
 .logo b span{color:var(--green)}
 .logo .sub{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
 .hstat{display:flex;align-items:center;gap:8px}
 .live{font-family:var(--mono);font-size:11px;color:var(--green);display:flex;align-items:center;gap:6px}
 .live i{width:7px;height:7px;border-radius:99px;background:var(--green);animation:pulse 1.8s infinite;display:inline-block}
 .live.err i{background:var(--red);animation:none}
-.wbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:9px 15px;border-radius:99px}
+.wbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:10px 16px;border-radius:99px;white-space:nowrap;min-height:40px}
 .wbtn.on{background:var(--panel2);color:var(--green);border:1px solid var(--green);font-family:var(--mono)}
 .wwrap{position:relative}
 .wmenu{position:absolute;top:calc(100% + 8px);right:0;background:var(--panel2);border:1px solid var(--line);border-radius:14px;min-width:190px;overflow:hidden;box-shadow:0 12px 34px rgba(0,0,0,.5);animation:pop .15s ease-out;z-index:60}
@@ -46,49 +60,90 @@ header{display:flex;align-items:center;justify-content:space-between;padding:14p
 .wmenu button.danger{color:var(--red)}
 .wmenu .who{padding:11px 15px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--mute)}
 
-.tabs{display:flex;gap:8px;padding:14px 16px 0;max-width:900px;margin:0 auto;flex-wrap:wrap}
-.tab{background:transparent;color:var(--mute);border:1px solid var(--line);font-weight:700;font-size:13px;padding:8px 14px;border-radius:99px}
+.toptape{
+  overflow:hidden;border-bottom:1px solid var(--line);
+  background:linear-gradient(90deg,var(--panel),var(--panel2),var(--panel));
+  position:relative;width:100%;display:block;min-height:38px;z-index:19
+}
+.toptape::before,.toptape::after{content:"";position:absolute;top:0;bottom:0;width:32px;z-index:2;pointer-events:none}
+.toptape::before{left:0;background:linear-gradient(90deg,var(--void),transparent)}
+.toptape::after{right:0;background:linear-gradient(270deg,var(--void),transparent)}
+.tt-in{display:flex;width:max-content;animation:slide 42s linear infinite;padding:9px 0}
+.toptape:hover .tt-in{animation-play-state:paused}
+@keyframes slide{to{transform:translateX(-50%)}}
+.tt{display:flex;align-items:center;gap:7px;padding:0 16px;white-space:nowrap;text-decoration:none;color:inherit;border-right:1px solid var(--line)}
+.tt:hover{background:rgba(0,200,5,.06)}
+.tt .n{font-family:var(--mono);font-size:10px;width:16px}
+.tt .n.gold{color:#FFD166}
+.tt img{width:20px;height:20px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
+.tt b{font-size:13px;font-weight:700}
+.tt .p{font-family:var(--mono);font-size:11px;color:var(--mute)}
+.tt .c{font-family:var(--mono);font-size:11px;font-weight:500}
+@media (prefers-reduced-motion: reduce){.tt-in{animation:none;overflow-x:auto}}
+.tabswrap{position:sticky;top:0;z-index:18;background:var(--void);border-bottom:1px solid var(--line)}
+.tabs{
+  display:flex;gap:8px;padding:11px 16px;max-width:960px;margin:0 auto;
+  flex-wrap:nowrap;white-space:nowrap
+}
+.tab{
+  background:transparent;color:var(--mute);border:1px solid var(--line);
+  font-weight:700;font-size:13px;padding:9px 15px;border-radius:99px;
+  flex:0 0 auto;min-height:38px
+}
 .tab.on{background:var(--text);color:#000;border-color:var(--text)}
-main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
+main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-inset-bottom))}
+@media(min-width:1024px){ main{padding-left:20px;padding-right:20px} }
 
-.tfbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 12px;flex-wrap:wrap}
-.tfpills{display:flex;gap:6px}
-.tf{font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);color:var(--mute)}
+.tfbar{display:block;margin:10px 0 12px}
+.tfpills{display:flex;gap:6px;flex-wrap:nowrap;white-space:nowrap;padding-bottom:2px}
+.tf{font-family:var(--mono);font-size:12px;padding:8px 14px;border-radius:9px;border:1px solid var(--line);color:var(--mute);flex:0 0 auto;min-height:36px}
 .tf.on{border-color:var(--green);color:var(--green);background:var(--green-dim)}
-.src{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
+.src{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap}
 .src b{color:var(--green);font-weight:500}
 
-.chainbar{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}
-.chainbar .cb{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:9px 10px;text-align:center}
-.chainbar .k{font-family:var(--mono);font-size:8.5px;color:var(--mute);letter-spacing:.12em}
-.chainbar .v{font-family:var(--mono);font-size:13px;margin-top:3px}
-.chainbar .v.blk{color:var(--green)}
-@media(max-width:760px){.chainbar{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:420px){.chainbar{grid-template-columns:repeat(2,1fr)}}
+.chainbar{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.chainbar .cb{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 8px;text-align:center;min-width:0}
+.chainbar .k{font-family:var(--mono);font-size:8.5px;color:var(--mute);letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chainbar .v{font-family:var(--mono);font-size:14px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(min-width:700px){ .chainbar .v{font-size:17px} .chainbar .k{font-size:9.5px} }
+.chainbar .sub{font-family:var(--mono);font-size:9px;color:var(--green);margin-top:2px;min-height:11px}
+.chainbar .v.bump{animation:bump .7s ease-out}
+@keyframes bump{0%{color:var(--green);transform:scale(1.16)}100%{color:var(--text);transform:scale(1)}}
+
 .board{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
-.row{display:flex;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.row{display:flex;align-items:center;gap:10px;padding:12px 12px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s;min-height:62px}
+@media(min-width:700px){ .row{gap:14px;padding:13px 16px} }
 .row:last-child{border-bottom:none}
 .row:hover{background:var(--panel2)}
-.rank{font-family:var(--mono);font-size:11px;color:var(--mute);width:22px}
-.rank.top{color:var(--gold)}
+.rank{font-family:var(--mono);font-size:11px;color:var(--mute);width:22px;font-weight:500}
+.rank.gold{color:#FFD166;text-shadow:0 0 10px rgba(255,209,102,.35)}
+.rank.silver{color:#C8D2D6}
+.rank.bronze{color:#C97B3C}
 .timg{width:34px;height:34px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
 .timg.lg{width:44px;height:44px}
 .tok{flex:1;min-width:0}
-.tok .s{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tok .s{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:2px}
 .tok .n{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pr{text-align:right;min-width:84px}
+.pr{text-align:right;min-width:78px;flex:0 0 auto}
 .pr .p{font-family:var(--mono);font-size:13px}
 .pr .c{font-family:var(--mono);font-size:12px}
 .up{color:var(--green)}.dn{color:var(--red)}
-.vl{text-align:right;min-width:70px}
+.vl{text-align:right;min-width:68px;flex:0 0 auto}
 .vl .v{font-family:var(--mono);font-size:12px}
 .vl .k{font-size:10px;color:var(--mute)}
-.snp{color:var(--green);border:1.5px solid var(--green);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
+.snp{color:var(--green);border:1.5px solid var(--green);font-weight:700;font-size:12px;padding:9px 13px;border-radius:99px;transition:all .15s;flex:0 0 auto;min-height:38px}
 .snp:hover{background:var(--green);color:#000}
-@media(max-width:540px){.vl{display:none}}
+@media(max-width:620px){ .vl{display:none} }
+@media(max-width:400px){
+  .rank{display:none}
+  .timg{width:30px;height:30px}
+  .tok .s{font-size:14px}
+  .pr{min-width:70px}
+  .snp{padding:8px 10px;font-size:11px}
+}
 
 .pager{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:12px;flex-wrap:wrap}
-.pager button{font-family:var(--mono);font-size:12px;padding:8px 14px;border-radius:99px;border:1px solid var(--line);color:var(--green);background:transparent;transition:all .15s}
+.pager button{font-family:var(--mono);font-size:12px;padding:11px 18px;border-radius:99px;border:1px solid var(--line);color:var(--green);background:transparent;transition:all .15s;min-height:44px}
 .pager button:hover:not(:disabled){border-color:var(--green);background:var(--green-dim)}
 .pager button:disabled{color:var(--mute);opacity:.4;cursor:default}
 .pager .pinfo{font-family:var(--mono);font-size:11px;color:var(--mute);letter-spacing:.06em}
@@ -98,12 +153,22 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .progress{font-family:var(--mono);font-size:11px;color:var(--gold);text-align:center;padding:10px}
 
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);display:flex;align-items:flex-end;justify-content:center;z-index:50}
-.modal{background:var(--panel2);border:1px solid var(--line);border-bottom:none;border-radius:20px 20px 0 0;width:100%;max-width:640px;max-height:92vh;overflow-y:auto;padding:18px 16px 30px;animation:pop .22s ease-out}
+.modal{
+  background:var(--panel2);border:1px solid var(--line);border-bottom:none;
+  border-radius:20px 20px 0 0;width:100%;max-width:640px;
+  max-height:min(92vh,92dvh);overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:18px 16px calc(30px + env(safe-area-inset-bottom));
+  animation:pop .22s ease-out
+}
+@media(min-width:760px){
+  .modal-bg{align-items:center}
+  .modal{border-radius:20px;border-bottom:1px solid var(--line);max-height:88vh;padding-bottom:26px}
+}
 .mhead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .mhead h2{font-size:18px}
 .mhead .px{font-family:var(--mono);font-size:12px;color:var(--mute)}
 .x{color:var(--mute);font-size:20px;padding:4px 8px}
-.chart{width:100%;height:340px;border:1px solid var(--line);border-radius:12px;margin-top:12px;background:var(--void)}
+.chart{width:100%;height:min(52vh,340px);min-height:240px;border:1px solid var(--line);border-radius:12px;margin-top:12px;background:var(--void)}
 .mstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-top:10px}
 .ms{background:var(--void);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
 .ms .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.1em}
@@ -112,9 +177,9 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .paytog{display:flex;gap:8px;margin-top:14px}
 .paytog button{flex:1;padding:10px 0;border-radius:10px;font-weight:700;font-size:13px;background:var(--void);color:var(--mute);border:1px solid var(--line)}
 .paytog button.on{background:var(--green-dim);color:var(--green);border-color:var(--green)}
-.amt{width:100%;margin-top:10px;background:var(--void);border:1px solid var(--line);border-radius:12px;color:var(--text);font-size:20px;padding:12px 14px}
+.amt{width:100%;margin-top:10px;background:var(--void);border:1px solid var(--line);border-radius:12px;color:var(--text);font-size:20px;padding:13px 14px;min-height:48px}
 .qamt{display:flex;gap:6px;margin-top:8px}
-.qamt button{flex:1;padding:6px 0;background:var(--void);border:1px solid var(--line);border-radius:8px;color:var(--mute);font-family:var(--mono);font-size:12px}
+.qamt button{flex:1;padding:9px 0;background:var(--void);border:1px solid var(--line);border-radius:8px;color:var(--mute);font-family:var(--mono);font-size:12px;min-height:38px}
 .fees{margin-top:12px;background:var(--void);border-radius:12px;padding:11px 13px;font-family:var(--mono);font-size:12px}
 .fees div{display:flex;justify-content:space-between;padding:3px 0}
 .fees .k{color:var(--mute)}
@@ -124,23 +189,25 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .linkout{display:block;text-align:center;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--mute);text-decoration:none}
 .linkout:hover{color:var(--green)}
 
-.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+@media(min-width:700px){ .card{padding:20px} }
 .card h3{font-size:15px;margin-bottom:10px}
 .frow{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
-.finput{flex:1;min-width:140px;background:var(--void);border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:14px;padding:10px 12px}
+.finput{flex:1;min-width:140px;background:var(--void);border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:16px;padding:11px 12px;min-height:44px}
 .sbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:10px 16px;border-radius:10px}
 .obtn{color:var(--green);border:1px solid var(--green);font-weight:700;font-size:13px;padding:10px 16px;border-radius:10px;text-align:center}
 .dbtn{color:var(--red);border:1px solid var(--red);font-weight:700;font-size:12px;padding:8px 14px;border-radius:10px}
 .addr{font-family:var(--mono);font-size:12px;color:var(--green);word-break:break-all;background:var(--void);padding:9px 11px;border-radius:8px;margin-top:8px}
 .hint{font-size:12px;color:var(--mute);line-height:1.6;margin-top:8px}
 .pfp{width:64px;height:64px;border-radius:99px;background:var(--void);border:2px solid var(--green);object-fit:cover}
-.lrow{display:flex;align-items:center;gap:10px;padding:11px 6px;border-bottom:1px solid var(--line)}
+.lrow{display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--line);min-height:58px}
 .lrow:last-child{border-bottom:none}
 .lrow img{width:34px;height:34px;border-radius:99px;object-fit:cover;background:var(--void)}
 .lrow .nm{flex:1;font-weight:700;font-size:14px;min-width:0}
 .lrow .nm .h{font-family:var(--mono);font-size:10px;color:var(--mute);font-weight:400}
 .lrow .pnl{font-family:var(--mono);font-size:14px}
-.pstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.pstats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+@media(max-width:560px){ .pstats{grid-template-columns:1fr} }
 .pst{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
 .pst .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.14em}
 .pst .v{font-family:var(--mono);font-size:18px;margin-top:5px}
@@ -150,7 +217,7 @@ main{max-width:900px;margin:0 auto;padding:14px 12px 90px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
 .loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
 .loose:hover{background:var(--red);color:#000}
-.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
+.toast{position:fixed;bottom:calc(20px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
 .toast.bad{background:var(--red)}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,.3);border-top-color:#000;border-radius:99px;animation:spin .8s linear infinite;vertical-align:-2px}
 .empty{text-align:center;color:var(--mute);padding:40px 16px;font-size:14px}
@@ -170,33 +237,35 @@ canvas.share{display:none}
   </div>
 </header>
 
-<div class="tabs" id="tabs">
+<div class="toptape" id="topTape" aria-label="Top 10 trending tokens">
+  <div class="tt-in" id="ttIn"></div>
+</div>
+
+<div class="tabswrap"><div class="tabs xscroll" id="tabs">
   <button class="tab on" data-tab="board">🎯 Trending</button>
   <button class="tab" data-tab="new">🆕 New</button>
   <button class="tab" data-tab="port">💼 Portfolio</button>
   <button class="tab" data-tab="wallet">👝 Wallets</button>
   <button class="tab" data-tab="ranks">🏆 Ranks</button>
-</div>
+</div></div>
 
 <main>
   <!-- ============ BOARD ============ -->
   <div id="v-board">
     <div class="tfbar">
-      <div class="tfpills" id="tfpills">
+      <div class="tfpills xscroll" id="tfpills">
         <button class="tf" data-tf="m5">5M</button>
         <button class="tf on" data-tf="h1">1H</button>
         <button class="tf" data-tf="h6">6H</button>
         <button class="tf" data-tf="h24">24H</button>
         <button class="tf" data-tf="d30">30D</button>
       </div>
-      <div class="src">SOURCES <b id="srcTxt">—</b> · <span id="ageTxt">…</span></div>
+      <div class="src"><b id="pageLabel" style="color:var(--gold)">🔥 TRENDING · TOP 50</b> · <span id="ageTxt">…</span></div>
     </div>
     <div class="chainbar" id="chainBar">
-      <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">—</div></div>
-      <div class="cb"><div class="k">24H TXNS</div><div class="v" id="cbTx">—</div></div>
-      <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">—</div></div>
-      <div class="cb"><div class="k">TOKENS</div><div class="v" id="cbTokens">—</div></div>
-      <div class="cb"><div class="k">BLOCK</div><div class="v blk" id="cbBlk">—</div></div>
+      <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">…</div></div>
+      <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">…</div></div>
+      <div class="cb"><div class="k">TOKENS CREATED</div><div class="v" id="cbTokens">…</div><div class="sub" id="cbTokensSub"></div></div>
     </div>
     <div class="board" id="board"></div>
     <div class="pager" id="pager"></div>
@@ -310,9 +379,17 @@ Object.freeze(CFG.UNI); Object.freeze(CFG.CHAIN); Object.freeze(CFG.FILTERS); Ob
 
 var $=function(s){return document.querySelector(s)}, $$=function(s){return Array.prototype.slice.call(document.querySelectorAll(s))};
 var state = {
-  tf:"h1", pools:[], dsChain:null, ethUsd:CFG.ETH_USD_FALLBACK,
+  tf:(function(){
+    // remember the last timeframe across reloads; fall back to 1H if the saved
+    // value is stale or bogus (e.g. a timeframe we've since renamed/removed)
+    try{
+      var v=JSON.parse(localStorage.getItem("hs_tf"));
+      return ["m5","h1","h6","h24","d30"].indexOf(v)>=0 ? v : "h1";
+    }catch(e){ return "h1"; }
+  })(),
+  pools:[], dsChain:null, ethUsd:CFG.ETH_USD_FALLBACK,
   wallet:null, provider:null, burner:null, burnerBal:null,
-  d30:{}, d30Loading:false, lastUpdate:0, srcs:[], chain:{}, block:null, page:0,
+  d30:{}, d30Loading:false, lastUpdate:0, srcs:[], chain:{}, page:0, universe:{}, lastTokenCount:null,
   trades: load("hs_trades", []),
   profile: load("hs_profile", null)
 };
@@ -464,7 +541,23 @@ function mergePools(gtP, dsP){
     .filter(function(p){return p.liq>100})       // dust floor, low enough to keep real long-tail
     .filter(function(p){return !isStable(p)})    // no stablecoins
     .filter(function(p){return !isStock(p)})     // no tokenized stocks/ETFs
-    .filter(function(p){return !isEthLike(p)});  // no ETH/WETH/LSTs — that's the ammo, not the target
+    .filter(function(p){return !isEthLike(p)})    // no ETH/WETH/LSTs — that's the ammo, not the target
+    .filter(function(p){return !isRugged(p)});   // closed pools = rugged, gone for good
+}
+// A pool that closes (liquidity pulled / pair killed) gets reported by the
+// indexers with a "closed" placeholder symbol. That's a rug signature — flag it,
+// remember it, and never show it again.
+var rugged = load("hs_rugged", {});
+function isRugged(p){
+  var k=(p.baseToken||p.pool||"").toLowerCase();
+  if(k && rugged[k]) return true;
+  var sym=(p.sym||"").trim().toLowerCase();
+  var nm=((p.tokenName||"")+" "+(p.fullName||"")).toLowerCase();
+  var bad = sym==="closed" || sym==="$closed" || sym==="unknown" || sym==="?" || sym===""
+         || /\bclosed\b/.test(nm) || /\brugged\b/.test(nm)
+         || (p.liq===0 && !(p.h24>0));           // pool drained and dead
+  if(bad && k){ rugged[k]=Date.now(); save("hs_rugged", rugged); }
+  return bad;
 }
 function isEthLike(p){
   if(p.baseToken && p.baseToken.toLowerCase()===CFG.UNI.weth.toLowerCase()) return true;
@@ -522,11 +615,37 @@ async function refresh(){
       var have={}; merged.forEach(function(p){ if(p.baseToken) have[p.baseToken.toLowerCase()]=1; });
       state.newPools.forEach(function(p){
         var k=(p.baseToken||"").toLowerCase();
-        if(k && !have[k] && !isStable(p) && !isStock(p) && !isEthLike(p)) merged.push(p);
+        if(k && !have[k] && !isStable(p) && !isStock(p) && !isEthLike(p) && !isRugged(p)) merged.push(p);
       });
     }
     if(merged.length){
-      state.pools=merged; state.lastUpdate=Date.now(); failStreak=0;
+      // The server rotates through the registry, so ANY single response is a
+      // slice of the chain, not all of it. Replacing state.pools wholesale made
+      // rows blink in and out. Instead we keep a persistent universe: merge
+      // fresh data in, keep pools we've seen before, and only evict when a pool
+      // has been missing long enough to be genuinely gone.
+      var uni = state.universe || (state.universe = {});
+      var now = Date.now();
+      merged.forEach(function(p){
+        var k=(p.pool||"").toLowerCase(); if(!k) return;
+        var prev = uni[k];
+        p.seen = now;
+        p.firstSeen = prev ? prev.firstSeen : now;
+        // don't let a partial record blank out fields we already had
+        if(prev){
+          ["img","mcap","site","tw","tg","tokenName","baseToken","created","dsUrl"].forEach(function(f){
+            if(p[f]==null || p[f]==="") p[f]=prev[f];
+          });
+        }
+        uni[k]=p;
+      });
+      Object.keys(uni).forEach(function(k){
+        var p=uni[k];
+        if(isRugged(p)){ delete uni[k]; return; }
+        if(now - p.seen > 20*60e3) delete uni[k];   // unseen 20 min → gone
+      });
+      state.pools = Object.keys(uni).map(function(k){return uni[k]});
+      state.lastUpdate=Date.now(); failStreak=0;
       state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
       if(mk.viaProxy) state.srcs.push("EDGE-CACHED");
     } else failStreak++;
@@ -563,32 +682,34 @@ async function pullChainStats(){
 }
 function renderChainBar(){
   var c=state.chain||{}, l=localStats(), e;
-  // never regress a good reading to a worse one within a session
   var best=state.bestStats||(state.bestStats={});
   var vol = c.vol24!=null? c.vol24 : l.vol24;
   var liq = c.liq!=null? c.liq : l.liq;
-  var n   = c.tokenCount!=null? c.tokenCount : l.tokenCount;
   if(!state.chainAuthoritative){
-    // cold start: hold the high-water mark so the bar doesn't jitter
     if(vol>(best.vol||0)) best.vol=vol; else vol=best.vol||vol;
     if(liq>(best.liq||0)) best.liq=liq; else liq=best.liq||liq;
-    if(n>(best.n||0)) best.n=n; else n=best.n||n;
   }
   if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "…";
-  if((e=$("#cbTx")))  e.textContent = c.txns24>0? fmtNum(c.txns24) : "…";
   if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
-  if((e=$("#cbTokens"))) e.textContent = n>0? n.toLocaleString() : "…";
-  if((e=$("#cbBlk"))) e.textContent = state.block? "#"+state.block.toLocaleString() : (c.block? "#"+c.block.toLocaleString() : "…");
-}
-// block height straight from chain RPC — always available, never proxy-dependent
-async function pollBlock(){
-  try{
-    var r=await fetch(CFG.CHAIN.rpcUrls[0],{method:"POST",headers:{"content-type":"application/json"},
-      body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_blockNumber",params:[]})});
-    var j=await r.json();
-    var b=parseInt(j.result,16);
-    if(b>0){ state.block=b; var e=$("#cbBlk"); if(e) e.textContent="#"+b.toLocaleString(); }
-  }catch(e){}
+
+  // TOKENS CREATED — cumulative census, only ever climbs
+  var created = c.tokensCreated!=null? c.tokensCreated : Math.max(best.tok||0, l.tokenCount||0);
+  if(created>(best.tok||0)) best.tok=created; else created=best.tok||created;
+  var el=$("#cbTokens");
+  if(el){
+    var prev=state.lastTokenCount;
+    if(created>0){
+      el.textContent = created.toLocaleString();
+      if(prev!=null && created>prev){
+        // a token just launched — flash it
+        el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
+        toast("🐣 "+(created-prev)+" new token"+((created-prev)>1?"s":"")+" created on Robinhood Chain");
+      }
+      state.lastTokenCount=created;
+    } else el.textContent="…";
+  }
+  var sub=$("#cbTokensSub");
+  if(sub) sub.textContent = c.tokensNewHour>0? "+"+c.tokensNewHour+" past hour" : (c.tokensNewDay>0? "+"+c.tokensNewDay+" past 24h" : "");
 }
 function setLive(){
   // Data <90s old is still LIVE even if one poll hiccuped; only a real,
@@ -597,7 +718,7 @@ function setLive(){
   var el=$("#liveDot");
   if(fresh){ el.className="live"; $("#liveTxt").textContent = failStreak>0 ? "LIVE·SYNC" : "LIVE"; }
   else { el.className="live err"; $("#liveTxt").textContent="RETRYING"; }
-  $("#srcTxt").textContent = state.srcs.join(" + ")||"—";
+  var sl=$("#srcTxt"); if(sl) sl.textContent = state.srcs.join(" + ")||"—";
 }
 // ---- 30D: lazy per-pool daily-OHLCV sums via GT, cached 6h ----
 async function ensure30d(){
@@ -707,6 +828,30 @@ function socialLinks(p, size){
 // ================= BOARD =================
 function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
 var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
+// Podium tiers across the trending 50: 1–10 gold, 11–25 silver, 26–50 bronze.
+function tierOf(i){ return i<10?"gold" : i<25?"silver" : i<50?"bronze" : ""; }
+var ttSig="";
+function renderTopTape(ranked){
+  var el=$("#ttIn"); if(!el) return;
+  var top=ranked.slice(0,10);
+  if(!top.length) return;
+  // only re-render when the lineup or prices actually changed — otherwise the
+  // CSS animation restarts every poll and the tape visibly jumps
+  var sig=top.map(function(p){return p.sym+":"+(p.price||0).toFixed(8)+":"+(chgFor(p)||0).toFixed(1)}).join("|");
+  if(sig===ttSig) return;
+  ttSig=sig;
+  var one=top.map(function(p,i){
+    var c=chgFor(p), up=c>=0;
+    return '<a class="tt" data-action="open" data-pool="'+esc(p.pool)+'" href="javascript:void(0)">'
+      +'<span class="n gold">'+String(i+1).padStart(2,"0")+'</span>'
+      +'<img alt="" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+      +'<b>$'+esc(p.sym)+'</b>'
+      +'<span class="p">$'+fmtP(p.price)+'</span>'
+      +'<span class="c '+(up?"up":"dn")+'">'+(up?"▲":"▼")+Math.abs(+c).toFixed(1)+'%</span>'
+      +'</a>';
+  }).join("");
+  el.innerHTML = one+one;   // duplicate track for the seamless -50% loop
+}
 function renderPager(total, pages){
   var el=$("#pager"); if(!el)return;
   if(total<=PAGE_SIZE){
@@ -721,11 +866,18 @@ function renderPager(total, pages){
   el.innerHTML=h;
 }
 function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:state.tf==="h6"?p.ch6:p.ch24 }
-var PAGE_SIZE=50, MAX_TOKENS=Infinity;   // track the whole chain, paginate the view
+var PAGE_SIZE=50, MAX_TOKENS=2500;   // 50 rows a page, up to 2500 tokens deep
 function renderBoard(){
   var el=$("#board");
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
-  var ranked=state.pools.slice().sort(function(a,b){return volFor(b)-volFor(a)}).slice(0,MAX_TOKENS);
+  // Deterministic sort: volume desc, then pool address — identical input always
+  // yields identical order, so rows never shuffle between refreshes.
+  var ranked=state.pools.slice().sort(function(a,b){
+    var d=volFor(b)-volFor(a);
+    if(d) return d;
+    var la=(b.liq||0)-(a.liq||0); if(la) return la;
+    return (a.pool||"")<(b.pool||"")?-1:1;
+  }).slice(0,MAX_TOKENS);
   var pages=Math.max(1,Math.ceil(ranked.length/PAGE_SIZE));
   if(state.page>=pages) state.page=pages-1;
   if(state.page<0) state.page=0;
@@ -740,7 +892,7 @@ function renderBoard(){
     var i=start+idx;
     var c=chgFor(p), up=c>=0;
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
-      +'<div class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</div>'
+      +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
       +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
       +'<div class="n">MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
@@ -751,6 +903,12 @@ function renderBoard(){
   });
   el.innerHTML=h;
   renderPager(ranked.length, pages);
+  renderTopTape(ranked);
+  var pl=$("#pageLabel");
+  if(pl){
+    if(state.page===0){ pl.style.color="var(--gold)"; pl.textContent="🔥 TRENDING · TOP 50"; }
+    else { pl.style.color="var(--mute)"; pl.textContent="PAGE "+(state.page+1)+" · RANK "+(start+1)+"–"+Math.min(ranked.length,start+PAGE_SIZE); }
+  }
   var tn=$("#trackNote");
   if(tn) tn.textContent="Tracking "+ranked.length+" pools across Robinhood Chain · GeckoTerminal + DexScreener · new launches folded in live";
   enrichHolders(rows);
@@ -1369,7 +1527,7 @@ async function renderRanks(){
     if(!list.length){ box.innerHTML='<div class="empty">No ranked sniprs yet — record a snipe with a connected wallet to claim #01.</div>'; return; }
     box.innerHTML=list.map(function(u,i){
       var up=u.pnl>=0;
-      return '<div class="lrow"><span class="rank'+(i<3?" top":"")+'">'+String(i+1).padStart(2,"0")+'</span>'
+      return '<div class="lrow"><span class="rank'+(i<3?" gold":"")+'">'+String(i+1).padStart(2,"0")+'</span>'
         +'<img src="'+(u.pfp?esc(u.pfp):"./favicon.svg")+'" alt="">'
         +'<div class="nm">'+esc(u.name||short(u.addr))+'<div class="h">'+short(u.addr)+(u.x?' · @'+esc(u.x):'')+' · '+(+u.trades||0)+' snipes</div></div>'
         +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+(+u.pnl).toFixed(2)+'</div></div>';
@@ -1791,6 +1949,7 @@ $("#tfpills").addEventListener("click",function(e){
   var b=e.target.closest(".tf"); if(!b)return;
   $$(".tf").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
   state.tf=b.getAttribute("data-tf");
+  save("hs_tf", state.tf);
   state.page=0;
   renderBoard();
   if(state.tf==="d30") ensure30d();
@@ -1850,12 +2009,18 @@ state.burner = load("hs_burner", null);
   state.trades = state.trades.filter(function(t){ return !!t.tx; });
   if(state.trades.length!==before) save("hs_trades", state.trades);
 })();
+// paint the restored timeframe onto the pills before first render
+(function(){
+  $$(".tf").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-tf")===state.tf); });
+  if(state.tf==="d30") setTimeout(ensure30d, 800);   // 30D needs its ranger primed
+})();
+
 autoReconnect();
 document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
-fetchEthUsd(); refresh(); pollBlock();
+fetchEthUsd(); refresh();
 setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
-setInterval(function(){ if(!document.hidden) pollBlock(); }, 5000);
-pullChainStats(); setInterval(function(){ if(!document.hidden) pullChainStats(); }, 20000);
+// token census polls fast so new launches show up almost the moment they land
+pullChainStats(); setInterval(function(){ if(!document.hidden) pullChainStats(); }, 10000);
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
 setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
 setInterval(function(){
