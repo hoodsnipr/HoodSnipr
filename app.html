@@ -481,7 +481,7 @@ function boardRowToPool(r){
     img:r.img||null, price:r.px, mcap:r.mc, liq:r.liq,
     m5:r.m5, h1:r.h1, h6:r.h6, h24:r.h24,
     cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
-    site:r.site, tw:r.tw, tg:r.tg,
+    site:r.site, tw:r.tw, tg:r.tg, dec:r.d,
     created:r.cr? new Date(r.cr).toISOString() : null,
     holders:r.h, dec:r.d, src:"BOARD"
   };
@@ -668,7 +668,7 @@ async function refresh(){
   try{
     var board = await fetchBoard();
     var merged, viaBoard=false;
-    if(board && board.length >= 5){
+    if(board && board.length >= 1){
       // The server already applied every filter. Re-filtering here (with data
       // that can differ slightly per device) is exactly how two browsers end up
       // showing different counts — so we take the server list verbatim.
@@ -791,14 +791,26 @@ function renderChainBar(){
   }
 }
 function setLive(){
-  // Data <90s old is still LIVE even if one poll hiccuped; only a real,
-  // sustained outage shows RETRYING. No more flicker on a single 429.
-  var fresh = state.lastUpdate && (Date.now()-state.lastUpdate) < 90000;
-  var el=$("#liveDot");
-  if(fresh){ el.className="live"; $("#liveTxt").textContent = failStreak>0 ? "LIVE·SYNC" : "LIVE"; }
-  else { el.className="live err"; $("#liveTxt").textContent="RETRYING"; }
+  // Flapping came from treating any single failed poll as "down". The board is
+  // a server-maintained cache, so data minutes old is still perfectly usable.
+  // RETRYING now requires data to be genuinely stale AND several consecutive
+  // failures — a blip can no longer flip the badge.
+  var ageMs = state.lastUpdate? (Date.now()-state.lastUpdate) : Infinity;
+  var el=$("#liveDot"), txt=$("#liveTxt");
+  if(!el||!txt) return;
+  if(ageMs < 180000){                       // < 3 min old → LIVE
+    el.className="live";
+    txt.textContent = failStreak>=2 ? "LIVE·SYNC" : "LIVE";
+  }else if(ageMs < 600000 && failStreak < 6){
+    el.className="live";
+    txt.textContent="LIVE·DELAYED";
+  }else{
+    el.className="live err";
+    txt.textContent="RETRYING";
+  }
   var sl=$("#srcTxt"); if(sl) sl.textContent = state.srcs.join(" + ")||"—";
 }
+
 // ---- 30D: lazy per-pool daily-OHLCV sums via GT, cached 6h ----
 async function ensure30d(){
   if(state.d30Loading) return;
@@ -1017,7 +1029,8 @@ function renderBoard(){
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
       + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
       + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.pools? " · "+c.pools.toLocaleString()+" pools indexed" : "");
+      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools indexed from chain logs" : "")
+      + (c.backfillDone===false? " · backfilling history…" : "");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
