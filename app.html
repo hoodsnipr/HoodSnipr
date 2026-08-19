@@ -512,8 +512,7 @@ function paintCachedBoard(){
     var pools=applyBoardPayload(pay,true);
     if(!pools) return false;
     var uni=state.universe={};
-    pools.filter(function(p){return !isStable(p)&&!isStock(p)&&!isEthLike(p)&&!isRugged(p)})
-      .forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase(); if(k){ p.seen=Date.now(); uni[k]=p; } });
+    pools.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase(); if(k){ p.seen=Date.now(); uni[k]=p; } });
     state.pools=Object.keys(uni).map(function(k){return uni[k]});
     state.lastUpdate=pay.ts;
     renderChainBar(); renderBoard();
@@ -609,17 +608,16 @@ function mergePools(gtP, dsP){
 // A pool that closes (liquidity pulled / pair killed) gets reported by the
 // indexers with a "closed" placeholder symbol. That's a rug signature — flag it,
 // remember it, and never show it again.
-var rugged = load("hs_rugged", {});
+// Rug detection is STATELESS and identical everywhere. It used to persist a
+// blacklist to localStorage, which meant every device accumulated a different
+// set of hidden tokens — that's why counts diverged between phone and desktop.
+// Server decides what's on the board; the client only screens the obvious.
+try{ localStorage.removeItem("hs_rugged"); }catch(e){}   // migrate off the old blacklist
 function isRugged(p){
-  var k=(p.baseToken||p.pool||"").toLowerCase();
-  if(k && rugged[k]) return true;
-  var sym=(p.sym||"").trim().toLowerCase();
-  var nm=((p.tokenName||"")+" "+(p.fullName||"")).toLowerCase();
-  var bad = sym==="closed" || sym==="$closed" || sym==="unknown" || sym==="?" || sym===""
-         || /\bclosed\b/.test(nm) || /\brugged\b/.test(nm)
-         || (p.liq===0 && !(p.h24>0));           // pool drained and dead
-  if(bad && k){ rugged[k]=Date.now(); save("hs_rugged", rugged); }
-  return bad;
+  var sym=String(p.sym||"").trim().toLowerCase();
+  var nm=(String(p.tokenName||"")+" "+String(p.fullName||"")).toLowerCase();
+  return sym==="closed" || sym==="$closed" || sym==="unknown" || sym==="?" || sym===""
+      || /\bclosed\b/.test(nm) || /\brugged\b/.test(nm);
 }
 function isEthLike(p){
   if(p.baseToken && p.baseToken.toLowerCase()===CFG.UNI.weth.toLowerCase()) return true;
@@ -671,7 +669,10 @@ async function refresh(){
     var board = await fetchBoard();
     var merged, viaBoard=false;
     if(board && board.length >= 5){
-      merged = board.filter(function(p){ return !isStable(p)&&!isStock(p)&&!isEthLike(p)&&!isRugged(p); });
+      // The server already applied every filter. Re-filtering here (with data
+      // that can differ slightly per device) is exactly how two browsers end up
+      // showing different counts — so we take the server list verbatim.
+      merged = board;
       viaBoard = true;
       state.srcs=["BLOCKSCOUT","DEXSCREENER","GECKOTERMINAL"];
     }else{
@@ -680,16 +681,11 @@ async function refresh(){
       state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
       if(mk.viaProxy) state.srcs.push("EDGE-CACHED");
     }
-    // Early movers matter more than incumbents here: anything the new-pools
-    // feed found that the main merge missed gets folded in, so a token picking
-    // up volume 10 minutes after launch is snipeable from the main index.
-    if(state.newPools && state.newPools.length){
-      var have={}; merged.forEach(function(p){ if(p.baseToken) have[p.baseToken.toLowerCase()]=1; });
-      state.newPools.forEach(function(p){
-        var k=(p.baseToken||"").toLowerCase();
-        if(k && !have[k] && !isStable(p) && !isStock(p) && !isEthLike(p) && !isRugged(p)) merged.push(p);
-      });
-    }
+    // NOTE: new launches are crawled server-side into the same registry, so we
+    // deliberately do NOT fold this device's own new-pool fetch into the index.
+    // That fetch lands at different times on different devices and would make
+    // the board differ between phone and desktop.
+
     if(merged.length){
       // The server rotates through the registry, so ANY single response is a
       // slice of the chain, not all of it. Replacing state.pools wholesale made
@@ -715,11 +711,14 @@ async function refresh(){
         }
         uni[k]=p;
       });
-      Object.keys(uni).forEach(function(k){
-        var p=uni[k];
-        if(isRugged(p)){ delete uni[k]; return; }
-        if(now - p.seen > 20*60e3) delete uni[k];   // unseen 20 min → gone
-      });
+      if(!viaBoard){
+        // only the fallback path accumulates; the board path is already complete
+        Object.keys(uni).forEach(function(k){
+          var p=uni[k];
+          if(isRugged(p)){ delete uni[k]; return; }
+          if(now - p.seen > 20*60e3) delete uni[k];
+        });
+      }
       state.pools = Object.keys(uni).map(function(k){return uni[k]});
       state.lastUpdate=Date.now(); failStreak=0;
     } else failStreak++;
