@@ -486,22 +486,52 @@ function boardRowToPool(r){
     holders:r.h, dec:r.d, src:"BOARD"
   };
 }
+function applyBoardPayload(pay, fromCache){
+  if(!pay || !pay.rows || !pay.rows.length) return null;
+  if(pay.stats){
+    state.chain=Object.assign({},state.chain||{},pay.stats);
+    state.chainAuthoritative=true;
+  }
+  pay.rows.forEach(function(x){
+    if(!x.a) return;
+    if(x.h!=null) meta[x.a]=Object.assign({},meta[x.a],{h:x.h,hT:Date.now()});
+    if(x.site||x.tw||x.tg) meta[x.a]=Object.assign({},meta[x.a],{site:x.site,tw:x.tw,tg:x.tg,sT:Date.now()});
+  });
+  return pay.rows.map(boardRowToPool);
+}
+// Paint the last known board from local cache BEFORE any network call, so the
+// full list is on screen the instant the app opens. Live data overwrites it
+// moments later.
+function paintCachedBoard(){
+  try{
+    var raw=localStorage.getItem("hs_board");
+    if(!raw) return false;
+    var pay=JSON.parse(raw);
+    if(!pay || !pay.rows || !pay.rows.length) return false;
+    if(Date.now()-pay.ts > 30*60e3) return false;      // too stale to trust
+    var pools=applyBoardPayload(pay,true);
+    if(!pools) return false;
+    var uni=state.universe={};
+    pools.filter(function(p){return !isStable(p)&&!isStock(p)&&!isEthLike(p)&&!isRugged(p)})
+      .forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase(); if(k){ p.seen=Date.now(); uni[k]=p; } });
+    state.pools=Object.keys(uni).map(function(k){return uni[k]});
+    state.lastUpdate=pay.ts;
+    renderChainBar(); renderBoard();
+    return true;
+  }catch(e){ return false; }
+}
 async function fetchBoard(){
   try{
     var r=await fetch(CFG.API+"/board");
     if(!r.ok) return null;
     var pay=await r.json();
-    if(!pay || !pay.rows || !pay.rows.length) return null;
-    if(pay.stats){
-      state.chain=Object.assign({},state.chain||{},pay.stats);
-      state.chainAuthoritative=true;
-      // seed holder counts we already have — avoids re-fetching them
-      pay.rows.forEach(function(x){
-        if(x.h!=null && x.a){ meta[x.a]=Object.assign({},meta[x.a],{h:x.h,hT:Date.now()}); }
-        if(x.site||x.tw||x.tg){ meta[x.a]=Object.assign({},meta[x.a],{site:x.site,tw:x.tw,tg:x.tg,sT:Date.now()}); }
-      });
-    }
-    return pay.rows.map(boardRowToPool);
+    var pools=applyBoardPayload(pay,false);
+    if(!pools) return null;
+    try{
+      // keep only what we need for a fast repaint next launch
+      localStorage.setItem("hs_board", JSON.stringify({ts:pay.ts,rows:pay.rows.slice(0,600),stats:pay.stats}));
+    }catch(e){}
+    return pools;
   }catch(e){ return null; }
 }
 async function fetchMarket(){
@@ -988,8 +1018,7 @@ function renderBoard(){
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
       + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
       + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.pools? " · "+c.pools.toLocaleString()+" pools indexed" : "")
-      + (c.crawl && c.crawl.addedThisCycle>0? " · +"+c.crawl.addedThisCycle+" new this scan" : "");
+      + (c.pools? " · "+c.pools.toLocaleString()+" pools indexed" : "");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
@@ -2097,6 +2126,7 @@ state.burner = load("hs_burner", null);
 
 autoReconnect();
 document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
+paintCachedBoard();      // instant full list from last session
 fetchEthUsd(); refresh();
 setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
 // token census polls fast so new launches show up almost the moment they land
