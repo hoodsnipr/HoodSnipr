@@ -640,7 +640,7 @@ async function refresh(){
   try{
     var board = await fetchBoard();
     var merged, viaBoard=false;
-    if(board && board.length){
+    if(board && board.length >= 5){
       merged = board.filter(function(p){ return !isStable(p)&&!isStock(p)&&!isEthLike(p)&&!isRugged(p); });
       viaBoard = true;
       state.srcs=["BLOCKSCOUT","DEXSCREENER","GECKOTERMINAL"];
@@ -988,8 +988,8 @@ function renderBoard(){
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
       + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
       + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.censusComplete===false? " · indexing chain…" : "")
-      + (c.enriched && c.tokensCreated && c.enriched<c.tokensCreated? " · pricing "+c.enriched.toLocaleString()+"/"+c.tokensCreated.toLocaleString() : "");
+      + (c.pools? " · "+c.pools.toLocaleString()+" pools indexed" : "")
+      + (c.crawl && c.crawl.addedThisCycle>0? " · +"+c.crawl.addedThisCycle+" new this scan" : "");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
