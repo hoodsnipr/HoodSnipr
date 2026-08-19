@@ -673,7 +673,7 @@ async function refresh(){
         uni = state.universe = {};
       }
       merged.forEach(function(p){
-        var k=(p.pool||"").toLowerCase(); if(!k) return;
+        var k=(p.baseToken||p.pool||"").toLowerCase(); if(!k) return;
         var prev = uni[k];
         p.seen = now;
         p.firstSeen = prev ? prev.firstSeen : now;
@@ -922,11 +922,34 @@ function renderBoard(){
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
   // Deterministic sort: volume desc, then pool address — identical input always
   // yields identical order, so rows never shuffle between refreshes.
-  var ranked=state.pools.slice().sort(function(a,b){
+  // One row per token, always. Multiple pools for the same token (different
+  // fee tiers, or the same token seen by two indexers) collapse into the
+  // deepest-liquidity pool — that's the one we'd route a snipe through anyway.
+  var byTok={}, loose=[];
+  state.pools.forEach(function(p){
+    var k=(p.baseToken||"").toLowerCase();
+    if(!k){ loose.push(p); return; }
+    var cur=byTok[k];
+    if(!cur){ byTok[k]=p; return; }
+    var better = (p.liq||0)>(cur.liq||0) || ((p.liq||0)===(cur.liq||0) && (p.h24||0)>(cur.h24||0));
+    if(better){
+      // don't lose metadata the loser had
+      ["img","mcap","site","tw","tg","tokenName","created","holders"].forEach(function(f){
+        if(p[f]==null||p[f]==="") p[f]=cur[f];
+      });
+      byTok[k]=p;
+    }else{
+      ["img","mcap","site","tw","tg","tokenName","created","holders"].forEach(function(f){
+        if(cur[f]==null||cur[f]==="") cur[f]=p[f];
+      });
+    }
+  });
+  var deduped=Object.keys(byTok).map(function(k){return byTok[k]}).concat(loose);
+  var ranked=deduped.sort(function(a,b){
     var d=volFor(b)-volFor(a);
     if(d) return d;
     var la=(b.liq||0)-(a.liq||0); if(la) return la;
-    return (a.pool||"")<(b.pool||"")?-1:1;
+    return (a.baseToken||a.pool||"")<(b.baseToken||b.pool||"")?-1:1;
   }).slice(0,MAX_TOKENS);
   var pages=Math.max(1,Math.ceil(ranked.length/PAGE_SIZE));
   if(state.page>=pages) state.page=pages-1;
@@ -965,7 +988,8 @@ function renderBoard(){
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
       + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
       + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.censusComplete===false? " · indexing…" : "");
+      + (c.censusComplete===false? " · indexing chain…" : "")
+      + (c.enriched && c.tokensCreated && c.enriched<c.tokensCreated? " · pricing "+c.enriched.toLocaleString()+"/"+c.tokensCreated.toLocaleString() : "");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
