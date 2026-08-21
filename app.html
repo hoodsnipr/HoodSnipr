@@ -482,6 +482,7 @@ function boardRowToPool(r){
     m5:r.m5, h1:r.h1, h6:r.h6, h24:r.h24,
     cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
+    vers:r.vers||[], venues:r.venues||[],
     created:r.cr? new Date(r.cr).toISOString() : null,
     holders:r.h, dec:r.d, src:"BOARD"
   };
@@ -934,6 +935,18 @@ function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCa
 var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
 // Podium tiers across the trending 50: 1–10 gold, 11–25 silver, 26–50 bronze.
 function tierOf(i){ return i<10?"gold" : i<25?"silver" : i<50?"bronze" : ""; }
+// One row per token; the badge says which Uniswap versions it can route through.
+function versionsOf(p){
+  var v=(p.vers&&p.vers.length)? p.vers.slice() : (p.ver? [p.ver] : []);
+  return v.map(function(x){return String(x).toLowerCase()}).filter(function(x,i,a){return a.indexOf(x)===i});
+}
+function venueBadge(p){
+  var v=versionsOf(p);
+  if(!v.length) return "";
+  if(v.length>1) return '<span style="color:var(--gold)">'+v.map(function(x){return x.toUpperCase()}).join("+")+'</span> · ';
+  if(v[0]==="v4") return '<span style="color:var(--gold)">V4</span> · ';
+  return "";
+}
 var ttSig="";
 function renderTopTape(ranked){
   var el=$("#ttIn"); if(!el) return;
@@ -1022,7 +1035,7 @@ function renderBoard(){
       +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
       +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+(String(p.ver||"").toLowerCase()==="v4"?'<span style="color:var(--gold)">V4</span> · ':'')+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
+      +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -1191,6 +1204,7 @@ function openToken(poolAddr){
    +'</div>'
    +'<input class="amt" id="snipeAmt" inputmode="decimal" placeholder="0.0" value="0.05" aria-label="ETH amount">'
    +'<div class="qamt">'+["0.01","0.05","0.1","0.25","0.5"].map(function(v){return '<button data-action="qamt" data-v="'+v+'">'+v+'</button>'}).join("")+'</div>'
+   +venueToggleHtml(p)
    +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="slip" data-b="'+b+'" '+(b===modal.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
    +'<div class="fees" id="feeBox"></div>'
    +'<button class="fire" id="fireBtn" data-action="fire">🏹 FIRE SNIPE</button>'
@@ -1199,6 +1213,9 @@ function openToken(poolAddr){
    +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
   +'</div></div>';
   modal.quote=null;
+  // default to the deepest venue, but prefer v3 since that's what we can route
+  var vv=versionsOf(p);
+  modal.venue = vv.indexOf("v3")>=0 ? "v3" : (vv[0]||"v3");
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; updFees(); });
   // lazy metadata: socials via GT info, holders via Blockscout
@@ -1207,6 +1224,18 @@ function openToken(poolAddr){
     var m=metaOf(p), el=$("#mHolders");
     if(el && m && m.h!=null) el.textContent=m.h.toLocaleString();
   });
+}
+function venueToggleHtml(p){
+  var v=versionsOf(p);
+  if(v.length<2) return "";   // no toggle unless there's a genuine choice
+  return '<div class="qamt" style="margin-top:8px">'
+    +v.map(function(x){
+      var on = x===modal.venue;
+      return '<button data-action="venue" data-v="'+esc(x)+'" '
+        +(on?'style="border-color:var(--green);color:var(--green)"':'')+'>'
+        +x.toUpperCase()+(x==="v4"?' ⚡':'')+'</button>';
+    }).join("")
+    +'</div>';
 }
 var quoteSeq=0;
 function updFees(){
@@ -1223,7 +1252,8 @@ function updFees(){
    +'<div><span class="k">Net swapped</span><span class="up">'+net.toFixed(6)+' ETH</span></div>'
    +'<div><span class="k">Est. received</span><span id="quoteLine">'+received+'</span></div>'
    +'<div><span class="k">Max slippage</span><span>'+(modal.slip/100)+'%</span></div>'
-   +'<div><span class="k">Execution</span><span style="color:var(--gold)">UNISWAP V3 · ONCHAIN</span></div>'
+   +'<div><span class="k">Execution</span><span style="color:var(--gold)">'
+     +(modal.venue==="v4" ? "UNISWAP V4 · NOT YET ROUTABLE" : "UNISWAP V3 · ONCHAIN")+'</span></div>'
    +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
   if(net>0 && p.baseToken) liveQuote(p, net);
 }
@@ -1264,6 +1294,7 @@ async function bestQuote(pr, token, amountInWei){
 }
 async function liveQuote(p, netEth){
   var seq=++quoteSeq;
+  if(modal.venue==="v4") return;   // nothing to quote until UniversalRouter lands
   try{
     var pr=rpc();
     if(!(await verifyUni(pr))) return;
@@ -1323,12 +1354,17 @@ async function fire(){
 
     // ---- quote (route + minOut) ----
     btn.innerHTML='<span class="spin"></span> QUOTING UNISWAP…';
+    // v4 pools live inside a singleton PoolManager and are unreachable through
+    // SwapRouter02. Say so up front instead of taking a fee on a doomed swap.
+    if(modal.venue==="v4"){
+      var hasV3 = versionsOf(p).indexOf("v3")>=0;
+      throw new Error("$"+p.sym+" v4 routing isn't wired up yet — it needs the UniversalRouter."
+        + (hasV3? " Switch to V3 above to snipe this token now." : " Nothing was charged.")); 
+    }
     var best = await bestQuote(rpc(), p.baseToken, netWei);
     if(!best){
-      // v4 pools live in a singleton PoolManager and are NOT reachable through
-      // SwapRouter02 — be explicit rather than failing with a vague message.
-      if((p.ver||"").toLowerCase()==="v4")
-        throw new Error("$"+p.sym+" trades on Uniswap v4, which needs the UniversalRouter — v4 sniping isn't wired up yet. Nothing was charged.");
+      if(versionsOf(p).indexOf("v4")>=0)
+        throw new Error("$"+p.sym+" only has a Uniswap v4 pool, which needs the UniversalRouter — not wired up yet. Nothing was charged.");
       throw new Error("No Uniswap v3 WETH pool for $"+p.sym+" — it may still be on a launchpad bonding curve. Nothing was charged.");
     }
     var minOut = best.out - (best.out * BigInt(modal.slip) / 10000n);
@@ -1972,7 +2008,7 @@ async function fireLoose(){
 
     btn.innerHTML='<span class="spin"></span> QUOTING…';
     var best=await bestQuoteOut(rpc(), x.addr, units);
-    if(!best) throw new Error("No Uniswap v3 WETH pool for $"+x.sym);
+    if(!best) throw new Error("No Uniswap v3 WETH pool for $"+x.sym+" — if it trades on v4 only, selling there isn't wired up yet.");
     var minOut = best.out - (best.out*BigInt(looseM.slip)/10000n);
 
     // ---- approval if needed (one extra signature, once per token) ----
@@ -2061,6 +2097,14 @@ document.addEventListener("click", function(e){
   else if(a==="closebg"){ if(e.target===el) closeModal(); }
   else if(a==="paymode"){ modal.mode=el.getAttribute("data-m"); $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)}); updFees(); }
   else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; updFees(); }
+  else if(a==="venue"){
+      modal.venue=el.getAttribute("data-v");
+      $$('[data-action="venue"]').forEach(function(b){
+        var on=b.getAttribute("data-v")===modal.venue;
+        b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";
+      });
+      modal.quote=null; updFees();
+    }
   else if(a==="slip"){ modal.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="slip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===modal.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updFees(); }
   else if(a==="fire") fire();
   else if(a==="bw-create"){ if(confirm("Create a burner wallet? Keys live ONLY in this browser — you must export and back up the key yourself.")) createBurner(); }
