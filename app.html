@@ -358,11 +358,13 @@ var CFG = {
     defaultSlippageBps: 500,             // 5%
     // Uniswap v4: pools live in a singleton PoolManager and are only reachable
     // through the UniversalRouter. Runtime-verified before any swap, same as v3.
-    // Ethereum mainnet's UniversalRouter. Almost certainly NOT the address on
-    // chain 4663 — calling execute() on an unrelated contract reverts with no
-    // data, which is exactly the failure we saw. Treated as a fallback only;
-    // the real router is discovered from onchain swap activity at boot.
-    universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+    // Confirmed from live chain logs (not assumed):
+    //   PoolManager 0x8366a39cc670b4001a1121b8f6a443a643e40951
+    //   Swap topic matches canonical Uniswap v4 exactly.
+    // The router is still resolved at runtime and capability-tested, because
+    // several contracts call the PoolManager and only some implement execute().
+    v4Manager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+    universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",   // fallback only
     V4: {
       CMD_SWAP: 0x10,                    // Commands.V4_SWAP
       CMD_WRAP_ETH: 0x0b,                // Commands.WRAP_ETH (for WETH-paired pools)
@@ -1383,7 +1385,14 @@ async function ensureV4Router(){
   // single in-flight bootstrap shared by every caller
   if(!v4BootPromise){
     v4BootPromise=fetch(CFG.API+"/v4pools?boot=1").then(function(r){return r.json()}).then(function(j){
-      if(j && j.router){ state.v4Router=j.router; state.v4Manager=j.manager; }
+      if(j && j.router){
+        state.v4Router=j.router;
+        state.v4Manager=j.manager;
+        state.v4RouterVerified=!!j.routerVerified;
+        // if the top pick isn't capability-verified, keep the others so a failed
+        // quote can fall through to the next candidate instead of dead-ending
+        state.v4Candidates=(j.candidates||[]).map(function(c){return c.addr});
+      }
       return state.v4Router||CFG.UNI.universalRouter;
     }).catch(function(){ return CFG.UNI.universalRouter; });
   }
@@ -1669,17 +1678,21 @@ async function fire(){
         }
       }
       if(!q4.ok){
-        // A revert with no data usually means we're calling the wrong contract,
-        // not that the pool is bad — re-discover the router and try once more.
-        var forced=await fetch(CFG.API+"/v4pools?router=1").then(function(r){return r.json()}).catch(function(){return null});
-        if(forced && forced.ok && forced.router && forced.router!==state.v4Router){
-          state.v4Router=forced.router;
+        // A no-data revert usually means the wrong contract, not a bad pool.
+        // Several contracts call the PoolManager; try the other candidates.
+        var cands=(state.v4Candidates||[]).filter(function(a){ return a!==state.v4Router; });
+        for(var ci=0; ci<cands.length && !q4.ok; ci++){
+          var prevR=state.v4Router;
+          state.v4Router=cands[ci];
           q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
+          if(!q4.ok) state.v4Router=prevR; else state.v4RouterVerified=true;
         }
       }
       if(!q4.ok && !modal.force){
         armForce("Simulation couldn't route "+net.toFixed(4)+" ETH via router "+short(v4Router())
-          +(state.v4Router? " (discovered onchain)." : " (FALLBACK address — the real router wasn't discovered, which is the likely cause)."));
+          +(state.v4RouterVerified? " (verified: implements execute)."
+            : state.v4Router? " (discovered, but it may not be the swap router)."
+            : " (FALLBACK — router discovery hasn't completed)."));
         return;
       }
       if(!q4.ok) q4={ ok:true, out:1n };   // forced: no slippage floor, user accepted
