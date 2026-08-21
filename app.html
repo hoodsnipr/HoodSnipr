@@ -361,6 +361,7 @@ var CFG = {
     universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
     V4: {
       CMD_SWAP: 0x10,                    // Commands.V4_SWAP
+      CMD_WRAP_ETH: 0x0b,                // Commands.WRAP_ETH (for WETH-paired pools)
       ACT_SWAP_IN_SINGLE: 0x06,          // Actions.SWAP_EXACT_IN_SINGLE
       ACT_SETTLE_ALL: 0x0c,
       ACT_TAKE_ALL: 0x0f,
@@ -1180,31 +1181,51 @@ function venueToggleHtml(p){
 }
 // ================= UNISWAP V4 =================
 var v4Cache={};   // token -> {manager, keys:[...]}
-async function v4KeysFor(token){
+async function v4KeysFor(token, allowScan){
   var k=(token||"").toLowerCase();
   if(v4Cache[k]) return v4Cache[k];
   try{
     var r=await fetch(CFG.API+"/v4pools?token="+k);
     if(!r.ok) return null;
     var j=await r.json();
-    if(!j || !j.keys || !j.keys.length) return null;
-    v4Cache[k]=j;
-    return j;
+    if(j && j.keys && j.keys.length){ v4Cache[k]=j; return j; }
+    // Not indexed yet. A pool created recently lives at the chain tip, so kick
+    // a tip scan and re-check once rather than telling the user to come back.
+    if(allowScan){
+      await fetch(CFG.API+"/v4pools?tip=1").catch(function(){});
+      var r2=await fetch(CFG.API+"/v4pools?token="+k);
+      if(r2.ok){
+        var j2=await r2.json();
+        if(j2 && j2.keys && j2.keys.length){ v4Cache[k]=j2; return j2; }
+        return { keys:[], scan:j2&&j2.scan };
+      }
+    }
+    return { keys:[], scan:j&&j.scan };
   }catch(e){ return null; }
 }
 // Pick the pool key for an ETH-paired v4 pool. v4 uses address(0) for native ETH.
 function pickV4Key(keys, token){
-  var NATIVE=CFG.UNI.V4.NATIVE, t=(token||"").toLowerCase();
-  var eth=keys.filter(function(k){
+  var NATIVE=CFG.UNI.V4.NATIVE, WETH=CFG.UNI.weth.toLowerCase(), t=(token||"").toLowerCase();
+  var unhooked=function(k){ return (k.hooks||NATIVE)===NATIVE; };   // hooked pools can do anything
+  // native-ETH pools first (we can pay with msg.value directly)
+  var native=keys.filter(function(k){
     return (k.c0===NATIVE && k.c1===t) || (k.c1===NATIVE && k.c0===t);
-  });
-  var pool=(eth.length?eth:keys).filter(function(k){ return k.hooks===NATIVE; });  // skip hooked pools
-  if(!pool.length) pool = eth.length?eth:keys;
-  // lowest fee tier first tends to be the primary pool
-  pool.sort(function(a,b){ return (a.fee||0)-(b.fee||0); });
-  return pool[0]||null;
+  }).filter(unhooked);
+  if(native.length){
+    native.sort(function(a,b){return (a.fee||0)-(b.fee||0)});
+    return { key:native[0], wrap:false };
+  }
+  // WETH-paired v4 pools work too, they just need the ETH wrapped first
+  var weth=keys.filter(function(k){
+    return (k.c0===WETH && k.c1===t) || (k.c1===WETH && k.c0===t);
+  }).filter(unhooked);
+  if(weth.length){
+    weth.sort(function(a,b){return (a.fee||0)-(b.fee||0)});
+    return { key:weth[0], wrap:true };
+  }
+  return null;
 }
-function encodeV4Swap(key, token, amountInWei, minOutWei, recipient){
+function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap){
   var V4=CFG.UNI.V4, NATIVE=V4.NATIVE;
   var zeroForOne = key.c0===NATIVE;           // ETH is currency0 -> swapping 0 for 1
   var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
@@ -1222,6 +1243,18 @@ function encodeV4Swap(key, token, amountInWei, minOutWei, recipient){
   var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
     [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
   var input0=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settle,take]]);
+
+  if(wrap){
+    // WETH-paired v4 pool: wrap msg.value into WETH held by the router first,
+    // then run the swap. WRAP_ETH input is (recipient, amount); ADDRESS_THIS
+    // (address(2)) means the router keeps it.
+    var wrapInput=coder.encode(["address","uint256"],
+      ["0x0000000000000000000000000000000000000002", amountInWei]);
+    return {
+      commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_WRAP_ETH, V4.CMD_SWAP]),
+      inputs: [wrapInput, input0]
+    };
+  }
   var commands=ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]);
   return { commands:commands, inputs:[input0] };
 }
@@ -1356,11 +1389,18 @@ async function fire(){
     // ---------------- UNISWAP V4 ROUTE ----------------
     if(modal.venue==="v4"){
       btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
-      var v4=await v4KeysFor(p.baseToken);
-      if(!v4 || !v4.keys.length)
-        throw new Error("No indexed v4 pool for $"+p.sym+" yet — the v4 scanner may still be backfilling. Nothing was charged.");
-      var key=pickV4Key(v4.keys, p.baseToken);
-      if(!key) throw new Error("No ETH-paired v4 pool for $"+p.sym+". Nothing was charged.");
+      var v4=await v4KeysFor(p.baseToken, true);
+      if(!v4 || !v4.keys || !v4.keys.length){
+        var sc=(v4&&v4.scan)||{};
+        throw new Error("Couldn't find a v4 pool for $"+p.sym
+          + (sc.done? " — it may be paired against a token other than ETH."
+                    : " — the v4 index is still backfilling ("+(sc.tokens||0)+" tokens mapped). Try again shortly.")
+          + " Nothing was charged.");
+      }
+      var picked=pickV4Key(v4.keys, p.baseToken);
+      if(!picked)
+        throw new Error("$"+p.sym+" has v4 pools but none paired with ETH or WETH (or they use hooks we don't route). Nothing was charged.");
+      var key=picked.key, needWrap=picked.wrap;
 
       if(!(await verifyUniversalRouter(rpc())))
         throw new Error("UniversalRouter not found on this chain — v4 trading disabled for safety.");
@@ -1374,7 +1414,7 @@ async function fire(){
       var expWei = ethers.parseUnits(expected.toFixed(Math.min(18,dec4)), dec4);
       var minOut4 = expWei - (expWei*BigInt(modal.slip)/10000n);
 
-      var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, me);
+      var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, me, needWrap);
       var deadline=BigInt(Math.floor(Date.now()/1000)+900);
 
       // preflight the exact call before any signature or fee
@@ -1395,7 +1435,7 @@ async function fire(){
       var f4=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(fee.toFixed(18)) });
       await f4.wait();
 
-      btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…';
+      btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…'+(needWrap?' (WRAP+SWAP)':'');
       var ur=new ethers.Contract(CFG.UNI.universalRouter, UROUTER_ABI, signer);
       var tx4;
       try{
