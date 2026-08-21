@@ -1185,14 +1185,18 @@ var v4Cache={};   // token -> {manager, keys:[...]}
 // is the first indexed argument of Initialize, so the server can find the pool
 // by id alone — no dependence on knowing the event signature, which is what
 // kept failing. This is the primary lookup now; the log scan is the fallback.
+var v4ProbeCache={};
 async function v4KeyByPoolId(poolId){
   var id=String(poolId||"").toLowerCase();
   if(!/^0x[0-9a-f]{64}$/.test(id)) return null;   // not a v4 pool id
+  if(v4ProbeCache[id]!==undefined) return v4ProbeCache[id];
   try{
     var r=await fetch(CFG.API+"/v4pools?probe="+id);
     if(!r.ok) return null;
     var j=await r.json();
-    return (j && j.ok && j.key) ? j.key : null;
+    var key=(j && j.ok && j.key) ? j.key : null;
+    if(key) v4ProbeCache[id]=key;     // only cache hits; misses may resolve later
+    return key;
   }catch(e){ return null; }
 }
 async function v4KeysFor(token, allowScan){
@@ -1442,6 +1446,7 @@ async function fire(){
       btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
       // 1) direct lookup by the pool id we already have from the board
       var key=null, needWrap=false, v4=null;
+      btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
       var direct=await v4KeyByPoolId(p.pool);
       if(direct){
         var dp=pickV4Key([direct], p.baseToken);
@@ -1454,9 +1459,8 @@ async function fire(){
         var sc=(v4&&v4.scan)||{};
         throw new Error("Couldn't resolve the v4 pool for $"+p.sym
           + " (pool id " + String(p.pool||"?").slice(0,10) + "…)"
-          + (sc.done? " — the pool may use hooks or an unusual pairing."
-                    : " — the v4 index is still building ("+(sc.tokens||0)+" mapped).")
-          + " Nothing was charged.");
+          + " — still searching chain history for it. This resolves as the index"
+          + " walks back; try again in a minute. Nothing was charged.");
       }
       if(!key){
         var picked=pickV4Key(v4.keys, p.baseToken);
