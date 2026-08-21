@@ -1159,6 +1159,12 @@ function openToken(poolAddr){
    +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
   +'</div></div>';
   modal.quote=null; modal.force=false;
+  // Warm the v4 path in the background the moment the modal opens, so pressing
+  // FIRE doesn't stall on router discovery and key resolution.
+  if(versionsOf(p).indexOf("v4")>=0){
+    ensureV4Router();
+    if(!deriveV4Key(p.baseToken, p.pool) && p.created) v4KeyByTime(p.pool, p.created);
+  }
   // default to the deepest venue, but prefer v3 since that's what we can route
   var vv=versionsOf(p);
   modal.venue = vv.indexOf("v3")>=0 ? "v3" : (vv[0]||"v3");
@@ -1371,16 +1377,17 @@ var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadl
 // Use the router observed executing v4 swaps on this chain, falling back to the
 // configured address only if discovery hasn't answered yet.
 function v4Router(){ return state.v4Router || CFG.UNI.universalRouter; }
+var v4BootPromise=null;
 async function ensureV4Router(){
   if(state.v4Router) return state.v4Router;
-  try{
-    var r=await fetch(CFG.API+"/v4pools?router=1");
-    if(r.ok){
-      var j=await r.json();
-      if(j && j.ok && j.router){ state.v4Router=j.router; return j.router; }
-    }
-  }catch(e){}
-  return CFG.UNI.universalRouter;
+  // single in-flight bootstrap shared by every caller
+  if(!v4BootPromise){
+    v4BootPromise=fetch(CFG.API+"/v4pools?boot=1").then(function(r){return r.json()}).then(function(j){
+      if(j && j.router){ state.v4Router=j.router; state.v4Manager=j.manager; }
+      return state.v4Router||CFG.UNI.universalRouter;
+    }).catch(function(){ return CFG.UNI.universalRouter; });
+  }
+  return v4BootPromise;
 }
 
 // There is no v4 Quoter wired on this chain, and guessing minOut from the
@@ -1389,66 +1396,53 @@ async function ensureV4Router(){
 // simulating the swap: binary-search the largest amountOutMinimum that still
 // succeeds. That value IS the achievable output, in raw units, with no
 // decimals assumption anywhere.
-async function v4SimQuote(key, token, amountInWei, me, wrap, onStep){
+async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut){
   var pr=rpc(), iface=new ethers.Interface(UROUTER_ABI);
   var deadline=BigInt(Math.floor(Date.now()/1000)+900);
   var calls=0;
+  function build(minOut){
+    var enc=encodeV4Swap(key, token, amountInWei, minOut, me, wrap);
+    return iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
+  }
   async function works(minOut){
     calls++;
     try{
-      var enc=encodeV4Swap(key, token, amountInWei, minOut, me, wrap);
-      var data=iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
-      await pr.call({ to:v4Router(), data:data, value:amountInWei, from:me });
+      await pr.call({ to:v4Router(), data:build(minOut), value:amountInWei, from:me });
       return true;
     }catch(e){ return false; }
   }
-  // routable at all?
-  if(!(await works(1n))) return { ok:false, calls:calls };
-  // exponential upper bound
-  var lo=1n, hi=1n;
-  for(var i=0;i<10;i++){
-    var probe=hi*65536n;
-    if(onStep) onStep(calls);
-    if(await works(probe)){ lo=probe; hi=probe; }
-    else { hi=probe; break; }
+
+  // Seeded search. The blind version needed ~28 sequential eth_calls, which is
+  // what made this feel slow. We already know the token's price, so we can
+  // bracket the answer immediately and only search inside that bracket.
+  var lo=0n, hi=0n;
+  if(seedOut && seedOut>0n){
+    var low=seedOut*80n/100n, high=seedOut*125n/100n;
+    var pair=await Promise.all([works(low), works(high)]);   // parallel, 1 round trip
+    if(pair[0] && pair[1]) { lo=high; hi=high*4n; }          // seed was low
+    else if(pair[0])       { lo=low;  hi=high; }             // bracketed ✓
+    else {
+      if(!(await works(1n))) return { ok:false, calls:calls };
+      lo=1n; hi=low;
+    }
+  }else{
+    if(!(await works(1n))) return { ok:false, calls:calls };
+    lo=1n; hi=1n;
+    for(var i=0;i<8;i++){
+      var probe=hi*4096n;
+      if(await works(probe)){ lo=probe; hi=probe; } else { hi=probe; break; }
+    }
   }
-  // binary search the boundary
-  for(var j=0;j<18 && hi>lo+1n;j++){
+  // Precision beyond ~1% is wasted here: minOut only has to sit below the true
+  // output by the slippage margin, and underestimating is SAFE (a lower floor
+  // still executes). So we stop at 6 steps and spend the savings on latency.
+  for(var j=0;j<6 && hi>lo+1n;j++){
     var mid=lo+(hi-lo)/2n;
     if(await works(mid)) lo=mid; else hi=mid;
   }
-  return { ok:true, out:lo, calls:calls };
-}
-async function verifyUniversalRouter(pr){
-  if(state.urOk===true) return true;
-  try{
-    var code=await withRetry(function(){ return pr.getCode(v4Router()); });
-    if(code && code!=="0x"){ state.urOk=true; return true; }
-    return false;                 // definitively no contract there
-  }catch(e){ return null; }       // unknown — don't cache, don't block
+  return { ok:lo>0n, out:lo, calls:calls };
 }
 
-// When a simulation predicts failure we don't block the trade — we surface the
-// reason and let a second, deliberate press go through anyway. Traders own their
-// risk; our job is to make sure they know what they're accepting.
-function armForce(reason){
-  modal.force = true;
-  var b=$("#fireBtn");
-  if(b){
-    b.disabled=false;
-    b.textContent="⚠ FIRE ANYWAY";
-    b.style.background="var(--red)";
-    b.style.color="#000";
-  }
-  var box=$("#feeBox");
-  if(box){
-    var warn=document.createElement("div");
-    warn.style.cssText="margin-top:8px;font-size:11px;color:var(--red);line-height:1.5";
-    warn.textContent="⚠ "+reason+" Press again to send it anyway — gas will be spent even if it reverts.";
-    box.appendChild(warn);
-  }
-  toast("Simulation failed — press again to override", true);
-}
 var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
@@ -1653,7 +1647,17 @@ async function fire(){
 
       // Derive the real output by simulation — no decimals guess, no quoter.
       btn.innerHTML='<span class="spin"></span> QUOTING V4 POOL…';
-      var q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
+      // seed the search with what the indexer says the output should be
+      var seed4=null;
+      try{
+        var sdec=await tokenDecimals(rpc(), p.baseToken);
+        if(p.price>0){
+          var expTok=(net*state.ethUsd)/p.price;
+          if(isFinite(expTok) && expTok>0)
+            seed4=ethers.parseUnits(expTok.toFixed(Math.min(18,sdec)), sdec);
+        }
+      }catch(e){}
+      var q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
       if(!q4.ok){
         // couldn't even swap for 1 wei of output — try the other pairing before
         // declaring failure, since a token often has both native and WETH pools
@@ -1661,7 +1665,7 @@ async function fire(){
         var altPick=alt.length? pickV4Key(alt, p.baseToken) : null;
         if(altPick){
           key=altPick.key; needWrap=altPick.wrap;
-          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
+          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
         }
       }
       if(!q4.ok){
@@ -1670,11 +1674,12 @@ async function fire(){
         var forced=await fetch(CFG.API+"/v4pools?router=1").then(function(r){return r.json()}).catch(function(){return null});
         if(forced && forced.ok && forced.router && forced.router!==state.v4Router){
           state.v4Router=forced.router;
-          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
+          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
         }
       }
       if(!q4.ok && !modal.force){
-        armForce("Simulation couldn't route "+net.toFixed(4)+" ETH through this v4 pool via "+short(v4Router())+".");
+        armForce("Simulation couldn't route "+net.toFixed(4)+" ETH via router "+short(v4Router())
+          +(state.v4Router? " (discovered onchain)." : " (FALLBACK address — the real router wasn't discovered, which is the likely cause)."));
         return;
       }
       if(!q4.ok) q4={ ok:true, out:1n };   // forced: no slippage floor, user accepted
@@ -2650,8 +2655,9 @@ state.burner = load("hs_burner", null);
 // derived locally instead of needing a log lookup every time
 fetch(CFG.API+"/v4pools?hooks=1").then(function(r){return r.json()}).then(function(j){
   if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
-  if(j && j.router) state.v4Router=j.router;
-}).catch(function(){});
+  if(j && j.router){ state.v4Router=j.router; state.v4Manager=j.manager; }
+  else ensureV4Router();      // bootstrap now so it's ready before the first snipe
+}).catch(function(){ ensureV4Router(); });
 
 autoReconnect();
 document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
