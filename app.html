@@ -1185,6 +1185,65 @@ var v4Cache={};   // token -> {manager, keys:[...]}
 // is the first indexed argument of Initialize, so the server can find the pool
 // by id alone — no dependence on knowing the event signature, which is what
 // kept failing. This is the primary lookup now; the log scan is the fallback.
+// ---------------------------------------------------------------------------
+// DERIVE THE POOLKEY LOCALLY.
+//
+// Every log-based lookup has failed: the Initialize topic hash is unknown, and
+// this RPC rejects wide getLogs ranges. But v4 defines
+//     PoolId = keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))
+// and DexScreener hands us the PoolId as the pair address. So we can rebuild
+// candidate PoolKeys and hash them until one MATCHES the id — which proves the
+// key is exactly right, with zero chain queries and no guesswork.
+var V4_FEE_TIERS=[100,500,3000,10000,20000,25000,2500,0x800000];
+var V4_SPACINGS=[1,10,60,200,2,4,20,50,100,500];
+var V4_STD=[[100,1],[500,10],[3000,60],[10000,200],[20000,200],[0x800000,60],[0x800000,1]];
+function v4PoolId(c0,c1,fee,ts,hooks){
+  var coder=ethers.AbiCoder.defaultAbiCoder();
+  return ethers.keccak256(coder.encode(
+    ["address","address","uint24","int24","address"],[c0,c1,fee,ts,hooks]));
+}
+function sortCurrencies(a,b){
+  return a.toLowerCase()<b.toLowerCase()? [a,b] : [b,a];
+}
+// Returns {key, wrap} when a candidate hashes to the target id.
+function deriveV4Key(token, targetId){
+  var NATIVE=CFG.UNI.V4.NATIVE, WETH=CFG.UNI.weth, t=ethers.getAddress(token);
+  var id=String(targetId||"").toLowerCase();
+  if(!/^0x[0-9a-f]{64}$/.test(id)) return null;
+
+  var pairings=[
+    { pair:sortCurrencies(NATIVE, t), wrap:false },
+    { pair:sortCurrencies(WETH, t),   wrap:true  }
+  ];
+  // hooks are almost always the zero address for plain pools
+  var hookOpts=[NATIVE];
+
+  // fast pass: the standard fee/spacing combinations
+  for(var pi=0; pi<pairings.length; pi++){
+    for(var si=0; si<V4_STD.length; si++){
+      for(var hi=0; hi<hookOpts.length; hi++){
+        var c=pairings[pi].pair, f=V4_STD[si][0], sp=V4_STD[si][1], hk=hookOpts[hi];
+        if(v4PoolId(c[0],c[1],f,sp,hk).toLowerCase()===id)
+          return { key:{ c0:c[0].toLowerCase(), c1:c[1].toLowerCase(), fee:f, ts:sp, hooks:hk.toLowerCase(), id:id },
+                   wrap:pairings[pi].wrap };
+      }
+    }
+  }
+  // exhaustive pass: every fee x spacing combination
+  for(var p2=0; p2<pairings.length; p2++){
+    for(var f2=0; f2<V4_FEE_TIERS.length; f2++){
+      for(var s2=0; s2<V4_SPACINGS.length; s2++){
+        var cc=pairings[p2].pair;
+        if(v4PoolId(cc[0],cc[1],V4_FEE_TIERS[f2],V4_SPACINGS[s2],NATIVE).toLowerCase()===id)
+          return { key:{ c0:cc[0].toLowerCase(), c1:cc[1].toLowerCase(), fee:V4_FEE_TIERS[f2],
+                         ts:V4_SPACINGS[s2], hooks:NATIVE, id:id },
+                   wrap:pairings[p2].wrap };
+      }
+    }
+  }
+  return null;
+}
+
 var v4ProbeCache={};
 async function v4KeyByPoolId(poolId){
   var id=String(poolId||"").toLowerCase();
@@ -1444,23 +1503,29 @@ async function fire(){
     // ---------------- UNISWAP V4 ROUTE ----------------
     if(modal.venue==="v4"){
       btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
-      // 1) direct lookup by the pool id we already have from the board
+      // 1) derive the PoolKey from the pool id — deterministic, no RPC
       var key=null, needWrap=false, v4=null;
       btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
-      var direct=await v4KeyByPoolId(p.pool);
-      if(direct){
+      var derived=deriveV4Key(p.baseToken, p.pool);
+      if(derived){ key=derived.key; needWrap=derived.wrap; }
+
+      // 2) fall back to the onchain probe
+      var direct = key? null : await v4KeyByPoolId(p.pool);
+      if(!key && direct){
         var dp=pickV4Key([direct], p.baseToken);
         if(dp){ key=dp.key; needWrap=dp.wrap; }
       }
 
-      // 2) fall back to the scanned index
+      // 3) last resort: the scanned index
       if(!key) v4=await v4KeysFor(p.baseToken, true);
       if(!key && (!v4 || !v4.keys || !v4.keys.length)){
-        var sc=(v4&&v4.scan)||{};
-        throw new Error("Couldn't resolve the v4 pool for $"+p.sym
-          + " (pool id " + String(p.pool||"?").slice(0,10) + "…)"
-          + " — still searching chain history for it. This resolves as the index"
-          + " walks back; try again in a minute. Nothing was charged.");
+        var pid=String(p.pool||"");
+        var isId=/^0x[0-9a-f]{64}$/i.test(pid);
+        throw new Error("Couldn't resolve the v4 pool for $"+p.sym+". "
+          + (isId
+              ? "The pool id doesn't match any standard fee/spacing combination — it likely uses a custom hook contract, which we don't route for safety."
+              : "The indexer reported this pool as '"+pid.slice(0,12)+"…', which isn't a v4 pool id, so we can't rebuild its key.")
+          + " Nothing was charged.");
       }
       if(!key){
         var picked=pickV4Key(v4.keys, p.baseToken);
