@@ -57,12 +57,14 @@ export async function scanV4(budgetMs = 12000) {
   catch (e) { return { ok: false, error: "rpc: " + e.message }; }
   if (st.lo == null) st.lo = head;
 
+  // prefer topics we've actually observed on this chain over my guesses
+  const TOPICS = (st.topics && st.topics.length) ? st.topics : INIT_TOPICS;
   let found = 0, chunks = 0;
   while (Date.now() - t0 < budgetMs - 2500 && !st.done && st.lo > 0) {
     const size = Math.max(5000, st.chunk);
     const from = Math.max(0, st.lo - size), to = st.lo;
     try {
-      const logs = await getLogs(from, to, [INIT_TOPIC]);
+      const logs = await getLogs(from, to, [TOPICS]);
       for (const lg of logs) {
         const k = decodeInit(lg);
         if (!k) continue;
@@ -167,12 +169,110 @@ export async function scanTip(budgetMs = 8000) {
   return { ok: true, manager: st.manager, foundThisRun: found, tip: st.tip, head, tokens: Object.keys(st.keys).length };
 }
 
+// ---------------------------------------------------------------------------
+// POOL-ID PROBE — the reliable path.
+//
+// Guessing the Initialize topic hash has failed repeatedly, and if the hash is
+// wrong the scan silently finds nothing. But the PoolId is the FIRST INDEXED
+// argument of Initialize, so we can search by it directly with topics
+// [null, poolId] — no topic0 filter, no signature assumption. Whatever event
+// carries that id in topic1 is the pool's Initialize, and it also tells us the
+// real topic0 and the PoolManager address for free.
+//
+// DexScreener reports a v4 "pairAddress" as the 32-byte PoolId, so the client
+// already has the id it needs to ask about.
+export async function probePoolId(poolId) {
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
+    || { keys: {}, manager: null, lo: null, done: false, chunk: CHUNK_START };
+
+  const id = String(poolId || "").toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(id)) return { ok: false, error: "poolId must be 32 bytes" };
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: "rpc: " + e.message }; }
+
+  // Narrow filter (a single indexed id), so a wide range is cheap.
+  const windows = [[0, head]];
+  for (const [from, to] of windows) {
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + from.toString(16),
+        toBlock: "0x" + to.toString(16),
+        topics: [null, id]
+      }]);
+      for (const lg of (logs || [])) {
+        if (!lg.topics || lg.topics.length < 4) continue;   // Initialize has 3 indexed args
+        const k = decodeInit(lg);
+        if (!k) continue;
+        if (!st.manager) st.manager = k.manager;
+        // record the REAL topic0 so future scans can use it
+        if (!st.topics) st.topics = [];
+        if (!st.topics.includes(lg.topics[0])) st.topics.push(lg.topics[0]);
+        const ZERO = "0x0000000000000000000000000000000000000000";
+        for (const side of [k.c0, k.c1]) {
+          if (!side || side === ZERO) continue;
+          const list = st.keys[side] || (st.keys[side] = []);
+          if (!list.some(x => x.id === k.id)) list.push(k);
+        }
+        await store.setJSON("v4pools", st).catch(() => {});
+        return { ok: true, key: k, topic0: lg.topics[0], manager: k.manager };
+      }
+    } catch (e) {
+      return { ok: false, error: "getLogs: " + String(e.message).slice(0, 90) };
+    }
+  }
+  return { ok: false, error: "no Initialize log found for that pool id" };
+}
+
+// ---------------------------------------------------------------------------
+// DIAGNOSTIC — sample recent logs and report which topics actually appear, so
+// we can identify the PoolManager and its real event signature instead of
+// guessing hashes.
+export async function diagTopics(blocks = 40000) {
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: e.message }; }
+  const from = Math.max(0, head - blocks);
+  try {
+    const logs = await rpc("eth_getLogs", [{
+      fromBlock: "0x" + from.toString(16), toBlock: "0x" + head.toString(16), topics: []
+    }]);
+    const byTopic = {}, byAddr = {};
+    for (const lg of (logs || [])) {
+      const t = lg.topics?.[0];
+      if (t) byTopic[t] = (byTopic[t] || 0) + 1;
+      const a = String(lg.address || "").toLowerCase();
+      // 3 indexed args + data is the Initialize shape
+      if (lg.topics && lg.topics.length === 4) {
+        byAddr[a] = byAddr[a] || { count: 0, topics: {} };
+        byAddr[a].count++;
+        byAddr[a].topics[t] = (byAddr[a].topics[t] || 0) + 1;
+      }
+    }
+    const top = Object.entries(byTopic).sort((a, b) => b[1] - a[1]).slice(0, 12);
+    const cands = Object.entries(byAddr).sort((a, b) => b[1].count - a[1].count).slice(0, 8)
+      .map(([addr, v]) => ({ addr, logs: v.count, topics: Object.keys(v.topics).slice(0, 4) }));
+    return { ok: true, head, from, totalLogs: (logs || []).length, topTopics: top, threeIndexedCandidates: cands };
+  } catch (e) { return { ok: false, error: String(e.message).slice(0, 120) }; }
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
 
   if (url.searchParams.get("scan") === "1") {
     return json(200, await scanV4(15000));
+  }
+
+  // ?probe=<poolId> — find a pool by its id without knowing the event signature
+  const probe = url.searchParams.get("probe");
+  if (probe) return json(200, await probePoolId(probe));
+
+  // ?diag=1 — what events does this chain actually emit?
+  if (url.searchParams.get("diag") === "1") {
+    return json(200, await diagTopics(Number(url.searchParams.get("blocks") || 40000)));
   }
 
   // ?tip=1 — scan the most recent blocks only. A pool created minutes ago sits
