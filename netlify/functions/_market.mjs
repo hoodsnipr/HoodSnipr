@@ -68,17 +68,33 @@ export function normalize(p) {
 }
 
 // Rotate through the token universe, enriching a slice per invocation.
-export async function sweepMarket(store, tokens, { calls = 45, deadline = 0 } = {}) {
-  const st = (await store.get("mkt", { type: "json" }).catch(() => null)) || { d: {}, cursor: 0, laps: 0 };
+export async function sweepMarket(store, tokens, { calls = 45, deadline = 0, priority = [] } = {}) {
+  const st = (await store.get("mkt", { type: "json" }).catch(() => null)) || { d: {}, cursor: 0, laps: 0, refresh: 0 };
   if (!tokens.length) return { st, enriched: 0, calls: 0 };
+
+  // Split the budget: most calls discover NEW tokens, but a slice always
+  // refreshes the ones already trading. Without that, the top of the board goes
+  // stale between laps and stops matching what other screeners show.
+  const known = Object.keys(st.d);
+  const hot = known
+    .filter(a => (st.d[a].h24 || 0) > 0 || (st.d[a].liq || 0) > 1000)
+    .sort((a, b) => (st.d[b].h24 || 0) - (st.d[a].h24 || 0))
+    .slice(0, 600);
+  const refreshCalls = Math.min(Math.ceil(calls * 0.35), Math.ceil(hot.length / BATCH));
   const slug = (await store.get("dsslug", { type: "json" }).catch(() => null))?.v || await detectSlug();
   await store.setJSON("dsslug", { v: slug }).catch(() => {});
 
   let c = st.cursor || 0, used = 0, enriched = 0, limited = false;
+  let rc = st.refresh || 0;
   for (let i = 0; i < calls; i++) {
     if (deadline && Date.now() > deadline) break;
     const slice = [];
-    for (let k = 0; k < BATCH; k++) { slice.push(tokens[c % tokens.length]); c++; }
+    const doRefresh = i < refreshCalls && hot.length > 0;
+    if (doRefresh) {
+      for (let k = 0; k < BATCH; k++) { slice.push(hot[rc % hot.length]); rc++; }
+    } else {
+      for (let k = 0; k < BATCH; k++) { slice.push(tokens[c % tokens.length]); c++; }
+    }
     const uniq = [...new Set(slice)];
     try {
       const res = await dsJson(`${DS}/tokens/v1/${slug}/${uniq.join(",")}`);
@@ -93,6 +109,7 @@ export async function sweepMarket(store, tokens, { calls = 45, deadline = 0 } = 
     if (c >= tokens.length) { c = 0; st.laps = (st.laps || 0) + 1; }
   }
   st.cursor = c;
+  st.refresh = rc;
   // keep the blob bounded: drop the least liquid when it grows large
   const keys = Object.keys(st.d);
   if (keys.length > 6000) {

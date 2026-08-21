@@ -173,6 +173,8 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
     const rec = tok2[tok];
     const m = rec._mkt || {};
     const cv = rec._chainVol || {};
+    // "indexed" means the market feed actually has trading data for this token
+    const hasMarketVol = !!rec._mkt && ((m.h24 || 0) > 0 || (m.h6 || 0) > 0 || (m.h1 || 0) > 0 || (m.m5 || 0) > 0 || (m.liq || 0) > 0);
     if (excluded(rec.s || m.s, rec.n || m.n)) continue;
 
     // deepest venue is the default route
@@ -187,13 +189,17 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
       n: rec.n || m.n || "",
       d: rec.d == null ? 18 : rec.d,
       img: m.img || null,
-      px: m.px || rec._chainPx || null,
+      px: (hasMarketVol ? m.px : null) || rec._chainPx || m.px || null,
       mc: m.mc || null,
-      liq: Math.max(m.liq || 0, rec._chainLiq || 0),
-      m5: Math.max(cv.m5 || 0, m.m5 || 0),
-      h1: Math.max(cv.h1 || 0, m.h1 || 0),
-      h6: Math.max(cv.h6 || 0, m.h6 || 0),
-      h24: Math.max(cv.h24 || 0, m.h24 || 0),
+      liq: hasMarketVol ? (m.liq || 0) : (rec._chainLiq || 0),
+      // ONE coherent source per token. Taking max() per timeframe let a token
+      // pull h24 from the indexer but 5M from our partial chain scan, so its
+      // rank jumped incoherently between tabs and didn't match DexScreener.
+      // Indexer data is complete, so it wins outright when present; our
+      // chain-derived volume is the fallback for pools too new to be indexed.
+      ...(hasMarketVol
+        ? { m5: m.m5 || 0, h1: m.h1 || 0, h6: m.h6 || 0, h24: m.h24 || 0, vsrc: "idx" }
+        : { m5: cv.m5 || 0, h1: cv.h1 || 0, h6: cv.h6 || 0, h24: cv.h24 || 0, vsrc: "chain" }),
       cm5: m.cm5 || 0, c1: m.c1 || 0, c6: m.c6 || 0, c24: m.c24 || 0,
       site: m.site || null, tw: m.tw || null, tg: m.tg || null,
       cr: m.cr || null,
@@ -202,11 +208,61 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
       venues: rec.venues.slice(0, 4).map(v => ({ p: v.pool, v: v.ver, l: Math.round(v.liq || 0) }))
     };
     if (row.s === "?" || !row.s) continue;               // unnamed = not displayable
-    const alive = row.h24 > 0 || row.h6 > 0 || row.h1 > 0 || row.m5 > 0 || row.liq > 25;
+    // A trending board should look like a trading venue, not a graveyard: a
+    // token needs either real volume or meaningful liquidity to make the list.
+    const anyVol = row.h24 > 0 || row.h6 > 0 || row.h1 > 0 || row.m5 > 0;
+    const alive = (anyVol && row.liq >= 250) || row.liq >= 1000;
     if (!alive) continue;
     rows.push(row);
   }
 
   rows.sort((x, y) => (y.h24 || 0) - (x.h24 || 0) || (y.liq || 0) - (x.liq || 0) || (x.a < y.a ? -1 : 1));
-  return rows;
+  return collapseTickers(rows);
+}
+
+// TICKER COLLISION.
+// Three "$NARWHAL" rows with $11M / $405K / $65K market caps and different
+// holder counts are THREE DIFFERENT CONTRACTS wearing the same ticker, not one
+// token in three pools. Memecoin chains are full of these impersonators, and
+// showing them all is both confusing and dangerous — a user sniping "NARWHAL"
+// could easily buy the fake.
+//
+// So: one entry per ticker, keeping the deepest-liquidity contract (the real
+// market), with the others attached as `alts` so nothing becomes unreachable —
+// the modal lists them with contract addresses for anyone who wants a specific one.
+function normTicker(sym) {
+  return String(sym || "").toUpperCase().replace(/^\$+/, "").replace(/[^A-Z0-9]/g, "");
+}
+function collapseTickers(rows) {
+  const byTicker = {};
+  const order = [];
+  for (const r of rows) {
+    const k = normTicker(r.s);
+    if (!k) continue;
+    if (!byTicker[k]) { byTicker[k] = r; r.alts = []; order.push(k); continue; }
+    const keep = byTicker[k];
+    // deepest liquidity wins; volume breaks ties
+    const challengerBetter =
+      (r.liq || 0) > (keep.liq || 0) ||
+      ((r.liq || 0) === (keep.liq || 0) && (r.h24 || 0) > (keep.h24 || 0));
+    if (challengerBetter) {
+      r.alts = (keep.alts || []).concat([altOf(keep)]);
+      keep.alts = undefined;
+      byTicker[k] = r;
+    } else {
+      keep.alts = (keep.alts || []).concat([altOf(r)]);
+    }
+  }
+  const out = order.map(k => byTicker[k]);
+  for (const r of out) {
+    if (r.alts && r.alts.length) {
+      r.alts = r.alts.sort((a, b) => (b.liq || 0) - (a.liq || 0)).slice(0, 5);
+      r.dupes = r.alts.length;
+    } else { delete r.alts; }
+  }
+  out.sort((x, y) => (y.h24 || 0) - (x.h24 || 0) || (y.liq || 0) - (x.liq || 0) || (x.a < y.a ? -1 : 1));
+  return out;
+}
+function altOf(r) {
+  return { a: r.a, p: r.p, s: r.s, liq: Math.round(r.liq || 0), h24: Math.round(r.h24 || 0), mc: r.mc || null, px: r.px || null };
 }
