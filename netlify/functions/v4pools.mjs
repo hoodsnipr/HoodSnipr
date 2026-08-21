@@ -11,8 +11,15 @@
 import { store as _store } from "./_store.mjs";
 import { rpc, getLogs, addrFromTopic, words } from "./_rpc.mjs";
 
-// keccak256("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")
-const INIT_TOPIC = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438";
+// v4 changed the Initialize signature during development, and a chain may run
+// any of them. Matching only one means the scanner finds NOTHING and reports
+// "no v4 pool" for pools that exist — so we match all known variants.
+const INIT_TOPICS = [
+  "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438", // ...,uint160,int24
+  "0x3fd553db44f207b1f41348cfc4d251860814af9eadc470e8e7895e4d120511f4", // no price/tick
+  "0x9e5fdb1dbcd8227784f3a3765e991e72fd8e71bfc967286dcf973ff804adc183"  // ...,uint160
+];
+const INIT_TOPIC = INIT_TOPICS;
 const CHUNK_START = 200000;
 
 const json = (c, b) => new Response(JSON.stringify(b), {
@@ -24,7 +31,7 @@ function decodeInit(lg) {
   const c0 = addrFromTopic(lg.topics[2]);
   const c1 = addrFromTopic(lg.topics[3]);
   const w = words(lg.data);
-  if (w.length < 3) return null;
+  if (w.length < 3) return null;   // fee, tickSpacing, hooks are in every variant
   const fee = Number(BigInt("0x" + w[0]));
   // tickSpacing is int24 — handle the two's-complement case
   let ts = BigInt("0x" + w[1]);
@@ -75,17 +82,51 @@ export async function scanV4(budgetMs = 12000) {
       chunks++;
       if (st.chunk < CHUNK_START) st.chunk = Math.min(CHUNK_START, st.chunk * 2);
       st.lo = from;
-      if (from === 0) st.done = true;
+      // only truly done when no ranges were skipped
+      if (from === 0) st.done = !(st.gaps && st.gaps.length);
     } catch (e) {
       st.chunk = Math.max(2000, Math.floor(st.chunk / 4));
       if (errors.length < 3) errors.push("logs@" + from + ": " + e.message.slice(0, 50));
-      if (st.chunk <= 2000) st.lo = from;
+      if (st.chunk <= 2000) {
+        // Give up on this window, but REMEMBER it. Previously we advanced the
+        // cursor and could still reach block 0 and declare the backfill "done",
+        // so permanently-missing pools looked like "this token has no v4 pool".
+        st.gaps = (st.gaps || []);
+        if (st.gaps.length < 200) st.gaps.push([from, to]);
+        st.lo = from;
+      }
     }
+    await store.setJSON("v4pools", st).catch(() => {});
+  }
+
+  // second pass: revisit ranges we had to skip
+  if (st.lo <= 0 && st.gaps && st.gaps.length && Date.now() - t0 < budgetMs - 2000) {
+    const remaining = [];
+    for (const [gf, gt] of st.gaps) {
+      if (Date.now() - t0 > budgetMs - 1500) { remaining.push([gf, gt]); continue; }
+      try {
+        const logs = await getLogs(gf, gt, [INIT_TOPIC]);
+        const ZERO = "0x0000000000000000000000000000000000000000";
+        for (const lg of logs) {
+          const k = decodeInit(lg);
+          if (!k) continue;
+          if (!st.manager) st.manager = k.manager;
+          for (const side of [k.c0, k.c1]) {
+            if (!side || side === ZERO) continue;
+            const list = st.keys[side] || (st.keys[side] = []);
+            if (!list.some(x => x.id === k.id)) { list.push(k); found++; }
+          }
+        }
+      } catch (e) { remaining.push([gf, gt]); }
+    }
+    st.gaps = remaining;
+    if (!remaining.length) st.done = true;
     await store.setJSON("v4pools", st).catch(() => {});
   }
 
   return {
     ok: true, manager: st.manager, tokens: Object.keys(st.keys).length,
+    gaps: (st.gaps || []).length,
     foundThisRun: found, chunks, backfillDone: !!st.done, cursor: st.lo, errors
   };
 }

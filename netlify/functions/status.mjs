@@ -27,7 +27,8 @@ export default async (req) => {
     const v4 = await store.get("v4pools", { type: "json" });
     out.v4 = v4 ? {
       manager: v4.manager, tokensWithKeys: Object.keys(v4.keys || {}).length,
-      backfillDone: !!v4.done, cursor: v4.lo ?? null
+      backfillDone: !!v4.done, cursor: v4.lo ?? null,
+      skippedRanges: (v4.gaps || []).length, tipCursor: v4.tip ?? null
     } : { tokensWithKeys: 0 };
   } catch (e) { out.v4Error = e.message; }
 
