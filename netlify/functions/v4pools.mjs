@@ -22,6 +22,13 @@ const INIT_TOPICS = [
 const INIT_TOPIC = INIT_TOPICS;
 const CHUNK_START = 50000;   // node caps results at 10k logs — stay well under
 
+// Confirmed on Robinhood Chain (4663) from live logs, not assumed:
+//   PoolManager 0x8366a39cc670b4001a1121b8f6a443a643e40951
+//   Swap topic  keccak("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
+//               -> canonical Uniswap v4
+const KNOWN_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
+const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
+
 const json = (c, b) => new Response(JSON.stringify(b), {
   status: c, headers: { "content-type": "application/json", "cache-control": "public, max-age=30" }
 });
@@ -419,8 +426,7 @@ export async function discoverRouter(budgetMs = 12000) {
   const cached = await store.get("v4router", { type: "json" }).catch(() => null);
   if (cached && cached.router && Date.now() - cached.t < 6 * 3600e3) return { ok: true, ...cached, cached: true };
 
-  const manager = st.manager;
-  if (!manager) return { ok: false, error: "PoolManager unknown — resolve one v4 pool first" };
+  const manager = st.manager || KNOWN_MANAGER;
 
   let head;
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
@@ -478,6 +484,52 @@ export async function discoverRouter(budgetMs = 12000) {
 // real v4 pool ids from the board, so a single getLogs filtered on
 // topics[1] ∈ knownPoolIds returns swaps whose EMITTER is the PoolManager and
 // whose topics[2] is the router. One query, both answers, no prior state.
+// Two candidates came back with IDENTICAL code size and near-tied swap counts,
+// so ranking by popularity is a coin flip — and picking wrong means every swap
+// reverts with no data. Instead we ASK each candidate whether it implements
+// execute(bytes,bytes[],uint256):
+//
+//   • call it with an already-expired deadline
+//   • a real UniversalRouter reverts with TransactionDeadlinePassed() — revert
+//     data is PRESENT, proving the function exists and ran
+//   • a contract without that function reverts empty (or returns nothing)
+//
+// That's a definitive capability test rather than a guess.
+const EXECUTE_SELECTOR = "0x3593564c";
+async function rawCall(to, data) {
+  const r = await fetch("https://rpc.mainnet.chain.robinhood.com", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call",
+      params: [{ to, data }, "latest"] })
+  });
+  return r.json();
+}
+export async function probeRouter(addr) {
+  // execute("0x", [], 1) — empty commands, empty inputs, deadline in 1970
+  const enc = EXECUTE_SELECTOR
+    + "0000000000000000000000000000000000000000000000000000000000000060"  // offset commands
+    + "0000000000000000000000000000000000000000000000000000000000000080"  // offset inputs
+    + "0000000000000000000000000000000000000000000000000000000000000001"  // deadline = 1
+    + "0000000000000000000000000000000000000000000000000000000000000000"  // commands length 0
+    + "0000000000000000000000000000000000000000000000000000000000000000"; // inputs length 0
+  try {
+    const j = await rawCall(addr, enc);
+    if (j.error) {
+      const d = j.error.data;
+      const hasData = typeof d === "string" && d.length > 2;
+      const msg = String(j.error.message || "");
+      return {
+        addr, implementsExecute: hasData || /deadline|expired|Transaction/i.test(msg),
+        revertData: hasData ? String(d).slice(0, 12) : null, message: msg.slice(0, 70)
+      };
+    }
+    // returned successfully — the function exists and accepted an empty batch
+    return { addr, implementsExecute: true, returned: true };
+  } catch (e) {
+    return { addr, implementsExecute: false, error: String(e.message).slice(0, 60) };
+  }
+}
+
 export async function bootstrapV4(poolIds, budgetMs = 9000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
@@ -543,8 +595,17 @@ export async function bootstrapV4(poolIds, budgetMs = 9000) {
     } catch (e) {}
   }
 
+  // Capability test beats popularity: probe each candidate for execute().
+  let chosen = null;
+  for (const c of candidates) {
+    const pr = await probeRouter(c.addr).catch(() => null);
+    if (pr) { c.implementsExecute = !!pr.implementsExecute; c.revertData = pr.revertData || null; }
+    if (pr && pr.implementsExecute && !chosen) chosen = c.addr;
+  }
+  // fall back to the busiest only if none respond to execute()
   const rec = {
-    manager, router: candidates[0]?.addr || null, candidates,
+    manager, router: chosen || candidates[0]?.addr || null,
+    routerVerified: !!chosen, candidates,
     swapTopic: topic0, t: Date.now()
   };
   await store.setJSON("v4boot", rec).catch(() => {});
@@ -579,6 +640,10 @@ export default async (req) => {
     if (!ts) return json(400, { ok: false, error: "ts (ms) required" });
     return json(200, await probeByTime(attime, ts));
   }
+
+  // ?testrouter=<addr> — does this contract implement execute()?
+  const tr = url.searchParams.get("testrouter");
+  if (tr) return json(200, await probeRouter(tr));
 
   // ?boot=1 — one-shot: PoolManager + router
   if (url.searchParams.get("boot") === "1") {
