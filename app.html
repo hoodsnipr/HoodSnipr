@@ -1392,12 +1392,44 @@ async function verifyUniversalRouter(pr){
   }catch(e){ return null; }
 }
 
+// Client-side capability test. If the server hands back an unverified router we
+// check candidates ourselves rather than quoting against a contract that may not
+// implement execute() — that produced the no-data reverts.
+async function clientProbeRouter(addr){
+  try{
+    var iface=new ethers.Interface(UROUTER_ABI);
+    var data=iface.encodeFunctionData("execute",["0x",[],1]);   // deadline in 1970
+    await rpc().call({ to:addr, data:data });
+    return true;                       // accepted an empty batch
+  }catch(e){
+    // A router reverts with TransactionDeadlinePassed() — revert DATA present.
+    // A contract without the function reverts empty.
+    var d=(e && (e.data || (e.info&&e.info.error&&e.info.error.data))) || "";
+    var m=String((e&&(e.shortMessage||e.message))||"");
+    if(typeof d==="string" && d.length>2) return true;
+    if(/deadline|expired/i.test(m)) return true;
+    return false;
+  }
+}
+async function resolveVerifiedRouter(){
+  if(state.v4RouterVerified && state.v4Router) return state.v4Router;
+  var list=(state.v4Candidates||[]).slice();
+  if(state.v4Router && list.indexOf(state.v4Router)<0) list.unshift(state.v4Router);
+  for(var i=0;i<list.length;i++){
+    if(await clientProbeRouter(list[i])){
+      state.v4Router=list[i]; state.v4RouterVerified=true;
+      return list[i];
+    }
+  }
+  return state.v4Router || CFG.UNI.universalRouter;
+}
+
 var v4BootPromise=null;
 async function ensureV4Router(){
   if(state.v4Router) return state.v4Router;
   // single in-flight bootstrap shared by every caller
   if(!v4BootPromise){
-    v4BootPromise=fetch(CFG.API+"/v4pools?boot=1").then(function(r){return r.json()}).then(function(j){
+    v4BootPromise=fetch(CFG.API+"/v4pools?boot=1&t="+Date.now()).then(function(r){return r.json()}).then(function(j){
       if(j && j.router){
         state.v4Router=j.router;
         state.v4Manager=j.manager;
@@ -1406,8 +1438,10 @@ async function ensureV4Router(){
         // quote can fall through to the next candidate instead of dead-ending
         state.v4Candidates=(j.candidates||[]).map(function(c){return c.addr});
       }
+      // never proceed on an unverified router — test candidates ourselves
+      if(!state.v4RouterVerified) return resolveVerifiedRouter();
       return state.v4Router||CFG.UNI.universalRouter;
-    }).catch(function(){ return CFG.UNI.universalRouter; });
+    }).catch(function(){ return resolveVerifiedRouter(); });
   }
   return v4BootPromise;
 }
@@ -1685,6 +1719,7 @@ async function fire(){
 
       btn.innerHTML='<span class="spin"></span> LOCATING V4 ROUTER…';
       await ensureV4Router();
+      if(!state.v4RouterVerified) await resolveVerifiedRouter();
       var urv = await verifyUniversalRouter(rpc());
       if(urv===false)
         throw new Error("No contract exists at the UniversalRouter address on this chain — refusing to send ETH there.");
@@ -2702,10 +2737,16 @@ state.burner = load("hs_burner", null);
 
 // learn which hook contracts exist on this chain so v4 keys with hooks can be
 // derived locally instead of needing a log lookup every time
-fetch(CFG.API+"/v4pools?hooks=1").then(function(r){return r.json()}).then(function(j){
+fetch(CFG.API+"/v4pools?hooks=1&t="+Date.now()).then(function(r){return r.json()}).then(function(j){
   if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
-  if(j && j.router){ state.v4Router=j.router; state.v4Manager=j.manager; }
-  else ensureV4Router();      // bootstrap now so it's ready before the first snipe
+  if(j && j.candidates && j.candidates.length)
+    state.v4Candidates=j.candidates.map(function(c){return c.addr});
+  if(j && j.router){
+    state.v4Router=j.router;
+    state.v4Manager=j.manager;
+    state.v4RouterVerified=!!j.routerVerified;
+  }
+  if(!state.v4RouterVerified) ensureV4Router();
 }).catch(function(){ ensureV4Router(); });
 
 autoReconnect();
