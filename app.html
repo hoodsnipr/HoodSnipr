@@ -265,7 +265,7 @@ canvas.share{display:none}
     <div class="chainbar" id="chainBar">
       <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">…</div></div>
       <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">…</div></div>
-      <div class="cb"><div class="k">TOKENS CREATED</div><div class="v" id="cbTokens">…</div><div class="sub" id="cbTokensSub"></div></div>
+      <div class="cb"><div class="k">PAIRS ON CHAIN</div><div class="v" id="cbTokens">…</div><div class="sub" id="cbTokensSub"></div></div>
     </div>
     <div class="board" id="board"></div>
     <div class="pager" id="pager"></div>
@@ -778,7 +778,8 @@ function renderChainBar(){
   if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
 
   // TOKENS CREATED — cumulative census, only ever climbs
-  var created = c.tokensCreated!=null? c.tokensCreated : Math.max(best.tok||0, l.tokenCount||0);
+  var created = c.poolsIndexed!=null? c.poolsIndexed
+              : (c.tokensCreated!=null? c.tokensCreated : Math.max(best.tok||0, l.tokenCount||0));
   if(created>(best.tok||0)) best.tok=created; else created=best.tok||created;
   var el=$("#cbTokens");
   if(el){
@@ -786,9 +787,9 @@ function renderChainBar(){
     if(created>0){
       el.textContent = created.toLocaleString();
       if(prev!=null && created>prev){
-        // a token just launched — flash it
+        // subtle flash only — no toast. The count also rises as the indexer
+        // backfills, which isn't a launch and shouldn't interrupt the user.
         el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
-        toast("🐣 "+(created-prev)+" new token"+((created-prev)>1?"s":"")+" created on Robinhood Chain");
       }
       state.lastTokenCount=created;
     } else el.textContent="…";
@@ -798,7 +799,7 @@ function renderChainBar(){
     var bits=[];
     if(c.tokensNewHour>0) bits.push("+"+c.tokensNewHour+" past hour");
     else if(c.tokensNewDay>0) bits.push("+"+c.tokensNewDay+" past 24h");
-    if(c.tokensTradeable) bits.push(c.tokensTradeable.toLocaleString()+" tradeable");
+    if(c.tokensTradeable) bits.push(c.tokensTradeable.toLocaleString()+" tradeable now");
     sub.textContent = bits.join(" · ");
   }
 }
@@ -1039,16 +1040,16 @@ function renderBoard(){
   if(tn){
     var c=state.chain||{};
     if(state.boardWarming){
-      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer is still warming up — showing a partial list.</span> '
-        +'Full coverage builds as it backfills pool history from chain logs.';
+      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer warming up — partial list.</span> '
+        +'Backfilling every pool from Robinhood Chain logs; coverage grows each minute.';
       return;
     }
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
       + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
       + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools from chain logs" : "")
-      + (c.poolsActive? " · "+c.poolsActive.toLocaleString()+" actively trading" : "")
-      + (c.backfillDone===false? " · backfilling history…" : " · full history indexed ✓");
+      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools indexed from chain" : "")
+      + (c.poolsActive? " · "+c.poolsActive.toLocaleString()+" trading now" : "")
+      + (c.backfillDone===false? " · backfilling…" : " · full chain indexed ✓");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
