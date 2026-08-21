@@ -34,9 +34,9 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   // board stayed at zero rows despite 108k pools being indexed. Discovery is
   // already far ahead of what we can display, so it now runs LAST with leftovers.
   const phase = {
-    liq:   Math.floor(budgetMs * 0.42),
-    meta:  Math.floor(budgetMs * 0.66),
-    swaps: Math.floor(budgetMs * 0.84)
+    liq:   Math.floor(budgetMs * 0.55),   // market sweep — this is what fills the board
+    meta:  Math.floor(budgetMs * 0.70),
+    swaps: Math.floor(budgetMs * 0.88)
   };
   const usedBy = ms => (Date.now() - t0) < ms;
   const store = await _store("hoodsnipr-cache");
@@ -75,7 +75,7 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   let mkt = { d: {}, cursor: 0, laps: 0 }, swept = 0, mktCalls = 0, mktLimited = false;
   if (tokenList.length) {
     const r = await sweepMarket(store, tokenList, {
-      calls: 45,
+      calls: 50,                      // DS allows 60/min; 50 leaves headroom
       deadline: t0 + phase.liq
     }).catch(e => { errors.push("mkt: " + e.message.slice(0, 60)); return null; });
     if (r) { mkt = r.st; swept = r.enriched; mktCalls = r.calls; mktLimited = !!r.limited; }

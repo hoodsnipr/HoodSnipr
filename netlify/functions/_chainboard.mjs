@@ -101,73 +101,112 @@ export async function poolLiquidity(pools, ethUsd) {
   return out;
 }
 
+// ONE ROW PER TOKEN. A token can trade in several venues (v2 pair, v3 pools at
+// different fee tiers, a v4 pool in the singleton PoolManager). Previously each
+// of those could produce its own row, so users saw the same token repeatedly.
+// Now venues are collected onto a single row and the UI lets the user choose.
 export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overlay, market }) {
-  const byTok = {};
+  const tok2 = {};   // token address -> aggregated record
+
+  function ensure(tok) {
+    if (!tok2[tok]) tok2[tok] = { a: tok, venues: [], _seenPools: new Set() };
+    return tok2[tok];
+  }
+  function addVenue(rec, v) {
+    if (!v || !v.pool) return;
+    const key = String(v.pool).toLowerCase();
+    if (rec._seenPools.has(key)) return;
+    rec._seenPools.add(key);
+    rec.venues.push({ pool: key, ver: (v.ver || "v3").toLowerCase(), liq: +v.liq || 0, fee: v.fee || null });
+  }
+
+  // ---- 1. chain-derived pools (v2/v3, discovered from factory logs) ----
   for (const pool of Object.keys(poolsIdx.pools || {})) {
     const entry = poolsIdx.pools[pool];
     const tok = typeof entry === "string" ? entry : entry.t;
     if (!tok || tok === WETH) continue;
     const tm = (tokmeta || {})[tok] || {};
-    const sym = tm.s || "?", name = tm.n || "";
+    const ov = (overlay || {})[tok] || {};
+    const sym = ov.s || tm.s || "?", name = ov.n || tm.n || "";
     if (excluded(sym, name)) continue;
 
-    const ov = (overlay || {})[tok] || {};
     const vArr = (swaps.v || swaps.vol || {})[pool];
     const pxRec = (swaps.px || {})[pool];
     const dec = tm.d == null ? 18 : tm.d;
+    const liq = liqMap[pool] || 0;
+    const hasAny = vArr || liq > 25 || ov.px;
+    if (!hasAny) continue;
 
-    // our chain-derived volume is fresher for new pools; the market's is more
-    // complete for established ones — take the larger of the two
-    const m5 = Math.max(volFine(vArr) * ethUsd, ov.m5 || 0);
-    const h1 = Math.max(volHour(vArr) * ethUsd, ov.h1 || 0);
-    const h6 = Math.max(volHours(vArr, 6) * ethUsd, ov.h6 || 0);
-    const h24 = Math.max(volHours(vArr, 24) * ethUsd, ov.h24 || 0);
-
-    let px = pxRec ? priceFromSqrt(pxRec.s, pxRec.t0 === 1, dec, ethUsd) : null;
-    const liq = liqMap[pool] || ov.liq || 0;
-
-    // overlay: logos, socials, market cap, and a better price if the indexer has one
-    if (ov.px) px = ov.px;                 // indexer price beats our sqrt estimate
-
-    // A pool holding real WETH is tradeable even if we haven't recorded a swap
-    // for it yet (volume history builds over the first 24h of indexing).
-    const hasSomething = h24 > 0 || h6 > 0 || h1 > 0 || m5 > 0 || liq > 25;
-    if (!hasSomething) continue;
-
-    const row = {
-      a: tok, p: pool, s: ov.s || sym, n: ov.n || name, d: dec,
-      img: ov.img || null, px, mc: ov.mc || null, liq,
-      m5, h1, h6, h24,
-      cm5: ov.cm5 || 0, c1: ov.c1 || 0, c6: ov.c6 || 0, c24: ov.c24 || 0,
-      site: ov.site || null, tw: ov.tw || null, tg: ov.tg || null,
-      ver: ov.ver || "", dex: ov.dex || "",
-      cr: null, blk: 0,
-      chain: true
+    const rec = ensure(tok);
+    addVenue(rec, { pool, ver: "v3", liq });
+    rec.d = dec;
+    rec.s = sym; rec.n = name;
+    rec._chainPx = pxRec ? priceFromSqrt(pxRec.s, pxRec.t0 === 1, dec, ethUsd) : rec._chainPx;
+    rec._chainVol = {
+      m5: Math.max(rec._chainVol?.m5 || 0, volFine(vArr) * ethUsd),
+      h1: Math.max(rec._chainVol?.h1 || 0, volHour(vArr) * ethUsd),
+      h6: Math.max(rec._chainVol?.h6 || 0, volHours(vArr, 6) * ethUsd),
+      h24: Math.max(rec._chainVol?.h24 || 0, volHours(vArr, 24) * ethUsd)
     };
-    const cur = byTok[tok];
-    if (!cur || (row.liq || 0) > (cur.liq || 0) || (row.h24 || 0) > (cur.h24 || 0)) byTok[tok] = row;
+    rec._chainLiq = Math.max(rec._chainLiq || 0, liq);
   }
-  // Uniswap v4 uses a singleton PoolManager — there is no per-pool contract for
-  // our factory-log scan to find. Those tokens only exist in the market data, so
-  // they're added here or they'd be invisible to users.
+
+  // ---- 2. market data (adds v4, which has no per-pool contract to scan) ----
   if (market) {
     for (const tok of Object.keys(market)) {
       const m = market[tok];
-      if (!m || byTok[tok]) continue;
+      if (!m || tok === WETH) continue;
       if (excluded(m.s, m.n)) continue;
       const live = (m.h24 > 0 || m.h6 > 0 || m.h1 > 0 || m.m5 > 0 || m.liq > 25);
-      if (!live) continue;
-      byTok[tok] = {
-        a: tok, p: m.pool, s: m.s, n: m.n, d: 18,
-        img: m.img || null, px: m.px, mc: m.mc, liq: m.liq,
-        m5: m.m5, h1: m.h1, h6: m.h6, h24: m.h24,
-        cm5: m.cm5, c1: m.c1, c6: m.c6, c24: m.c24,
-        site: m.site, tw: m.tw, tg: m.tg, cr: m.cr,
-        ver: m.ver || "", dex: m.dex || "", chain: false
-      };
+      if (!live && !tok2[tok]) continue;
+      const rec = ensure(tok);
+      addVenue(rec, { pool: m.pool, ver: m.ver || "v3", liq: m.liq });
+      rec.s = rec.s && rec.s !== "?" ? rec.s : (m.s || "?");
+      rec.n = rec.n || m.n || "";
+      rec._mkt = m;
     }
   }
-  const rows = Object.values(byTok);
+
+  // ---- 3. flatten to display rows ----
+  const rows = [];
+  for (const tok of Object.keys(tok2)) {
+    const rec = tok2[tok];
+    const m = rec._mkt || {};
+    const cv = rec._chainVol || {};
+    if (excluded(rec.s || m.s, rec.n || m.n)) continue;
+
+    // deepest venue is the default route
+    rec.venues.sort((a, b) => (b.liq || 0) - (a.liq || 0));
+    const primary = rec.venues[0] || { pool: m.pool, ver: m.ver || "v3", liq: m.liq || 0 };
+    const versions = [...new Set(rec.venues.map(v => v.ver))];
+
+    const row = {
+      a: tok,
+      p: primary.pool,
+      s: rec.s && rec.s !== "?" ? rec.s : (m.s || "?"),
+      n: rec.n || m.n || "",
+      d: rec.d == null ? 18 : rec.d,
+      img: m.img || null,
+      px: m.px || rec._chainPx || null,
+      mc: m.mc || null,
+      liq: Math.max(m.liq || 0, rec._chainLiq || 0),
+      m5: Math.max(cv.m5 || 0, m.m5 || 0),
+      h1: Math.max(cv.h1 || 0, m.h1 || 0),
+      h6: Math.max(cv.h6 || 0, m.h6 || 0),
+      h24: Math.max(cv.h24 || 0, m.h24 || 0),
+      cm5: m.cm5 || 0, c1: m.c1 || 0, c6: m.c6 || 0, c24: m.c24 || 0,
+      site: m.site || null, tw: m.tw || null, tg: m.tg || null,
+      cr: m.cr || null,
+      ver: primary.ver,
+      vers: versions,                                    // e.g. ["v3","v4"]
+      venues: rec.venues.slice(0, 4).map(v => ({ p: v.pool, v: v.ver, l: Math.round(v.liq || 0) }))
+    };
+    if (row.s === "?" || !row.s) continue;               // unnamed = not displayable
+    const alive = row.h24 > 0 || row.h6 > 0 || row.h1 > 0 || row.m5 > 0 || row.liq > 25;
+    if (!alive) continue;
+    rows.push(row);
+  }
+
   rows.sort((x, y) => (y.h24 || 0) - (x.h24 || 0) || (y.liq || 0) - (x.liq || 0) || (x.a < y.a ? -1 : 1));
   return rows;
 }
