@@ -9,7 +9,7 @@
 // topic gives us the keys AND reveals the PoolManager address itself (it's the
 // log emitter) without having to hardcode a deployment we can't verify.
 import { store as _store } from "./_store.mjs";
-import { rpc, getLogs, addrFromTopic, words } from "./_rpc.mjs";
+import { rpc, getLogs, addrFromTopic, words, decodeStr } from "./_rpc.mjs";
 
 // v4 changed the Initialize signature during development, and a chain may run
 // any of them. Matching only one means the scanner finds NOTHING and reports
@@ -22,11 +22,12 @@ const INIT_TOPICS = [
 const INIT_TOPIC = INIT_TOPICS;
 const CHUNK_START = 50000;   // node caps results at 10k logs — stay well under
 
-// Confirmed on Robinhood Chain (4663) from live logs, not assumed:
-//   PoolManager 0x8366a39cc670b4001a1121b8f6a443a643e40951
-//   Swap topic  keccak("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-//               -> canonical Uniswap v4
-const KNOWN_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
+// The Swap topic below IS verified — it equals
+//   keccak("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
+// i.e. canonical Uniswap v4. The PoolManager address, however, was INFERRED
+// from a log emitter and turned out to be an ERC-20, so it is no longer
+// hardcoded — findManager() derives it from the verified topic instead.
+const KNOWN_MANAGER = null;
 const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 
 const json = (c, b) => new Response(JSON.stringify(b), {
@@ -34,6 +35,7 @@ const json = (c, b) => new Response(JSON.stringify(b), {
 });
 
 function decodeInit(lg) {
+  if (!lg || !lg.topics || lg.topics.length !== 4) return null;
   // indexed: id, currency0, currency1 | data: fee, tickSpacing, hooks, sqrtPriceX96, tick
   const c0 = addrFromTopic(lg.topics[2]);
   const c1 = addrFromTopic(lg.topics[3]);
@@ -73,6 +75,10 @@ export async function scanV4(budgetMs = 12000) {
     try {
       const logs = await getLogs(from, to, [TOPICS]);
       for (const lg of logs) {
+        // Initialize indexes id + currency0 + currency1 => exactly 4 topics.
+        // Without this guard, 3-topic events decoded into garbage addresses —
+        // that's how the index ballooned to 190k bogus "tokens".
+        if (!lg.topics || lg.topics.length !== 4) continue;
         const k = decodeInit(lg);
         if (!k) continue;
         if (!st.manager) st.manager = k.manager;
@@ -426,7 +432,12 @@ export async function discoverRouter(budgetMs = 12000) {
   const cached = await store.get("v4router", { type: "json" }).catch(() => null);
   if (cached && cached.router && Date.now() - cached.t < 6 * 3600e3) return { ok: true, ...cached, cached: true };
 
-  const manager = st.manager || KNOWN_MANAGER;
+  let manager = st.manager || KNOWN_MANAGER;
+  if (!manager) {
+    const fm = await findManager(6000).catch(() => null);
+    if (fm && fm.ok && fm.supportsExtsload) manager = fm.manager;
+  }
+  if (!manager) return { ok: false, error: "PoolManager not identified yet — run ?findmanager=1" };
 
   let head;
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
@@ -656,7 +667,12 @@ export async function learnHooks(budgetMs = 10000) {
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
     || { keys: {}, manager: null, hooks: [] };
-  const manager = st.manager || KNOWN_MANAGER;
+  let manager = st.manager || KNOWN_MANAGER;
+  if (!manager) {
+    const fm = await findManager(6000).catch(() => null);
+    if (fm && fm.ok && fm.supportsExtsload) manager = fm.manager;
+  }
+  if (!manager) return { ok: false, error: "PoolManager not identified yet — run ?findmanager=1" };
 
   let head;
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
@@ -709,6 +725,112 @@ export async function learnHooks(budgetMs = 10000) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// CLASSIFY A CONTRACT — is this a token, or the v4 PoolManager?
+//
+// You were right to doubt the manager address. A v4 PoolManager implements
+// extsload(bytes32) and unlock(bytes); an ERC-20 implements symbol()/decimals()
+// and has neither. Asking the contract directly settles it instead of inferring
+// from log emitters.
+async function callSel(addr, data) {
+  try {
+    const r = await fetch("https://rpc.mainnet.chain.robinhood.com", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: addr, data }, "latest"] })
+    });
+    const j = await r.json();
+    if (j.error) return { ok: false, err: String(j.error.message || "").slice(0, 60), data: j.error.data || null };
+    return { ok: true, result: j.result };
+  } catch (e) { return { ok: false, err: String(e.message).slice(0, 60) }; }
+}
+export async function whatIs(addr) {
+  const SEL = {
+    symbol: "0x95d89b41", decimals: "0x313ce567", totalSupply: "0x18160ddd",
+    // extsload takes a bytes32 arg — pass a zero slot
+    extsload: "0x1e2eaeaf" + "0".repeat(64)
+  };
+  const [sym, dec, sup, ext] = await Promise.all([
+    callSel(addr, SEL.symbol), callSel(addr, SEL.decimals),
+    callSel(addr, SEL.totalSupply), callSel(addr, SEL.extsload)
+  ]);
+  let code = null;
+  try {
+    const r = await fetch("https://rpc.mainnet.chain.robinhood.com", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [addr, "latest"] })
+    });
+    const j = await r.json();
+    code = j.result ? (j.result.length - 2) / 2 : null;
+  } catch (e) {}
+
+  const looksToken = (sym.ok && sym.result && sym.result !== "0x")
+                  || (dec.ok && dec.result && dec.result !== "0x")
+                  || (sup.ok && sup.result && sup.result !== "0x");
+  const looksManager = ext.ok && typeof ext.result === "string" && ext.result.length >= 66;
+  return {
+    addr, codeSize: code,
+    symbol: sym.ok ? decodeStr(sym.result) : null,
+    hasDecimals: !!(dec.ok && dec.result && dec.result !== "0x"),
+    supportsExtsload: looksManager,
+    verdict: looksManager ? "v4 PoolManager" : (looksToken ? "ERC-20 token" : "unknown contract")
+  };
+}
+
+// ---------------------------------------------------------------------------
+// FIND THE POOLMANAGER, definitively.
+//
+// The v4 Swap topic is verified by keccak — it is NOT a guess. Any log carrying
+// that topic0 is emitted BY the PoolManager, so ranking emitters of that topic
+// identifies it with no dependence on pool ids or token addresses.
+export async function findManager(budgetMs = 12000) {
+  const t0 = Date.now();
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: e.message }; }
+
+  const emitters = {};
+  let win = 5000, from = head, tries = 0, scanned = 0;
+  while (Date.now() - t0 < budgetMs - 2000 && tries < 12 && from > head - 600000) {
+    tries++;
+    const lo = Math.max(0, from - win);
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16),
+        topics: [V4_SWAP_TOPIC]
+      }]);
+      scanned += (from - lo);
+      for (const lg of (logs || [])) {
+        const a = String(lg.address || "").toLowerCase();
+        if (a) emitters[a] = (emitters[a] || 0) + 1;
+      }
+      if (Object.keys(emitters).length) break;
+      from = lo;
+      win = Math.min(80000, win * 2);
+    } catch (e) {
+      win = Math.max(300, Math.floor(win / 3));
+      if (win <= 300) from = Math.max(0, from - 300);
+    }
+  }
+  const ranked = Object.entries(emitters).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length) return { ok: false, error: "no v4 Swap events found", blocksScanned: scanned, topic: V4_SWAP_TOPIC };
+
+  const manager = ranked[0][0];
+  const check = await whatIs(manager).catch(() => null);
+  // persist only if it really is a manager
+  if (check && check.supportsExtsload) {
+    const store = await _store("hoodsnipr-cache");
+    const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || { keys: {} };
+    st.manager = manager;
+    await store.setJSON("v4pools", st).catch(() => {});
+  }
+  return {
+    ok: true, manager, swaps: ranked[0][1], verdict: check && check.verdict,
+    supportsExtsload: !!(check && check.supportsExtsload),
+    otherEmitters: ranked.slice(1, 4).map(([a, c]) => ({ addr: a, swaps: c })),
+    blocksScanned: scanned
+  };
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -752,6 +874,21 @@ export default async (req) => {
     return json(200, await discoverRouter());
   }
 
+  // ?reset=1 — clear a poisoned index (e.g. the 190k bogus token entries)
+  if (url.searchParams.get("reset") === "1") {
+    for (const k of ["v4pools", "v4boot", "v4router", "v4probe"]) await store.delete(k).catch(() => {});
+    return json(200, { ok: true, cleared: true });
+  }
+
+  // ?whatis=<addr> — token or PoolManager?
+  const wi = url.searchParams.get("whatis");
+  if (wi) return json(200, await whatIs(wi));
+
+  // ?findmanager=1 — locate the PoolManager via the verified v4 Swap topic
+  if (url.searchParams.get("findmanager") === "1") {
+    return json(200, await findManager(14000));
+  }
+
   // ?learn=1 — scan recent Initialize events for hook addresses
   if (url.searchParams.get("learn") === "1") {
     return json(200, await learnHooks(14000));
@@ -773,7 +910,7 @@ export default async (req) => {
     }
     return json(200, {
       hooks: st.hooks || [],
-      manager: (boot && boot.manager) || st.manager || KNOWN_MANAGER,
+      manager: (boot && boot.manager) || st.manager || null,
       router: (boot && boot.router) || null,
       routerVerified: !!(boot && boot.routerVerified),
       candidates: (boot && boot.candidates) || []
