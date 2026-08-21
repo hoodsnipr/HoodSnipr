@@ -632,7 +632,15 @@ function isStable(p){
   if(nm.indexOf("USD")>=0 && p.price>0.97 && p.price<1.03 && Math.abs(p.ch24)<1.5) return true;
   return false;
 }
+var CORP_RE=/\b(inc|inc\.|incorporated|corp|corp\.|corporation|company|co\.|ltd|ltd\.|limited|plc|llc|lp|n\.?v\.?|s\.?a\.?|a\.?g\.?|holdings?|group|partners|industries|international|enterprises|motors|pharmaceuticals?|biosciences?|therapeutics|laboratories|class [abc]|adr|ads|depositary|preferred|common stock|ordinary shares?)\b/i;
+var FUND_RE=/\b(etf|etn|fund|index|trust|reit|spdr|ishares|vanguard|invesco|proshares|direxion|wisdomtree|treasury|bond|futures|leveraged|inverse|2x|3x)\b/i;
 function isStock(p){
+  var nm=String(p.tokenName||p.fullName||"");
+  if(CORP_RE.test(nm)||FUND_RE.test(nm)) return true;
+  if(/tokenized|xstock|equity|equities|security token|\brwa\b/i.test(nm+" "+(p.sym||""))) return true;
+  return isStockLegacy(p);
+}
+function isStockLegacy(p){
   if(p.dex && CFG.FILTERS.stockDexes.indexOf(String(p.dex).toLowerCase())>=0) return true;
   var raw=(p.sym||""), up=raw.toUpperCase();
   // xStocks-style: real ticker + trailing lowercase x (AAPLx, TSLAx)
@@ -669,6 +677,7 @@ async function refresh(){
     var board = await fetchBoard();
     var merged, viaBoard=false;
     if(board && board.length >= 1){
+      state.boardWarming=false;
       // The server already applied every filter. Re-filtering here (with data
       // that can differ slightly per device) is exactly how two browsers end up
       // showing different counts — so we take the server list verbatim.
@@ -676,6 +685,9 @@ async function refresh(){
       viaBoard = true;
       state.srcs=["BLOCKSCOUT","DEXSCREENER","GECKOTERMINAL"];
     }else{
+      // Board empty = indexer still warming (or broken). Say so plainly rather
+      // than quietly showing a handful of tokens as if that's the whole chain.
+      state.boardWarming=true;
       var mk = await fetchMarket();
       merged = mergePools(mk.gt, mk.ds);
       state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
@@ -1026,11 +1038,17 @@ function renderBoard(){
   var tn=$("#trackNote");
   if(tn){
     var c=state.chain||{};
+    if(state.boardWarming){
+      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer is still warming up — showing a partial list.</span> '
+        +'Full coverage builds as it backfills pool history from chain logs.';
+      return;
+    }
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
       + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
       + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools indexed from chain logs" : "")
-      + (c.backfillDone===false? " · backfilling history…" : "");
+      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools from chain logs" : "")
+      + (c.poolsActive? " · "+c.poolsActive.toLocaleString()+" actively trading" : "")
+      + (c.backfillDone===false? " · backfilling history…" : " · full history indexed ✓");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
