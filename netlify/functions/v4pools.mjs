@@ -60,10 +60,17 @@ export async function scanV4(budgetMs = 12000) {
         const k = decodeInit(lg);
         if (!k) continue;
         if (!st.manager) st.manager = k.manager;
-        // index by the non-native side so the client can look up by token
-        const token = k.c0 === "0x0000000000000000000000000000000000000000" ? k.c1 : k.c0;
-        const list = st.keys[token] || (st.keys[token] = []);
-        if (!list.some(x => x.id === k.id)) { list.push(k); found++; }
+        // BUG THIS FIXES: we used to index only the "non-native" side, which
+        // assumed every v4 pool pairs against native ETH. A TOKEN/WETH pool has
+        // two non-zero currencies, so it got filed under WETH and a lookup by
+        // the token found nothing — hence "no indexed v4 pool" for pools that
+        // plainly exist. Index under BOTH sides instead.
+        const ZERO = "0x0000000000000000000000000000000000000000";
+        for (const side of [k.c0, k.c1]) {
+          if (!side || side === ZERO) continue;
+          const list = st.keys[side] || (st.keys[side] = []);
+          if (!list.some(x => x.id === k.id)) { list.push(k); found++; }
+        }
       }
       chunks++;
       if (st.chunk < CHUNK_START) st.chunk = Math.min(CHUNK_START, st.chunk * 2);
@@ -83,12 +90,54 @@ export async function scanV4(budgetMs = 12000) {
   };
 }
 
+// Scan only the newest blocks — used when a user asks for a token we haven't
+// indexed yet. Runs independently of the historical backfill cursor.
+export async function scanTip(budgetMs = 8000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
+    || { keys: {}, manager: null, lo: null, done: false, chunk: CHUNK_START };
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: e.message }; }
+
+  const tipFrom = st.tip ?? Math.max(0, head - 300000);
+  let from = tipFrom, found = 0;
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  while (Date.now() - t0 < budgetMs - 1500 && from < head) {
+    const to = Math.min(head, from + 50000);
+    try {
+      const logs = await getLogs(from + 1, to, [INIT_TOPIC]);
+      for (const lg of logs) {
+        const k = decodeInit(lg);
+        if (!k) continue;
+        if (!st.manager) st.manager = k.manager;
+        for (const side of [k.c0, k.c1]) {
+          if (!side || side === ZERO) continue;
+          const list = st.keys[side] || (st.keys[side] = []);
+          if (!list.some(x => x.id === k.id)) { list.push(k); found++; }
+        }
+      }
+      from = to;
+    } catch (e) { from = Math.min(head, from + 10000); }
+  }
+  st.tip = from;
+  await store.setJSON("v4pools", st).catch(() => {});
+  return { ok: true, manager: st.manager, foundThisRun: found, tip: st.tip, head, tokens: Object.keys(st.keys).length };
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
 
   if (url.searchParams.get("scan") === "1") {
     return json(200, await scanV4(15000));
+  }
+
+  // ?tip=1 — scan the most recent blocks only. A pool created minutes ago sits
+  // at the chain tip, so this finds it without waiting for the full backfill.
+  if (url.searchParams.get("tip") === "1") {
+    return json(200, await scanTip(8000));
   }
 
   const token = String(url.searchParams.get("token") || "").toLowerCase();
@@ -103,5 +152,8 @@ export default async (req) => {
   if (!/^0x[0-9a-f]{40}$/.test(token)) return json(400, { error: "bad token" });
 
   const keys = (st.keys || {})[token] || [];
-  return json(200, { manager: st.manager, token, keys });
+  return json(200, {
+    manager: st.manager, token, keys,
+    scan: { done: !!st.done, cursor: st.lo ?? null, tokens: Object.keys(st.keys || {}).length }
+  });
 };
