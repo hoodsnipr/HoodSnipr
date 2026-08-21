@@ -1665,7 +1665,10 @@ async function fire(){
     var vres = await verifyUni(rpc());
     if(vres==="mismatch")
       throw new Error("The router at the configured address isn't Uniswap — refusing to send ETH to it. This is a config problem, not your trade.");
-    if(vres==="unknown") toast("Couldn't reach the RPC to verify the router — proceeding anyway", true);
+    if(vres==="unknown" && !state.warnedRpc){
+      state.warnedRpc=true;   // say it once, not on every attempt
+      toast("RPC slow to respond — proceeding without router verification", true);
+    }
 
     var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
     var netWei = ethers.parseEther(net.toFixed(18));
@@ -1681,6 +1684,20 @@ async function fire(){
       btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
       var derived=deriveV4Key(p.baseToken, p.pool);
       if(derived){ key=derived.key; needWrap=derived.wrap; }
+
+      // 1b) no hooks known yet? learn them, then derive again — this is far
+      //     faster than hunting the pool's Initialize log.
+      if(!key && (!state.v4Hooks || !state.v4Hooks.length)){
+        btn.innerHTML='<span class="spin"></span> LEARNING POOL HOOKS…';
+        try{
+          var lh=await fetch(CFG.API+"/v4pools?learn=1").then(function(r){return r.json()});
+          if(lh && lh.hooks && lh.hooks.length){
+            state.v4Hooks=lh.hooks;
+            var again=deriveV4Key(p.baseToken, p.pool);
+            if(again){ key=again.key; needWrap=again.wrap; }
+          }
+        }catch(e){}
+      }
 
       // 2) timestamp-targeted lookup — recovers hooked pools
       if(!key && p.created){
@@ -2519,7 +2536,10 @@ async function fireLoose(){
     var vres = await verifyUni(rpc());
     if(vres==="mismatch")
       throw new Error("The router at the configured address isn't Uniswap — refusing to send ETH to it. This is a config problem, not your trade.");
-    if(vres==="unknown") toast("Couldn't reach the RPC to verify the router — proceeding anyway", true);
+    if(vres==="unknown" && !state.warnedRpc){
+      state.warnedRpc=true;   // say it once, not on every attempt
+      toast("RPC slow to respond — proceeding without router verification", true);
+    }
     var me=await signer.getAddress();
     var units=ethers.parseUnits(amt.toFixed(Math.min(18,x.dec)), x.dec);
 
@@ -2737,17 +2757,28 @@ state.burner = load("hs_burner", null);
 
 // learn which hook contracts exist on this chain so v4 keys with hooks can be
 // derived locally instead of needing a log lookup every time
+function loadV4Hooks(){
+  return fetch(CFG.API+"/v4pools?hooks=1&t="+Date.now()).then(function(r){return r.json()}).then(function(j){
+    if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
+    if(j && j.candidates && j.candidates.length)
+      state.v4Candidates=j.candidates.map(function(c){return c.addr});
+    if(j && j.router){
+      state.v4Router=j.router; state.v4Manager=j.manager;
+      state.v4RouterVerified=!!j.routerVerified;
+    }
+    // hooks are what make local derivation work — if none came back, learn them
+    if(!state.v4Hooks || !state.v4Hooks.length){
+      return fetch(CFG.API+"/v4pools?learn=1").then(function(r){return r.json()}).then(function(k){
+        if(k && k.hooks && k.hooks.length) state.v4Hooks=k.hooks;
+      }).catch(function(){});
+    }
+  }).catch(function(){});
+}
+loadV4Hooks().then(function(){ if(!state.v4RouterVerified) ensureV4Router(); });
+
 fetch(CFG.API+"/v4pools?hooks=1&t="+Date.now()).then(function(r){return r.json()}).then(function(j){
   if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
-  if(j && j.candidates && j.candidates.length)
-    state.v4Candidates=j.candidates.map(function(c){return c.addr});
-  if(j && j.router){
-    state.v4Router=j.router;
-    state.v4Manager=j.manager;
-    state.v4RouterVerified=!!j.routerVerified;
-  }
-  if(!state.v4RouterVerified) ensureV4Router();
-}).catch(function(){ ensureV4Router(); });
+}).catch(function(){});
 
 autoReconnect();
 document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
