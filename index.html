@@ -135,7 +135,12 @@ nav{
 
 /* ===== tape ===== */
 .tape{overflow:hidden;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--panel);padding:11px 0}
-.tape-in{display:flex;width:max-content;animation:tape 30s linear infinite}
+.tape-in{will-change:transform;display:flex;width:max-content;animation:tape 30s linear infinite}
+.tape:hover .tape-in{animation-play-state:paused}
+@media (prefers-reduced-motion: reduce){
+  .tape-in{animation:none}
+  .tape{overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
 @keyframes tape{to{transform:translateX(-50%)}}
 .tape span{font-family:var(--mono);font-size:12px;padding:0 26px;white-space:nowrap;color:var(--mute)}
 .tape .u{color:var(--green)} .tape .d{color:var(--red)} .tape b{color:var(--bone);font-weight:500}
@@ -171,9 +176,24 @@ section{max-width:1020px;margin:0 auto;padding:110px 20px}
 .shot .ic{font-size:26px;position:absolute;top:20px;right:20px;opacity:.85}
 
 /* ===== timeframes strip ===== */
-.tfrow{display:flex;gap:10px;margin-top:40px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:4px}
+.tfrow{
+  display:flex;gap:10px;margin-top:40px;flex-wrap:nowrap;
+  overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;
+  scrollbar-width:none;padding-bottom:6px;
+  scroll-snap-type:x proximity;
+  /* let the browser scroll horizontally but still deliver taps immediately */
+  touch-action:pan-x;
+}
 .tfrow::-webkit-scrollbar{display:none}
-.tfchip{flex:0 0 auto;min-width:112px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 16px;text-align:center;cursor:pointer;transition:all .2s}
+.tfchip{
+  flex:0 0 auto;min-width:112px;background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:18px 16px;text-align:center;cursor:pointer;transition:all .2s;
+  scroll-snap-align:start;
+  touch-action:manipulation;          /* kills the 300ms tap delay on mobile */
+  -webkit-tap-highlight-color:transparent;
+  user-select:none;
+}
+.tfchip:active{transform:scale(.97)}
 .tfchip:hover,.tfchip.on{border-color:var(--green);background:var(--green-dim)}
 .tfchip .t{font-family:var(--disp);font-weight:800;font-size:22px}
 .tfchip .s{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.12em;margin-top:6px}
@@ -196,7 +216,10 @@ section{max-width:1020px;margin:0 auto;padding:110px 20px}
 .lbrow .vv{text-align:right;font-family:var(--mono);font-size:12px;min-width:64px}
 .lbrow .vv small{display:block;font-size:9px;color:var(--mute);letter-spacing:.1em}
 .lbrow .u{color:var(--green)}.lbrow .d{color:var(--red)}
-.lbskel{height:50px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:tape 1.2s linear infinite}
+/* was reusing @keyframes tape (translateX -50%), which slid the skeletons off
+   screen instead of shimmering in place */
+.lbskel{height:50px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:shimmer 1.2s linear infinite}
+@keyframes shimmer{to{background-position:-200% 0}}
 .lbfoot{display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em;flex-wrap:wrap;gap:8px}
 .lbcta{color:var(--green);text-decoration:none;border:1px solid var(--line);border-radius:99px;padding:7px 14px}
 .lbcta:hover{border-color:var(--green)}
@@ -575,34 +598,33 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
     });
     return out;
   }
+  // The landing page used to hit the indexers directly with its own filters,
+  // so it could disagree with the terminal. Now both read the SAME prebuilt
+  // board, which means the numbers always match — and it's one CDN-cached
+  // request instead of a dozen API calls per visitor.
   async function pullMarket(){
-    var gtOut=[], seen={}, dsOut=[];
     try{
-      var r=await fetch(API+"/market");
-      if(r.ok){
-        var pay=await r.json();
-        (pay.gtPages||[]).forEach(function(pg){ fromGT(pg,gtOut,seen); });
-        dsOut=fromDS(pay.dsPairs||[]);
-        if(pay.stats) live.stats=pay.stats;
-      } else throw 0;
-    }catch(e){
-      // direct fallback so the page still lives on a plain static host
-      try{
-        var a=await fetch(GT+"/networks/"+GT_NET+"/trending_pools?page=1&include=base_token");
-        if(a.ok) fromGT(await a.json(), gtOut, seen);
-        var b=await fetch(GT+"/networks/"+GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token");
-        if(b.ok) fromGT(await b.json(), gtOut, seen);
-      }catch(e2){}
-    }
-    var map={};
-    gtOut.forEach(function(p){ map[(p.baseToken||p.pool||"").toLowerCase()]=p; });
-    dsOut.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase();
-      if(map[k]){ if(!map[k].img)map[k].img=p.img; if(!map[k].mcap)map[k].mcap=p.mcap; }
-      else map[k]=p; });
-    var all=Object.keys(map).map(function(k){return map[k]}).filter(keep);
-    if(all.length){ live.pools=all; live.ts=Date.now(); }
+      var r = await fetch(API + "/board");
+      if(!r.ok) throw 0;
+      var pay = await r.json();
+      if(pay && pay.rows && pay.rows.length){
+        live.pools = pay.rows.map(function(x){
+          return {
+            pool:x.p, baseToken:x.a, sym:x.s, name:x.n, img:x.img,
+            price:x.px, mcap:x.mc, liq:x.liq,
+            m5:x.m5, h1:x.h1, h6:x.h6, h24:x.h24,
+            cm5:x.cm5, ch1:x.c1, ch6:x.c6, ch24:x.c24,
+            ts5:x.ts5, ts1:x.ts1, ts6:x.ts6, ts24:x.ts24,
+            ver:x.ver
+          };
+        });
+        live.stats = pay.stats || null;
+        live.ts = pay.ts || Date.now();
+      }
+    }catch(e){}
     return live.pools;
   }
+
   function avatar(sym){
     var ch=(sym||"?").charAt(0).toUpperCase();
     var c=document.createElement("canvas"); c.width=c.height=56;
@@ -621,7 +643,7 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
   /* ---------- ticker tape (live) ---------- */
   var tapeEl = document.getElementById('tape');
   function renderTape(){
-    var top = live.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,14);
+    var top = live.pools.slice().sort(function(a,b){return (b.ts24||b.h24)-(a.ts24||a.h24)}).slice(0,14);
     if(!top.length){ tapeEl.innerHTML='<span>CONNECTING TO ROBINHOOD CHAIN…</span>'; return; }
     var html='';
     for(var pass=0; pass<2; pass++){
@@ -638,10 +660,12 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
   var boardEl = document.getElementById('liveBoard');
   var readout = document.getElementById('tfReadout');
   function volOf(p){ return p[TFKEY[live.tf]] || 0; }
+  var SKEY = { "5M":"ts5", "1H":"ts1", "6H":"ts6", "24H":"ts24", "30D":"ts24" };
+  function scoreOf(p){ var k=SKEY[live.tf]; return (k && p[k]) ? p[k] : Math.sqrt(volOf(p)||0); }
   function chgOf(p){ return live.tf==="5M"?p.cm5 : live.tf==="1H"?p.ch1 : live.tf==="6H"?p.ch6 : p.ch24; }
   function renderBoard(){
     if(!live.pools.length){ boardEl.innerHTML='<div class="lbskel"></div><div class="lbskel"></div><div class="lbskel"></div>'; return; }
-    var rows=live.pools.slice().sort(function(a,b){return volOf(b)-volOf(a)}).slice(0,5);
+    var rows=live.pools.slice().sort(function(a,b){return scoreOf(b)-scoreOf(a)}).slice(0,5);
     boardEl.innerHTML = rows.map(function(p,i){
       var c=chgOf(p), up=c>=0;
       return '<a class="lbrow" href="./app.html">'
@@ -662,19 +686,56 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
     (function tw(){ if(i<=msg.length){ readout.textContent=msg.slice(0,i++); setTimeout(tw,10); } })();
   }
   function updateReadout(){
-    var rows=live.pools.slice().sort(function(a,b){return volOf(b)-volOf(a)});
+    var rows=live.pools.slice().sort(function(a,b){return scoreOf(b)-scoreOf(a)});
     if(!rows.length){ typeOut('> SCANNING ROBINHOOD CHAIN…'); return; }
     var t=rows[0];
     typeOut('> RANKING BY '+live.tf+' VOLUME · TOP TARGET: $'+t.sym+' · '+fUsd(volOf(t)));
   }
-  document.querySelectorAll('.tfchip').forEach(function(chip){
-    chip.addEventListener('click', function(){
-      document.querySelectorAll('.tfchip').forEach(function(c){ c.classList.remove('on'); });
+  // Delegated + pointer-based: per-element click listeners were unreliable on
+  // touch devices inside a horizontally scrollable row (a tap that moves a few
+  // pixels registers as a scroll and the click never fires). This tracks the
+  // gesture and treats anything that barely moved as a tap.
+  (function(){
+    var row = document.querySelector('.tfrow');
+    if(!row) return;
+    var startX = 0, startY = 0, moved = false;
+
+    function selectFrom(target){
+      var chip = target && target.closest ? target.closest('.tfchip') : null;
+      if(!chip || !row.contains(chip)) return;
+      var tf = chip.getAttribute('data-tf');
+      if(!tf || tf === live.tf) return;
+      var chips = row.querySelectorAll('.tfchip');
+      for(var i=0;i<chips.length;i++) chips[i].classList.remove('on');
       chip.classList.add('on');
-      live.tf = chip.getAttribute('data-tf');
+      live.tf = tf;
       renderBoard(); updateReadout();
+      // keep the chosen chip in view on narrow screens
+      try{ chip.scrollIntoView({behavior:'smooth', block:'nearest', inline:'center'}); }catch(e){}
+    }
+
+    row.addEventListener('pointerdown', function(e){
+      startX = e.clientX; startY = e.clientY; moved = false;
+    }, {passive:true});
+    row.addEventListener('pointermove', function(e){
+      if(Math.abs(e.clientX-startX) > 8 || Math.abs(e.clientY-startY) > 8) moved = true;
+    }, {passive:true});
+    row.addEventListener('pointerup', function(e){
+      if(!moved) selectFrom(e.target);
     });
-  });
+    // click fallback for browsers without pointer events
+    row.addEventListener('click', function(e){
+      if(!window.PointerEvent) selectFrom(e.target);
+    });
+    // keyboard accessibility
+    row.querySelectorAll('.tfchip').forEach(function(c){
+      c.setAttribute('tabindex','0');
+      c.setAttribute('role','button');
+      c.addEventListener('keydown', function(ev){
+        if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); selectFrom(c); }
+      });
+    });
+  })();
 
   /* ---------- hero stat ---------- */
   function renderHero(){
@@ -682,8 +743,7 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
     if(!live.pools.length){ el.textContent='connecting to the chain…'; return; }
     var st=live.stats||{};
     var v24= st.vol24!=null? st.vol24 : live.pools.reduce(function(a,p){return a+(p.h24||0)},0);
-    var tx = st.txns24? ' · '+(st.txns24>=1e6?(st.txns24/1e6).toFixed(2)+'M':st.txns24>=1e3?(st.txns24/1e3).toFixed(1)+'K':st.txns24)+' 24H TXNS' : '';
-    el.textContent = fUsd(v24)+' 24H VOLUME'+tx+' · '+(st.tokenCount||live.pools.length)+' TOKENS';
+    el.textContent = fUsd(v24)+' 24H VOLUME · '+(st.tokensTradeable||live.pools.length).toLocaleString()+' TRENDING TOKENS';
   }
 
   async function tick(){

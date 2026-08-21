@@ -264,7 +264,7 @@ canvas.share{display:none}
     <div class="chainbar" id="chainBar">
       <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">…</div></div>
       <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">…</div></div>
-      <div class="cb"><div class="k">PAIRS ON CHAIN</div><div class="v" id="cbTokens">…</div></div>
+      <div class="cb"><div class="k">TRENDING TOKENS</div><div class="v" id="cbTokens">…</div></div>
     </div>
     <div class="board" id="board"></div>
     <div class="pager" id="pager"></div>
@@ -482,6 +482,7 @@ function boardRowToPool(r){
     cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
+    ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
     created:r.cr? new Date(r.cr).toISOString() : null,
     holders:r.h, dec:r.d, src:"BOARD"
   };
@@ -532,42 +533,6 @@ async function fetchBoard(){
     }catch(e){}
     return pools;
   }catch(e){ return null; }
-}
-async function fetchMarket(){
-  if(!proxyDown){
-    try{
-      var r=await fetch(CFG.API+"/market");
-      if(r.ok){
-        var pay=await r.json();
-        var gtOut=[], seen={};
-        (pay.gtPages||[]).forEach(function(pg){ parseGTPage(pg, gtOut, seen); });
-        var dsOut=parseDSPairs(pay.dsPairs||[], null);
-        if(pay.ethUsd>0) state.ethUsd=pay.ethUsd;
-        if(pay.stats && !state.chainAuthoritative) state.chain=Object.assign({},pay.stats,state.chain||{});
-        return { gt:gtOut, ds:dsOut, viaProxy:true };
-      }
-      throw 0;
-    }catch(e){ proxyDown=true; setTimeout(function(){proxyDown=false},60000); }
-  }
-  // ---- direct fallback ----
-  var urls = [
-    "/networks/"+CFG.GT_NET+"/trending_pools?page=1&include=base_token",
-    "/networks/"+CFG.GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token",
-    "/networks/"+CFG.GT_NET+"/pools?page=2&sort=h24_volume_usd_desc&include=base_token"
-  ];
-  var gtOut2=[], seen2={};
-  for(var i=0;i<urls.length;i++){
-    try{ parseGTPage(await gt(urls[i]), gtOut2, seen2); }catch(e){}
-  }
-  var dsOut2=[];
-  try{
-    var chain=await probeDSChain();
-    if(chain){
-      var rr=await fetch(CFG.DS+"/latest/dex/search?q=WETH");
-      dsOut2=parseDSPairs(((await rr.json())||{}).pairs, chain);
-    }
-  }catch(e){}
-  return { gt:gtOut2, ds:dsOut2, viaProxy:false };
 }
 async function probeDSChain(){
   if(state.dsChain) return state.dsChain;
@@ -675,28 +640,16 @@ async function refresh(){
   if(document.hidden) return;   // don't burn quota for a tab nobody's watching
   try{
     var board = await fetchBoard();
-    var merged, viaBoard=false;
-    if(board && board.length >= 1){
-      state.boardWarming=false;
-      // The server already applied every filter. Re-filtering here (with data
-      // that can differ slightly per device) is exactly how two browsers end up
-      // showing different counts — so we take the server list verbatim.
-      merged = board;
+    var merged=[], viaBoard=false;
+    if(board && board.length){
+      merged = board;                 // server list, verbatim
       viaBoard = true;
-      state.srcs=["BLOCKSCOUT","DEXSCREENER","GECKOTERMINAL"];
+      state.boardWarming = false;
+      state.srcs = ["DEXSCREENER","GECKOTERMINAL"];
     }else{
-      // Board empty = indexer still warming (or broken). Say so plainly rather
-      // than quietly showing a handful of tokens as if that's the whole chain.
-      state.boardWarming=true;
-      var mk = await fetchMarket();
-      merged = mergePools(mk.gt, mk.ds);
-      state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
-      if(mk.viaProxy) state.srcs.push("EDGE-CACHED");
+      state.boardWarming = true;      // say so plainly instead of faking a list
+      state.srcs = [];
     }
-    // NOTE: new launches are crawled server-side into the same registry, so we
-    // deliberately do NOT fold this device's own new-pool fetch into the index.
-    // That fetch lands at different times on different devices and would make
-    // the board differ between phone and desktop.
 
     if(merged.length){
       // The server rotates through the registry, so ANY single response is a
@@ -752,22 +705,6 @@ function localStats(){
   });
   return { vol24:vol, liq:liq, tokenCount:Object.keys(toks).length, pools:Object.keys(seen).length };
 }
-async function pullChainStats(){
-  try{
-    var r=await fetch(CFG.API+"/chainstats");
-    if(!r.ok) throw 0;
-    var c=await r.json();
-    if(c){
-      // chainstats no longer carries vol24/liq — merge without letting it
-      // overwrite the board's authoritative totals
-      delete c.vol24; delete c.liq;
-      state.chain=Object.assign({}, state.chain||{}, c);
-      renderChainBar();
-      return;
-    }
-  }catch(e){}
-  state.chainAuthoritative=false;
-}
 function renderChainBar(){
   var c=state.chain||{}, e;
   // ONE source of truth: whatever the board payload reported. Two endpoints
@@ -788,7 +725,7 @@ function renderChainBar(){
   if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "…";
   if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
 
-  var created = c.poolsIndexed!=null? c.poolsIndexed : (c.tokensCreated||0);
+  var created = c.tokensTradeable!=null? c.tokensTradeable : (c.universeTokens||0);
   var el=$("#cbTokens");
   if(el){
     if(created>0){
@@ -927,6 +864,13 @@ function socialLinks(p, size){
 
 // ================= BOARD =================
 function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
+var SCORE_KEY={m5:"ts5",h1:"ts1",h6:"ts6",h24:"ts24"};
+function scoreFor(p){
+  if(state.tf==="d30") return volFor(p);
+  var k=SCORE_KEY[state.tf];
+  var s=k? (p[k]||0) : 0;
+  return s>0? s : Math.sqrt(volFor(p)||0);   // fallback if the server didn't score it
+}
 var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
 // Podium tiers across the trending 50: 1–10 gold, 11–25 silver, 26–50 bronze.
 function tierOf(i){ return i<10?"gold" : i<25?"silver" : i<50?"bronze" : ""; }
@@ -934,6 +878,16 @@ function tierOf(i){ return i<10?"gold" : i<25?"silver" : i<50?"bronze" : ""; }
 function versionsOf(p){
   var v=(p.vers&&p.vers.length)? p.vers.slice() : (p.ver? [p.ver] : []);
   return v.map(function(x){return String(x).toLowerCase()}).filter(function(x,i,a){return a.indexOf(x)===i});
+}
+// Buy share for the selected timeframe — green when buyers dominate.
+function buyPressure(p){
+  var t=p.txns && p.txns[state.tf];
+  if(!t) return "";
+  var tot=(t.b||0)+(t.s||0);
+  if(tot<5) return "";
+  var pct=Math.round((t.b/tot)*100);
+  var col = pct>=60?"var(--green)" : pct<=40?"var(--red)" : "var(--mute)";
+  return '<span style="color:'+col+'">'+pct+'% buys</span> · ';
 }
 function venueBadge(p){
   var v=versionsOf(p);
@@ -984,51 +938,21 @@ function renderBoard(){
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
   // Deterministic sort: volume desc, then pool address — identical input always
   // yields identical order, so rows never shuffle between refreshes.
-  // One row per token, always. Multiple pools for the same token (different
-  // fee tiers, or the same token seen by two indexers) collapse into the
-  // deepest-liquidity pool — that's the one we'd route a snipe through anyway.
-  var byTok={}, loose=[];
-  state.pools.forEach(function(p){
-    var k=(p.baseToken||"").toLowerCase();
-    if(!k){ loose.push(p); return; }
-    var cur=byTok[k];
-    if(!cur){ byTok[k]=p; return; }
-    var better = (p.liq||0)>(cur.liq||0) || ((p.liq||0)===(cur.liq||0) && (p.h24||0)>(cur.h24||0));
-    if(better){
-      // don't lose metadata the loser had
-      ["img","mcap","site","tw","tg","tokenName","created","holders"].forEach(function(f){
-        if(p[f]==null||p[f]==="") p[f]=cur[f];
-      });
-      byTok[k]=p;
-    }else{
-      ["img","mcap","site","tw","tg","tokenName","created","holders"].forEach(function(f){
-        if(cur[f]==null||cur[f]==="") cur[f]=p[f];
-      });
-    }
-  });
-  var deduped=Object.keys(byTok).map(function(k){return byTok[k]}).concat(loose);
-  // Belt and braces: even if a data path bypasses the server's ticker collapse,
-  // the UI must never show the same ticker twice. Deepest liquidity wins.
-  var tick={}, tickOrder=[];
-  deduped.forEach(function(p){
-    var k=String(p.sym||"").toUpperCase().replace(/^\$+/,"").replace(/[^A-Z0-9]/g,"");
-    if(!k){ tickOrder.push(p); return; }
-    var cur=tick[k];
-    if(!cur){ tick[k]=p; return; }
-    // Deepest liquidity is the real market. Anything else sharing the ticker is
-    // simply dropped — the user sees one contract per ticker, nothing more.
-    var better=(p.liq||0)>(cur.liq||0) || ((p.liq||0)===(cur.liq||0) && (p.h24||0)>(cur.h24||0));
-    tick[k]=better?p:cur;
-  });
-  deduped=Object.keys(tick).map(function(k){return tick[k]}).concat(tickOrder);
+  // The server already deduped by ticker, filtered fakes/stocks, and picked one
+  // contract per token. Re-doing any of that here is how the two drift apart —
+  // so the client renders the server's list verbatim.
   // Rank strictly by the SELECTED timeframe's volume — that's what makes the
   // 5M / 1H / 6H / 24H tabs meaningfully different and comparable to any screener.
-  var ranked=deduped.filter(function(p){
+  var ranked=state.pools.slice().filter(function(p){
     if(state.tf==="d30") return true;
     return volFor(p)>0 || (p.liq||0)>=1000;   // hide dead rows from timeframe views
   }).sort(function(a,b){
-    var d=volFor(b)-volFor(a);
+    // Rank by trend score (volume + acceleration + buy pressure + depth) rather
+    // than raw volume, so the board answers "what's heating up" not just "what
+    // traded most" — that's what a screener's trending tab shows.
+    var d=scoreFor(b)-scoreFor(a);
     if(d) return d;
+    var v=volFor(b)-volFor(a); if(v) return v;
     var la=(b.liq||0)-(a.liq||0); if(la) return la;
     return (a.baseToken||a.pool||"")<(b.baseToken||b.pool||"")?-1:1;
   }).slice(0,MAX_TOKENS);
@@ -1051,7 +975,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
       +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
-      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
       +'</div>';
   });
@@ -1067,19 +991,12 @@ function renderBoard(){
   if(tn){
     var c=state.chain||{};
     if(state.boardWarming){
-      var cc=state.chain||{};
-      tn.innerHTML='<span style="color:var(--gold)">⚙️ Indexing Robinhood Chain.</span> '
-        +(cc.poolsIndexed? cc.poolsIndexed.toLocaleString()+' pools discovered; ' : '')
-        +(cc.marketTokens? cc.marketTokens.toLocaleString()+' priced so far — ' : '')
-        +'the board fills in over the next several minutes.';
-      return;
+      tn.innerHTML='<span style="color:var(--gold)">⚙️ Loading trending tokens…</span>';
+    }else{
+      tn.textContent = "Showing "+ranked.length.toLocaleString()+" trending tokens on Robinhood Chain"
+        + " · ranked by "+TF_LABEL[state.tf]+" volume"
+        + " · DexScreener + GeckoTerminal";
     }
-    tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
-      + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
-      + " · Blockscout + DexScreener + GeckoTerminal"
-      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools indexed from chain" : "")
-      + (c.poolsActive? " · "+c.poolsActive.toLocaleString()+" trading now" : "")
-      + (c.backfillDone===false? " · backfilling…" : " · full chain indexed ✓");
   }
   enrichHolders(rows);
   var age=Math.round((Date.now()-state.lastUpdate)/1000);
@@ -2294,7 +2211,6 @@ paintCachedBoard();      // instant full list from last session
 fetchEthUsd(); refresh();
 setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
 // token census polls fast so new launches show up almost the moment they land
-pullChainStats(); setInterval(function(){ if(!document.hidden) pullChainStats(); }, 10000);
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
 setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
 setInterval(function(){
