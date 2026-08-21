@@ -1,7 +1,12 @@
 # HoodSnipr — Netlify config
 [build]
   publish = "."
-  command = ""
+  # Must NOT be empty: with no build command Netlify can skip `npm install`,
+  # which makes every function that imports a package fail to bundle (404).
+  command = "npm install --no-audit --no-fund"
+
+[build.environment]
+  NODE_VERSION = "20"
 
 # Explicit functions config. Netlify can fail to auto-detect the functions
 # directory when the publish dir is the repo root — declaring it here (plus the
@@ -9,9 +14,6 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
-
-[functions."*"]
-  included_files = ["netlify/functions/**"]
 
 # /api/foo -> /.netlify/functions/foo
 [[redirects]]

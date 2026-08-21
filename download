@@ -1,7 +1,9 @@
 # deps
 node_modules/
-package-lock.json
 yarn.lock
+# NOTE: package-lock.json is intentionally COMMITTED. Netlify uses it to install
+# @netlify/blobs and ethers; without it, functions that import them fail to
+# bundle and return 404.
 
 # env & secrets — NEVER commit these
 .env

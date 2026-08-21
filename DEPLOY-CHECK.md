@@ -63,6 +63,28 @@ Give it ~20 seconds. Key fields:
 Run it two or three times; `backfillCursor` should fall each time as it walks
 back through chain history.
 
+
+## If `hello` works but `status` 404s (this was your case)
+
+`hello.mjs` imports nothing. Every other function imported `@netlify/blobs`.
+When Netlify doesn't install dependencies, those functions fail to BUNDLE and
+are never deployed — so they 404 while `hello` works fine.
+
+Two causes, both now fixed in this repo:
+
+1. **`package-lock.json` was gitignored.** Netlify needs the lockfile to install
+   dependencies reliably. It is now committed — make sure it reaches GitHub.
+2. **The build command was empty.** With no build command Netlify can skip
+   `npm install` entirely. It is now `npm install --no-audit --no-fund`.
+
+On top of that, all dependency imports are now **dynamic and guarded**. If a
+package is ever missing again, the function still deploys and still responds —
+it degrades and reports `storeMode: "memory:..."` in `/status` instead of
+disappearing behind a 404.
+
+In the deploy log you should now see npm installing packages, then
+`Packaging Functions from netlify/functions directory: 15 files`.
+
 ## 5. Confirm the schedule
 
 **Netlify → Functions** should list `indexer` and `crawler` with a schedule of
@@ -71,3 +93,18 @@ on deploy previews or branch deploys.
 
 Once `hello` returns JSON and `status` shows `poolsIndexed` climbing, the app will
 fill in on its own within a few minutes.
+
+## Validation performed on this build
+
+Before shipping, every function was **invoked** (not just imported) against a
+mocked chain, because import-only checks miss runtime errors like the
+`Cannot access 'out' before initialization` crash:
+
+- All 11 HTTP endpoints execute and return 200.
+- All 16 modules load even with `@netlify/blobs` AND `ethers` completely absent.
+- All four event topic hashes verified against real keccak256 — if these were
+  wrong, no chain logs would ever match and the indexer would silently find zero
+  pools forever.
+- Full pipeline test: a `PoolCreated` log becomes an indexed pool, a `Swap` log
+  produces price + volume, `eth_call` decodes the token symbol, and the result
+  appears as a board row with price, liquidity, and 24h volume.
