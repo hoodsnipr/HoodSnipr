@@ -28,11 +28,16 @@ export default async (req) => {
   } catch (e) { out.swapsError = e.message; }
 
   try {
-    const lq = await store.get("liq", { type: "json" });
-    out.poolsWithLiquidity = lq ? Object.keys(lq.m || {}).length : 0;
-    out.liqSweepCursor = lq?.cursor ?? null;
-    out.liqSweepsCompleted = lq?.sweeps ?? 0;
-  } catch (e) { out.liqError = e.message; }
+    const mk = await store.get("mkt", { type: "json" });
+    out.marketTokens = mk ? Object.keys(mk.d || {}).length : 0;
+    out.marketCursor = mk?.cursor ?? null;
+    out.marketLaps = mk?.laps ?? 0;
+    if (mk?.d) {
+      const vs = Object.values(mk.d);
+      out.v4Tokens = vs.filter(x => (x.ver || "").toLowerCase() === "v4").length;
+      out.withLiquidity = vs.filter(x => (x.liq || 0) > 0).length;
+    }
+  } catch (e) { out.marketError = e.message; }
 
   // ?run=1 forces an indexing step right now and reports what happened
   if (url.searchParams.get("run") === "1") {

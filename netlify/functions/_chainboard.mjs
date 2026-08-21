@@ -101,7 +101,7 @@ export async function poolLiquidity(pools, ethUsd) {
   return out;
 }
 
-export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overlay }) {
+export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overlay, market }) {
   const byTok = {};
   for (const pool of Object.keys(poolsIdx.pools || {})) {
     const entry = poolsIdx.pools[pool];
@@ -111,21 +111,23 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
     const sym = tm.s || "?", name = tm.n || "";
     if (excluded(sym, name)) continue;
 
+    const ov = (overlay || {})[tok] || {};
     const vArr = (swaps.v || swaps.vol || {})[pool];
     const pxRec = (swaps.px || {})[pool];
     const dec = tm.d == null ? 18 : tm.d;
 
-    const m5 = volFine(vArr) * ethUsd;
-    const h1 = volHour(vArr) * ethUsd;
-    const h6 = volHours(vArr, 6) * ethUsd;
-    const h24 = volHours(vArr, 24) * ethUsd;
+    // our chain-derived volume is fresher for new pools; the market's is more
+    // complete for established ones — take the larger of the two
+    const m5 = Math.max(volFine(vArr) * ethUsd, ov.m5 || 0);
+    const h1 = Math.max(volHour(vArr) * ethUsd, ov.h1 || 0);
+    const h6 = Math.max(volHours(vArr, 6) * ethUsd, ov.h6 || 0);
+    const h24 = Math.max(volHours(vArr, 24) * ethUsd, ov.h24 || 0);
 
     let px = pxRec ? priceFromSqrt(pxRec.s, pxRec.t0 === 1, dec, ethUsd) : null;
-    const liq = liqMap[pool] || 0;
+    const liq = liqMap[pool] || ov.liq || 0;
 
     // overlay: logos, socials, market cap, and a better price if the indexer has one
-    const ov = (overlay || {})[tok] || {};
-    if (!px && ov.px) px = ov.px;
+    if (ov.px) px = ov.px;                 // indexer price beats our sqrt estimate
 
     // A pool holding real WETH is tradeable even if we haven't recorded a swap
     // for it yet (volume history builds over the first 24h of indexing).
@@ -138,11 +140,32 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
       m5, h1, h6, h24,
       cm5: ov.cm5 || 0, c1: ov.c1 || 0, c6: ov.c6 || 0, c24: ov.c24 || 0,
       site: ov.site || null, tw: ov.tw || null, tg: ov.tg || null,
+      ver: ov.ver || "", dex: ov.dex || "",
       cr: null, blk: 0,
       chain: true
     };
     const cur = byTok[tok];
     if (!cur || (row.liq || 0) > (cur.liq || 0) || (row.h24 || 0) > (cur.h24 || 0)) byTok[tok] = row;
+  }
+  // Uniswap v4 uses a singleton PoolManager — there is no per-pool contract for
+  // our factory-log scan to find. Those tokens only exist in the market data, so
+  // they're added here or they'd be invisible to users.
+  if (market) {
+    for (const tok of Object.keys(market)) {
+      const m = market[tok];
+      if (!m || byTok[tok]) continue;
+      if (excluded(m.s, m.n)) continue;
+      const live = (m.h24 > 0 || m.h6 > 0 || m.h1 > 0 || m.m5 > 0 || m.liq > 25);
+      if (!live) continue;
+      byTok[tok] = {
+        a: tok, p: m.pool, s: m.s, n: m.n, d: 18,
+        img: m.img || null, px: m.px, mc: m.mc, liq: m.liq,
+        m5: m.m5, h1: m.h1, h6: m.h6, h24: m.h24,
+        cm5: m.cm5, c1: m.c1, c6: m.c6, c24: m.c24,
+        site: m.site, tw: m.tw, tg: m.tg, cr: m.cr,
+        ver: m.ver || "", dex: m.dex || "", chain: false
+      };
+    }
   }
   const rows = Object.values(byTok);
   rows.sort((x, y) => (y.h24 || 0) - (x.h24 || 0) || (y.liq || 0) - (x.liq || 0) || (x.a < y.a ? -1 : 1));

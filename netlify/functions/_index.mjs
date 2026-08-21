@@ -16,6 +16,7 @@ import { store as _store, storeMode } from "./_store.mjs";
 import { rpc, rpcBatch, getLogs, TOPIC, addrFromTopic, words, toInt256, metaCalls, decodeStr, decodeUint,
          resetBudget, budgetLeft, rpcSpent, wasLimited } from "./_rpc.mjs";
 import { buildChainRows, poolLiquidity } from "./_chainboard.mjs";
+import { sweepMarket } from "./_market.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 const FINE = 12, HOURS = 24;            // 12x5min = 1h, 24x1h = 24h
@@ -52,7 +53,7 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   const idx = (await store.get("pools_idx", { type: "json" }).catch(() => null))
     || { pools: {}, lo: head, done: false, chunk: 250000 };
   // this RPC times out on very wide ranges; never grow past what has worked
-  if (!idx.chunk || idx.chunk > 250000) idx.chunk = 250000;
+  if (!idx.chunk || idx.chunk > 60000) idx.chunk = 60000;   // wide ranges time out
   let chunksRun = 0, poolsFound = 0;
 
   // swap state is read by the metadata phase (to prioritise traded tokens), so
@@ -65,41 +66,19 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   if (sw.fb !== fb) { for (const p in sw.v) if (sw.v[p]) sw.v[p].f[fb] = 0; sw.fb = fb; }
   if (sw.hb !== hb) { for (const p in sw.v) if (sw.v[p]) sw.v[p].h[hb] = 0; sw.hb = hb; }
 
-  // ---------- B2. LIQUIDITY SWEEP over ALL pools ----------
-  // 38k pools were indexed but liquidity was only measured for the handful that
-  // had recent swaps, so everything else looked dead and got filtered out. This
-  // rotates a WETH balanceOf across the whole pool set, which is the cheapest
-  // way to learn which pools are actually alive.
-  const lq = (await store.get("liq", { type: "json" }).catch(() => null)) || { m: {}, cursor: 0, sweeps: 0 };
-  // Discovery walks the chain newest-first, so the natural key order is roughly
-  // newest-first too — exactly what a memecoin sniper wants swept first.
-  const allPools = Object.keys(idx.pools);
-  let liqChecked = 0;
-  if (allPools.length && usedBy(phase.liq) && budgetLeft() > 250) {
-    const SEL = "0x70a08231";
-    let c = lq.cursor || 0;
-    while (usedBy(phase.liq) && budgetLeft() > 300) {
-      const slice = [];
-      for (let i = 0; i < 250; i++) { slice.push(allPools[c % allPools.length]); c++; }
-      const calls = slice.map(p => ({
-        method: "eth_call",
-        params: [{ to: WETH, data: SEL + "000000000000000000000000" + p.slice(2) }, "latest"]
-      }));
-      const res = await rpcBatch(calls).catch(() => []);
-      slice.forEach((p, k) => {
-        const raw = res[k];
-        if (raw == null) return;
-        try {
-          const bal = Number(BigInt(raw)) / 1e18;
-          if (bal > 0.001) lq.m[p] = bal; else delete lq.m[p];
-          liqChecked++;
-        } catch (e) {}
-      });
-      if (c >= allPools.length && (lq.cursor || 0) < allPools.length) { lq.sweeps = (lq.sweeps || 0) + 1; }
-      if (c % allPools.length < 120 && c > allPools.length) break;   // completed a lap
-    }
-    lq.cursor = c % Math.max(1, allPools.length);
-    await store.setJSON("liq", lq).catch(e => errors.push("save liq: " + e.message));
+  // ---------- B2. MARKET SWEEP (DexScreener) ----------
+  // The RPC balanceOf sweep returned nothing under rate limiting (liqChecked: 0
+  // across 780 calls). DexScreener has already indexed this chain — including
+  // Uniswap v4, which our factory-log scan cannot see at all — so we enrich our
+  // chain-derived token list through their batch endpoint instead.
+  const tokenList = [...new Set(Object.values(idx.pools))];
+  let mkt = { d: {}, cursor: 0, laps: 0 }, swept = 0, mktCalls = 0, mktLimited = false;
+  if (tokenList.length) {
+    const r = await sweepMarket(store, tokenList, {
+      calls: 45,
+      deadline: t0 + phase.liq
+    }).catch(e => { errors.push("mkt: " + e.message.slice(0, 60)); return null; });
+    if (r) { mkt = r.st; swept = r.enriched; mktCalls = r.calls; mktLimited = !!r.limited; }
   }
 
   // ---------- C. metadata for tokens we can show ----------
@@ -115,10 +94,13 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
       if (t && !tm[t] && !seen.has(t)) { seen.add(t); need.push(t); }
     };
     // 1) pools with recent swaps  2) pools ranked by WETH held
-    for (const p of Object.keys(sw.v)) { pushTok(p); if (need.length >= 300) break; }
-    if (need.length < 300) {
-      const ranked = Object.keys(lq.m).sort((a, b) => lq.m[b] - lq.m[a]);
-      for (const p of ranked) { pushTok(p); if (need.length >= 300) break; }
+    // DexScreener already supplies symbol/name for anything it indexes, so RPC
+    // metadata is only needed for pools it hasn't seen — the brand-new ones,
+    // which is exactly where our edge is.
+    for (const p of Object.keys(sw.v)) {
+      const t = idx.pools[p];
+      if (t && !mkt.d[t]) pushTok(p);
+      if (need.length >= 200) break;
     }
     for (let i = 0; i < need.length && usedBy(phase.meta) && budgetLeft() > 90; i += 30) {
       const slice = need.slice(i, i + 30);
@@ -188,6 +170,12 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   // ---------- D. enumerate more pools (LAST — leftovers only) ----------
   let dirty = false;
 
+  // Discovery has run far ahead of what we can enrich, and wide getLogs ranges
+  // time out on this RPC. Cap it: only keep backfilling while we still have
+  // headroom, and never at the expense of the phases that produce rows.
+  const BACKFILL_CAP = 400000;
+  const enoughPools = Object.keys(idx.pools).length >= BACKFILL_CAP;
+  if (enoughPools && !idx.done) idx.done = true;
   while (left() > 3000 && !idx.done && idx.lo > 0 && budgetLeft() > 20) {
     const size = Math.max(2000, idx.chunk);
     const from = Math.max(0, idx.lo - size), to = idx.lo;
@@ -205,7 +193,7 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
         if (!idx.pools[pool]) { idx.pools[pool] = other; poolsFound++; dirty = true; }
       }
       chunksRun++;
-      if (idx.chunk < 250000) idx.chunk = Math.min(250000, Math.floor(idx.chunk * 1.5));  // recover, capped
+      if (idx.chunk < 60000) idx.chunk = Math.min(60000, Math.floor(idx.chunk * 1.5));  // recover, capped
       idx.lo = from;
       if (from === 0) idx.done = true;
     } catch (e) {
@@ -220,11 +208,16 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
 
   // ---------- D. board ----------
   const ethUsd = (await store.get("ethusd", { type: "json" }).catch(() => null))?.v || 3400;
-  // liquidity comes from the swept map (WETH held x2 x price), no extra calls
   const liqMap = {};
-  for (const p of Object.keys(lq.m)) liqMap[p] = lq.m[p] * 2 * ethUsd;
+  for (const t of Object.keys(mkt.d)) {
+    const m = mkt.d[t];
+    if (m.pool) liqMap[String(m.pool).toLowerCase()] = m.liq || 0;
+  }
   const overlay = (await store.get("overlay", { type: "json" }).catch(() => null)) || {};
-  const rows = buildChainRows({ poolsIdx: idx, swaps: sw, tokmeta: tm, ethUsd, liqMap, overlay });
+  // DS entries keyed by token become the overlay — this is what makes v4 tokens
+  // appear even though no v4 pool contract exists to scan.
+  for (const t of Object.keys(mkt.d)) overlay[t] = Object.assign({}, overlay[t], mkt.d[t]);
+  const rows = buildChainRows({ poolsIdx: idx, swaps: sw, tokmeta: tm, ethUsd, liqMap, overlay, market: mkt.d });
 
   let vol24 = 0, liq = 0;
   for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
@@ -237,7 +230,8 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
       tokensCreated: Object.keys(tm).length,
       backfillDone: !!idx.done, backfillCursor: idx.lo, backfillChunk: idx.chunk,
       swapCursor: sw.cursor, head, vol24, liq, ethUsd,
-      poolsWithLiq: Object.keys(lq.m).length, liqSweeps: lq.sweeps || 0
+      marketTokens: Object.keys(mkt.d).length, marketLaps: mkt.laps || 0,
+      universeTokens: tokenList.length
     }
   };
   await store.setJSON("board2", payload).catch(e => errors.push("save board: " + e.message));
@@ -250,8 +244,9 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
     tokensWithMeta: Object.keys(tm).length,
     boardRows: rows.length,
     backfillDone: !!idx.done, backfillCursor: idx.lo, backfillChunk: idx.chunk,
-    poolsWithLiq: Object.keys(lq.m).length,
-    liqChecked, liqCursor: lq.cursor, liqSweeps: lq.sweeps || 0,
+    marketTokens: Object.keys(mkt.d).length, marketSwept: swept,
+    marketCalls: mktCalls, marketLimited: mktLimited, marketLaps: mkt.laps || 0,
+    universeTokens: tokenList.length,
     rpcCalls: rpcSpent(), rpcLimited: wasLimited(),
     msUsed: Date.now() - t0, errors
   };
