@@ -1259,6 +1259,43 @@ function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap){
   return { commands:commands, inputs:[input0] };
 }
 var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
+
+// There is no v4 Quoter wired on this chain, and guessing minOut from the
+// indexed USD price silently assumed 18 decimals — which is why swaps reverted
+// for any token that isn't 18dp. Instead we DERIVE the real output by
+// simulating the swap: binary-search the largest amountOutMinimum that still
+// succeeds. That value IS the achievable output, in raw units, with no
+// decimals assumption anywhere.
+async function v4SimQuote(key, token, amountInWei, me, wrap, onStep){
+  var pr=rpc(), iface=new ethers.Interface(UROUTER_ABI);
+  var deadline=BigInt(Math.floor(Date.now()/1000)+900);
+  var calls=0;
+  async function works(minOut){
+    calls++;
+    try{
+      var enc=encodeV4Swap(key, token, amountInWei, minOut, me, wrap);
+      var data=iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
+      await pr.call({ to:CFG.UNI.universalRouter, data:data, value:amountInWei, from:me });
+      return true;
+    }catch(e){ return false; }
+  }
+  // routable at all?
+  if(!(await works(1n))) return { ok:false, calls:calls };
+  // exponential upper bound
+  var lo=1n, hi=1n;
+  for(var i=0;i<10;i++){
+    var probe=hi*65536n;
+    if(onStep) onStep(calls);
+    if(await works(probe)){ lo=probe; hi=probe; }
+    else { hi=probe; break; }
+  }
+  // binary search the boundary
+  for(var j=0;j<18 && hi>lo+1n;j++){
+    var mid=lo+(hi-lo)/2n;
+    if(await works(mid)) lo=mid; else hi=mid;
+  }
+  return { ok:true, out:lo, calls:calls };
+}
 async function verifyUniversalRouter(pr){
   if(state.urOk!=null) return state.urOk;
   try{
@@ -1405,30 +1442,28 @@ async function fire(){
       if(!(await verifyUniversalRouter(rpc())))
         throw new Error("UniversalRouter not found on this chain — v4 trading disabled for safety.");
 
-      // No v4 quoter wired, so derive minOut from the indexed price and let the
-      // slippage setting absorb the difference. The preflight below is what
-      // actually protects the user — a bad estimate reverts before signing.
-      var dec4 = p.dec || 18;
-      var expected = p.price>0 ? (net*state.ethUsd)/p.price : 0;
-      if(!(expected>0)) throw new Error("No price available for $"+p.sym+" — can't size a safe v4 swap.");
-      var expWei = ethers.parseUnits(expected.toFixed(Math.min(18,dec4)), dec4);
-      var minOut4 = expWei - (expWei*BigInt(modal.slip)/10000n);
+      // Derive the real output by simulation — no decimals guess, no quoter.
+      btn.innerHTML='<span class="spin"></span> QUOTING V4 POOL…';
+      var q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
+      if(!q4.ok){
+        // couldn't even swap for 1 wei of output — try the other pairing before
+        // declaring failure, since a token often has both native and WETH pools
+        var alt=v4.keys.filter(function(k){ return k.id!==key.id; });
+        var altPick=alt.length? pickV4Key(alt, p.baseToken) : null;
+        if(altPick){
+          key=altPick.key; needWrap=altPick.wrap;
+          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
+        }
+      }
+      if(!q4.ok)
+        throw new Error("$"+p.sym+" v4 pool won't route this trade — it may use hooks, be unbalanced, or hold too little liquidity for "+net.toFixed(4)+" ETH. Try a smaller size. Nothing was charged.");
+
+      var dec4 = await tokenDecimals(rpc(), p.baseToken);
+      var minOut4 = q4.out - (q4.out*BigInt(modal.slip)/10000n);
+      if(minOut4 < 1n) minOut4 = 1n;
 
       var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, me, needWrap);
       var deadline=BigInt(Math.floor(Date.now()/1000)+900);
-
-      // preflight the exact call before any signature or fee
-      btn.innerHTML='<span class="spin"></span> PREFLIGHT V4…';
-      var urIface=new ethers.Interface(UROUTER_ABI);
-      var data4=urIface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
-      try{
-        await rpc().call({ to:CFG.UNI.universalRouter, data:data4, value:netWei, from:me });
-      }catch(pf){
-        var pm=(pf&&(pf.shortMessage||pf.message))||"";
-        if(/slippage|too little|minimum/i.test(pm))
-          throw new Error("Price moved beyond your "+(modal.slip/100)+"% slippage — raise it and retry. Nothing was charged.");
-        throw new Error("v4 swap simulation reverted for $"+p.sym+" — the pool may be hooked or illiquid. Nothing was charged.");
-      }
 
       // fee first, then the v4 swap
       btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
@@ -1460,7 +1495,7 @@ async function fire(){
           }catch(e){}
         });
       }catch(e){}
-      var out4=+(ethers.formatUnits(got4!=null?got4:minOut4, dec4));
+      var out4=+(ethers.formatUnits(got4!=null?got4:q4.out, dec4));
 
       recordTrade(p, amt, fee, modal.mode, out4, rc4.hash);
       toast("Sniped "+out4.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" via V4 ⚡");
