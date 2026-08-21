@@ -317,6 +317,88 @@ export function deriveKey(token, targetId){
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// TIME-TARGETED PROBE — the reliable way to get a PoolKey WITH hooks.
+//
+// Local derivation can only recover pools whose hooks are the zero address. But
+// memecoin launchpads on v4 deploy pools WITH hook contracts (that's the point
+// of v4), and a 160-bit hook address can't be brute-forced. The Initialize log
+// carries the hooks address — we just have to find it without scanning 40M
+// blocks on an RPC that caps queries.
+//
+// DexScreener tells us WHEN the pair was created, so we can convert a timestamp
+// into an approximate block and search a narrow window around it. That turns an
+// unbounded history scan into two or three cheap queries.
+async function estimateBlockAt(tsSec) {
+  const headHex = await rpc("eth_blockNumber", []);
+  const head = Number(BigInt(headHex));
+  const hb = await rpc("eth_getBlockByNumber", [headHex, false]);
+  const headTs = Number(BigInt(hb.timestamp));
+  // sample an older block to measure the real block time
+  const back = Math.min(head, 500000);
+  const ob = await rpc("eth_getBlockByNumber", ["0x" + (head - back).toString(16), false]);
+  const oldTs = Number(BigInt(ob.timestamp));
+  const secsPerBlock = Math.max(0.02, (headTs - oldTs) / back);
+  const delta = Math.max(0, headTs - tsSec);
+  const est = Math.max(0, Math.round(head - delta / secsPerBlock));
+  return { head, est, secsPerBlock, headTs };
+}
+
+export async function probeByTime(poolId, createdAtMs, budgetMs = 13000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
+    || { keys: {}, manager: null, lo: null, done: false, chunk: CHUNK_START };
+  const id = String(poolId || "").toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(id)) return { ok: false, error: "poolId must be 32 bytes" };
+
+  const cache = (await store.get("v4probe", { type: "json" }).catch(() => null)) || {};
+  if (cache[id] && cache[id].key) return { ok: true, key: cache[id].key, cached: true, manager: st.manager };
+
+  let est;
+  try { est = await estimateBlockAt(Math.floor(Number(createdAtMs) / 1000)); }
+  catch (e) { return { ok: false, error: "block estimate failed: " + String(e.message).slice(0, 70) }; }
+
+  // widen outward from the estimate — creation is usually within a few thousand
+  // blocks of it, but block-time drift means we can't assume precision
+  const spans = [5000, 25000, 100000, 400000, 1500000];
+  let scanned = 0, lastErr = null;
+  for (const span of spans) {
+    if (Date.now() - t0 > budgetMs - 1500) break;
+    const from = Math.max(0, est.est - span), to = Math.min(est.head, est.est + span);
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + from.toString(16), toBlock: "0x" + to.toString(16), topics: [null, id]
+      }]);
+      scanned = to - from;
+      for (const lg of (logs || [])) {
+        if (!lg.topics || lg.topics.length < 4) continue;
+        const k = decodeInit(lg);
+        if (!k) continue;
+        if (!st.manager) st.manager = k.manager;
+        st.topics = st.topics || [];
+        if (!st.topics.includes(lg.topics[0])) st.topics.push(lg.topics[0]);
+        // remember hook contracts so local derivation can try them next time
+        const ZERO = "0x0000000000000000000000000000000000000000";
+        if (k.hooks && k.hooks !== ZERO) {
+          st.hooks = st.hooks || [];
+          if (!st.hooks.includes(k.hooks)) st.hooks.push(k.hooks);
+        }
+        for (const side of [k.c0, k.c1]) {
+          if (!side || side === ZERO) continue;
+          const list = st.keys[side] || (st.keys[side] = []);
+          if (!list.some(x => x.id === k.id)) list.push(k);
+        }
+        cache[id] = { key: k, t: Date.now() };
+        await store.setJSON("v4pools", st).catch(() => {});
+        await store.setJSON("v4probe", cache).catch(() => {});
+        return { ok: true, key: k, topic0: lg.topics[0], manager: k.manager, blocksScanned: scanned, estBlock: est.est };
+      }
+    } catch (e) { lastErr = String(e.message || e).slice(0, 80); }
+  }
+  return { ok: false, error: lastErr || "not found near estimated block " + est.est, estBlock: est.est, secsPerBlock: est.secsPerBlock };
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -331,6 +413,21 @@ export default async (req) => {
     const tok = url.searchParams.get("token") || "";
     const r = deriveKey(tok, der);
     return json(200, r ? { ok: true, ...r } : { ok: false, error: "no standard fee/spacing combination matches this id (custom hooks?)" });
+  }
+
+  // ?attime=<poolId>&ts=<createdAtMs> — narrow, timestamp-targeted lookup
+  const attime = url.searchParams.get("attime");
+  if (attime) {
+    const ts = Number(url.searchParams.get("ts") || 0);
+    if (!ts) return json(400, { ok: false, error: "ts (ms) required" });
+    return json(200, await probeByTime(attime, ts));
+  }
+
+  // ?hooks=1 — hook contracts we've seen, so the client can include them
+  // as derivation candidates
+  if (url.searchParams.get("hooks") === "1") {
+    const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+    return json(200, { hooks: st.hooks || [], manager: st.manager || null });
   }
 
   // ?probe=<poolId> — find a pool by its id without knowing the event signature
