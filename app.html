@@ -1181,6 +1181,20 @@ function venueToggleHtml(p){
 }
 // ================= UNISWAP V4 =================
 var v4Cache={};   // token -> {manager, keys:[...]}
+// DexScreener reports a v4 pool's "pairAddress" as the 32-byte PoolId. That id
+// is the first indexed argument of Initialize, so the server can find the pool
+// by id alone — no dependence on knowing the event signature, which is what
+// kept failing. This is the primary lookup now; the log scan is the fallback.
+async function v4KeyByPoolId(poolId){
+  var id=String(poolId||"").toLowerCase();
+  if(!/^0x[0-9a-f]{64}$/.test(id)) return null;   // not a v4 pool id
+  try{
+    var r=await fetch(CFG.API+"/v4pools?probe="+id);
+    if(!r.ok) return null;
+    var j=await r.json();
+    return (j && j.ok && j.key) ? j.key : null;
+  }catch(e){ return null; }
+}
 async function v4KeysFor(token, allowScan){
   var k=(token||"").toLowerCase();
   if(v4Cache[k]) return v4Cache[k];
@@ -1426,18 +1440,30 @@ async function fire(){
     // ---------------- UNISWAP V4 ROUTE ----------------
     if(modal.venue==="v4"){
       btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
-      var v4=await v4KeysFor(p.baseToken, true);
-      if(!v4 || !v4.keys || !v4.keys.length){
+      // 1) direct lookup by the pool id we already have from the board
+      var key=null, needWrap=false, v4=null;
+      var direct=await v4KeyByPoolId(p.pool);
+      if(direct){
+        var dp=pickV4Key([direct], p.baseToken);
+        if(dp){ key=dp.key; needWrap=dp.wrap; }
+      }
+
+      // 2) fall back to the scanned index
+      if(!key) v4=await v4KeysFor(p.baseToken, true);
+      if(!key && (!v4 || !v4.keys || !v4.keys.length)){
         var sc=(v4&&v4.scan)||{};
-        throw new Error("Couldn't find a v4 pool for $"+p.sym
-          + (sc.done? " — it may be paired against a token other than ETH."
-                    : " — the v4 index is still backfilling ("+(sc.tokens||0)+" tokens mapped). Try again shortly.")
+        throw new Error("Couldn't resolve the v4 pool for $"+p.sym
+          + " (pool id " + String(p.pool||"?").slice(0,10) + "…)"
+          + (sc.done? " — the pool may use hooks or an unusual pairing."
+                    : " — the v4 index is still building ("+(sc.tokens||0)+" mapped).")
           + " Nothing was charged.");
       }
-      var picked=pickV4Key(v4.keys, p.baseToken);
-      if(!picked)
-        throw new Error("$"+p.sym+" has v4 pools but none paired with ETH or WETH (or they use hooks we don't route). Nothing was charged.");
-      var key=picked.key, needWrap=picked.wrap;
+      if(!key){
+        var picked=pickV4Key(v4.keys, p.baseToken);
+        if(!picked)
+          throw new Error("$"+p.sym+" has v4 pools but none paired with ETH or WETH (or they use hooks we don't route). Nothing was charged.");
+        key=picked.key; needWrap=picked.wrap;
+      }
 
       if(!(await verifyUniversalRouter(rpc())))
         throw new Error("UniversalRouter not found on this chain — v4 trading disabled for safety.");
@@ -1448,7 +1474,7 @@ async function fire(){
       if(!q4.ok){
         // couldn't even swap for 1 wei of output — try the other pairing before
         // declaring failure, since a token often has both native and WETH pools
-        var alt=v4.keys.filter(function(k){ return k.id!==key.id; });
+        var alt=(v4 && v4.keys? v4.keys : []).filter(function(k){ return k.id!==key.id; });
         var altPick=alt.length? pickV4Key(alt, p.baseToken) : null;
         if(altPick){
           key=altPick.key; needWrap=altPick.wrap;
