@@ -466,6 +466,96 @@ export async function discoverRouter(budgetMs = 12000) {
   return { ok: true, ...rec };
 }
 
+// ---------------------------------------------------------------------------
+// BOOTSTRAP — find the PoolManager AND the router in ONE query.
+//
+// Router discovery needed the PoolManager, which was only learned from a log
+// lookup — but local key derivation skips the chain entirely, so the manager
+// was never learned and discovery silently fell back to the mainnet address.
+// That's why swaps kept reverting against 0x8876…0904.
+//
+// The fix: v4's Swap event has topics [sig, poolId, sender]. We already know
+// real v4 pool ids from the board, so a single getLogs filtered on
+// topics[1] ∈ knownPoolIds returns swaps whose EMITTER is the PoolManager and
+// whose topics[2] is the router. One query, both answers, no prior state.
+export async function bootstrapV4(poolIds, budgetMs = 9000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+
+  const cached = await store.get("v4boot", { type: "json" }).catch(() => null);
+  if (cached && cached.router && Date.now() - cached.t < 6 * 3600e3) {
+    return { ok: true, ...cached, cached: true };
+  }
+
+  let ids = (poolIds || []).map(x => String(x).toLowerCase()).filter(x => /^0x[0-9a-f]{64}$/.test(x));
+  if (!ids.length) {
+    // pull ids straight from the board if the caller didn't supply any
+    const board = await store.get("board2", { type: "json" }).catch(() => null);
+    ids = ((board && board.rows) || [])
+      .filter(r => /^0x[0-9a-f]{64}$/i.test(String(r.p || "")))
+      .slice(0, 20).map(r => String(r.p).toLowerCase());
+  }
+  if (!ids.length) return { ok: false, error: "no v4 pool ids available to bootstrap from" };
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: "rpc: " + e.message }; }
+
+  const senders = {};
+  let manager = null, topic0 = null;
+  let win = 20000, from = head, tries = 0;
+  while (Date.now() - t0 < budgetMs - 1500 && from > head - 600000 && tries < 12) {
+    tries++;
+    const lo = Math.max(0, from - win);
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16),
+        topics: [null, ids]                 // any event about any known v4 pool
+      }]);
+      for (const lg of (logs || [])) {
+        if (!lg.topics || lg.topics.length < 2) continue;
+        manager = manager || String(lg.address || "").toLowerCase();
+        if (lg.topics.length >= 3) {
+          const sender = addrFromTopic(lg.topics[2]);
+          if (sender && !/^0x0+$/.test(sender)) {
+            senders[sender] = (senders[sender] || 0) + 1;
+            topic0 = topic0 || lg.topics[0];
+          }
+        }
+      }
+      if (manager && Object.keys(senders).length) break;
+      from = lo;
+      win = Math.min(100000, win * 2);
+    } catch (e) {
+      win = Math.max(500, Math.floor(win / 3));
+      if (win <= 500) from = Math.max(0, from - 500);
+    }
+  }
+
+  if (!manager) return { ok: false, error: "no logs found for known v4 pool ids", idsTried: ids.length };
+
+  const ranked = Object.entries(senders).sort((a, b) => b[1] - a[1]);
+  const candidates = [];
+  for (const [addr, count] of ranked.slice(0, 5)) {
+    try {
+      const code = await rpc("eth_getCode", [addr, "latest"]);
+      if (code && code !== "0x") candidates.push({ addr, swaps: count, codeSize: (code.length - 2) / 2 });
+    } catch (e) {}
+  }
+
+  const rec = {
+    manager, router: candidates[0]?.addr || null, candidates,
+    swapTopic: topic0, t: Date.now()
+  };
+  await store.setJSON("v4boot", rec).catch(() => {});
+  // fold into the main state so other paths benefit
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || { keys: {} };
+  st.manager = st.manager || manager;
+  await store.setJSON("v4pools", st).catch(() => {});
+  await store.setJSON("v4router", { router: rec.router, manager, t: Date.now() }).catch(() => {});
+  return { ok: !!rec.router, ...rec };
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -490,6 +580,12 @@ export default async (req) => {
     return json(200, await probeByTime(attime, ts));
   }
 
+  // ?boot=1 — one-shot: PoolManager + router
+  if (url.searchParams.get("boot") === "1") {
+    const idsParam = (url.searchParams.get("ids") || "").split(",").filter(Boolean);
+    return json(200, await bootstrapV4(idsParam));
+  }
+
   // ?router=1 — discover the router that actually executes v4 swaps here
   if (url.searchParams.get("router") === "1") {
     return json(200, await discoverRouter());
@@ -499,8 +595,15 @@ export default async (req) => {
   // as derivation candidates
   if (url.searchParams.get("hooks") === "1") {
     const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
-    const rt = await store.get("v4router", { type: "json" }).catch(() => null);
-    return json(200, { hooks: st.hooks || [], manager: st.manager || null, router: rt?.router || null });
+    let rt = await store.get("v4router", { type: "json" }).catch(() => null);
+    if (!rt || !rt.router) {
+      const b = await bootstrapV4([]).catch(() => null);
+      if (b && b.router) rt = { router: b.router, manager: b.manager };
+    }
+    return json(200, {
+      hooks: st.hooks || [], manager: (rt && rt.manager) || st.manager || null,
+      router: (rt && rt.router) || null
+    });
   }
 
   // ?probe=<poolId> — find a pool by its id without knowing the event signature
