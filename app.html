@@ -1040,8 +1040,10 @@ function renderBoard(){
   if(tn){
     var c=state.chain||{};
     if(state.boardWarming){
-      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer warming up — partial list.</span> '
-        +'Backfilling every pool from Robinhood Chain logs; coverage grows each minute.';
+      var cc=state.chain||{};
+      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer warming up.</span> '
+        +(cc.poolsIndexed? cc.poolsIndexed.toLocaleString()+' pools found on-chain; ' : '')
+        +'scanning which hold liquidity — the board fills in over the next few minutes.';
       return;
     }
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
