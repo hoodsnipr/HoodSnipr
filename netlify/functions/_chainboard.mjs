@@ -224,12 +224,11 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
 // Three "$NARWHAL" rows with $11M / $405K / $65K market caps and different
 // holder counts are THREE DIFFERENT CONTRACTS wearing the same ticker, not one
 // token in three pools. Memecoin chains are full of these impersonators, and
-// showing them all is both confusing and dangerous — a user sniping "NARWHAL"
-// could easily buy the fake.
+// showing them all is confusing and dangerous — a user sniping "NARWHAL" could
+// easily buy the fake.
 //
-// So: one entry per ticker, keeping the deepest-liquidity contract (the real
-// market), with the others attached as `alts` so nothing becomes unreachable —
-// the modal lists them with contract addresses for anyone who wants a specific one.
+// One entry per ticker: keep the deepest-liquidity contract and drop the rest
+// entirely. No badges, no alternates list — the impostors simply don't exist.
 function normTicker(sym) {
   return String(sym || "").toUpperCase().replace(/^\$+/, "").replace(/[^A-Z0-9]/g, "");
 }
@@ -239,30 +238,16 @@ function collapseTickers(rows) {
   for (const r of rows) {
     const k = normTicker(r.s);
     if (!k) continue;
-    if (!byTicker[k]) { byTicker[k] = r; r.alts = []; order.push(k); continue; }
+    if (!byTicker[k]) { byTicker[k] = r; order.push(k); continue; }
     const keep = byTicker[k];
-    // deepest liquidity wins; volume breaks ties
+    // Deepest liquidity is the real market for this ticker. Everything else is
+    // discarded outright — as far as the app is concerned it doesn't exist.
     const challengerBetter =
       (r.liq || 0) > (keep.liq || 0) ||
       ((r.liq || 0) === (keep.liq || 0) && (r.h24 || 0) > (keep.h24 || 0));
-    if (challengerBetter) {
-      r.alts = (keep.alts || []).concat([altOf(keep)]);
-      keep.alts = undefined;
-      byTicker[k] = r;
-    } else {
-      keep.alts = (keep.alts || []).concat([altOf(r)]);
-    }
+    if (challengerBetter) byTicker[k] = r;
   }
   const out = order.map(k => byTicker[k]);
-  for (const r of out) {
-    if (r.alts && r.alts.length) {
-      r.alts = r.alts.sort((a, b) => (b.liq || 0) - (a.liq || 0)).slice(0, 5);
-      r.dupes = r.alts.length;
-    } else { delete r.alts; }
-  }
   out.sort((x, y) => (y.h24 || 0) - (x.h24 || 0) || (y.liq || 0) - (x.liq || 0) || (x.a < y.a ? -1 : 1));
   return out;
-}
-function altOf(r) {
-  return { a: r.a, p: r.p, s: r.s, liq: Math.round(r.liq || 0), h24: Math.round(r.h24 || 0), mc: r.mc || null, px: r.px || null };
 }
