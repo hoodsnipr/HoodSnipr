@@ -1,7 +1,24 @@
 # HoodSnipr — Netlify config
 [build]
   publish = "."
-  functions = "netlify/functions"
+  command = ""
+
+# Explicit functions config. Netlify can fail to auto-detect the functions
+# directory when the publish dir is the repo root — declaring it here (plus the
+# bundler and Node version) removes the guesswork.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[functions."*"]
+  included_files = ["netlify/functions/**"]
+
+# /api/foo -> /.netlify/functions/foo
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+  force = true
 
 [[headers]]
   for = "/*"
