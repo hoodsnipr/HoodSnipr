@@ -482,7 +482,7 @@ function boardRowToPool(r){
     m5:r.m5, h1:r.h1, h6:r.h6, h24:r.h24,
     cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
-    vers:r.vers||[], venues:r.venues||[], alts:r.alts||[], dupes:r.dupes||0,
+    vers:r.vers||[], venues:r.venues||[],
     created:r.cr? new Date(r.cr).toISOString() : null,
     holders:r.h, dec:r.d, src:"BOARD"
   };
@@ -940,10 +940,6 @@ function versionsOf(p){
   var v=(p.vers&&p.vers.length)? p.vers.slice() : (p.ver? [p.ver] : []);
   return v.map(function(x){return String(x).toLowerCase()}).filter(function(x,i,a){return a.indexOf(x)===i});
 }
-function dupeBadge(p){
-  if(!p.dupes) return "";
-  return '<span title="'+p.dupes+' other contract'+(p.dupes>1?'s':'')+' use this ticker" style="color:var(--gold)">⚠'+p.dupes+'</span> · ';
-}
 function venueBadge(p){
   var v=versionsOf(p);
   if(!v.length) return "";
@@ -1024,14 +1020,10 @@ function renderBoard(){
     if(!k){ tickOrder.push(p); return; }
     var cur=tick[k];
     if(!cur){ tick[k]=p; return; }
+    // Deepest liquidity is the real market. Anything else sharing the ticker is
+    // simply dropped — the user sees one contract per ticker, nothing more.
     var better=(p.liq||0)>(cur.liq||0) || ((p.liq||0)===(cur.liq||0) && (p.h24||0)>(cur.h24||0));
-    var winner=better?p:cur, loser=better?cur:p;
-    winner.alts=(winner.alts||[]).concat(loser.alts||[]).concat([{
-      a:loser.baseToken, p:loser.pool, s:loser.sym,
-      liq:Math.round(loser.liq||0), h24:Math.round(loser.h24||0), mc:loser.mcap||null, px:loser.price||null
-    }]);
-    winner.dupes=winner.alts.length;
-    tick[k]=winner;
+    tick[k]=better?p:cur;
   });
   deduped=Object.keys(tick).map(function(k){return tick[k]}).concat(tickOrder);
   // Rank strictly by the SELECTED timeframe's volume — that's what makes the
@@ -1062,7 +1054,7 @@ function renderBoard(){
       +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
       +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+dupeBadge(p)+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
+      +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -1220,7 +1212,6 @@ function openToken(poolAddr){
      +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
    +'</div>'
    +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
-   +altsHtml(p)
    +(p.baseToken?'<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;align-items:center">'
      +'<span style="font-family:var(--mono);font-size:11px;color:var(--mute)">CA '+short(p.baseToken)+'</span>'
      +'<button data-action="copy-ca" data-addr="'+esc(p.baseToken)+'" style="color:var(--green);border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:10px;padding:4px 9px;letter-spacing:.06em">📋 COPY CA</button>'
@@ -1252,23 +1243,6 @@ function openToken(poolAddr){
     var m=metaOf(p), el=$("#mHolders");
     if(el && m && m.h!=null) el.textContent=m.h.toLocaleString();
   });
-}
-// Same-ticker contracts are hidden from the list to stop users buying a fake,
-// but they stay reachable here — with liquidity shown so the real one is obvious.
-function altsHtml(p){
-  if(!p.alts || !p.alts.length) return "";
-  return '<div style="margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:10px">'
-    +'<div style="font-family:var(--mono);font-size:10px;color:var(--gold);letter-spacing:.1em;margin-bottom:6px">⚠ '
-    +p.alts.length+' OTHER CONTRACT'+(p.alts.length>1?'S':'')+' USING $'+esc(p.sym)+'</div>'
-    +'<div style="font-size:11px;color:var(--mute);margin-bottom:8px">You are viewing the deepest-liquidity one. Verify the contract address before sniping.</div>'
-    +p.alts.map(function(a){
-      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--line)">'
-        +'<span style="font-family:var(--mono);font-size:11px">'+short(a.a)+'</span>'
-        +'<span style="font-family:var(--mono);font-size:11px;color:var(--mute)">LIQ '+fmtUsd(a.liq)+' · VOL '+fmtUsd(a.h24)+'</span>'
-        +'<button data-action="open-alt" data-addr="'+esc(a.a)+'" style="color:var(--green);border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:10px;padding:4px 9px">VIEW</button>'
-        +'</div>';
-    }).join("")
-    +'</div>';
 }
 function venueToggleHtml(p){
   var v=versionsOf(p);
@@ -2166,7 +2140,6 @@ document.addEventListener("click", function(e){
     }
   else if(a==="port-refresh") loadPortfolio();
   else if(a==="port-open"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
-  else if(a==="open-alt"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
   else if(a==="copy-ca"){ navigator.clipboard.writeText(el.getAttribute("data-addr")).then(function(){ toast("Contract address copied 📋"); }).catch(function(){ prompt("Contract address:", el.getAttribute("data-addr")); }); }
   else if(a==="loose"){ e.stopPropagation(); openLoose(parseInt(el.getAttribute("data-h"),10)); }
   else if(a==="loose-fire") fireLoose();
