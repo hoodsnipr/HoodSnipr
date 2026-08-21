@@ -1592,9 +1592,11 @@ function renderProfile(){
    +'</div>'
    +'<div class="frow">'
     +'<label class="obtn">Upload PFP<input type="file" id="prPfp" accept="image/*" style="display:none"></label>'
-    +'<button class="sbtn" data-action="prof-save">'+(state.wallet?"Sign & save profile":"Save locally")+'</button>'
+    +(state.wallet?'<button class="obtn" data-action="prof-check">Check name</button>':'')
+    +'<button class="sbtn" data-action="prof-save">'+(state.wallet?"Sign & save":"Save locally")+'</button>'
    +'</div>'
-   +'<p class="hint">Saving with a connected wallet signs a message proving you own the address — that claims your name + PFP on the leaderboard. X is handle-only for now (no OAuth; nothing ever posts without you).</p>';
+   +(pr.handle?'<div style="margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--green)">🔒 @'+esc(pr.handle)+' is permanently bound to '+short(state.wallet||"")+'</div>':'')
+   +'<p class="hint">Signing proves you own this address and claims the name for it <b>permanently</b> — first wallet to claim a name keeps it, and it follows you across devices. X is handle-only for now (no OAuth; nothing ever posts without you).</p>';
   var f=$("#prPfp"); if(f)f.addEventListener("change",function(){
     var file=f.files[0]; if(!file)return;
     var rd=new FileReader();
@@ -1612,20 +1614,74 @@ function renderProfile(){
   });
 }
 async function saveProfile(){
-  var pr=Object.assign({},state.profile,{ name:($("#prName").value||"").trim(), x:($("#prX").value||"").replace(/^@/,"").trim() });
-  state.profile=pr; save("hs_profile",pr);
-  if(state.wallet && window.ethereum){
-    try{
-      state.provider = state.provider || new ethers.BrowserProvider(window.ethereum);
-      var signer=await state.provider.getSigner();
-      var msg="HoodSnipr profile claim\naddr:"+state.wallet+"\nname:"+pr.name+"\nx:"+pr.x+"\nts:"+Date.now();
-      var sig=await signer.signMessage(msg);
-      var r=await fetch(CFG.API+"/profile",{method:"POST",headers:{"content-type":"application/json"},
-        body:JSON.stringify({addr:state.wallet,msg:msg,sig:sig,name:pr.name,x:pr.x,pfp:pr.pfp||null})});
-      if(!r.ok) throw 0;
-      toast("Profile claimed ✍️");
-    }catch(e){ toast("Saved locally (leaderboard backend offline)", true); }
-  }else toast("Saved locally");
+  var wanted=($("#prName").value||"").trim();
+  var pr=Object.assign({},state.profile,{ name:wanted, x:($("#prX").value||"").replace(/^@/,"").trim() });
+  var btn=$('[data-action="prof-save"]');
+  var setBtn=function(t,dis){ if(btn){ btn.textContent=t; btn.disabled=!!dis; } };
+
+  if(!state.wallet || !window.ethereum){
+    state.profile=pr; save("hs_profile",pr);
+    toast("Connect a wallet to claim this handle permanently", true);
+    renderProfile(); renderWMenu(false);
+    return;
+  }
+
+  try{
+    // check availability BEFORE asking for a signature — no point making the
+    // user sign for a handle someone else already owns
+    if(wanted){
+      setBtn("Checking…", true);
+      var chk=await fetch(CFG.API+"/profile?handle="+encodeURIComponent(wanted));
+      if(chk.ok){
+        var av=await chk.json();
+        if(av.taken && String(av.owner||"").toLowerCase()!==String(state.wallet).toLowerCase()){
+          setBtn("Sign & save", false);
+          toast("Handle @"+wanted+" is already claimed by another wallet", true);
+          return;
+        }
+      }
+    }
+
+    setBtn("Sign in wallet…", true);
+    state.provider = state.provider || new ethers.BrowserProvider(window.ethereum);
+    var signer=await state.provider.getSigner();
+    var live=ethers.getAddress(await signer.getAddress());
+    if(live!==state.wallet){ state.wallet=live; save("hs_addr",live); }
+
+    var msg="HoodSnipr profile claim\naddr:"+state.wallet+"\nname:"+pr.name+"\nx:"+pr.x+"\nts:"+Date.now();
+    var sig=await signer.signMessage(msg);
+
+    setBtn("Saving…", true);
+    var r=await fetch(CFG.API+"/profile",{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({addr:state.wallet,msg:msg,sig:sig,name:pr.name,x:pr.x,pfp:pr.pfp||null})});
+
+    // surface the real reason instead of a blanket "backend offline"
+    var data=null; try{ data=await r.json(); }catch(e){}
+    if(!r.ok){
+      if(r.status===409){ toast("Handle @"+(data&&data.handle||wanted)+" is taken by another wallet", true); }
+      else if(r.status===401){ toast("Signature didn't match your wallet — try again", true); }
+      else if(r.status===404){ toast("Profile service not deployed yet — saved locally", true); }
+      else { toast("Couldn't save: "+((data&&data.error)||("HTTP "+r.status)), true); }
+      state.profile=pr; save("hs_profile",pr);
+      setBtn("Sign & save", false);
+      renderProfile(); renderWMenu(false);
+      return;
+    }
+
+    // server is the source of truth for what's now bound to this wallet
+    if(data && data.profile){
+      pr=Object.assign({}, pr, { name:data.profile.name, handle:data.profile.handle, x:data.profile.x, pfp:data.profile.pfp||pr.pfp });
+    }
+    state.profile=pr; save("hs_profile",pr);
+    toast("@"+(pr.handle||pr.name)+" is now bound to "+short(state.wallet)+" 🔒");
+    setBtn("Sign & save", false);
+  }catch(e){
+    var m=(e&&(e.shortMessage||e.message))||"";
+    if(/user rejected|denied/i.test(m)) toast("Signature rejected — profile not claimed", true);
+    else toast("Couldn't reach the profile service — saved locally", true);
+    state.profile=pr; save("hs_profile",pr);
+    setBtn("Sign & save", false);
+  }
   renderProfile(); renderWMenu(false); syncLeaderboard();
 }
 function pnlOf(t){
@@ -2128,6 +2184,15 @@ document.addEventListener("click", function(e){
   else if(a==="bw-export"){ if(confirm("Reveal private key? Anyone who sees it controls the funds.")) prompt("Your burner private key — store it safely:", state.burner.pk); }
   else if(a==="bw-burn"){ if(confirm("Destroy this burner from the browser? If the key isn't exported and it holds funds, THEY ARE GONE FOREVER.") && confirm("Final confirm: key exported or wallet empty?")){ state.burner=null; state.burnerBal=null; localStorage.removeItem("hs_burner"); renderWallets(); toast("Burner destroyed"); } }
   else if(a==="prof-save") saveProfile();
+  else if(a==="prof-check"){
+      var h=($("#prName").value||"").trim();
+      if(!h){ toast("Enter a handle first", true); return; }
+      fetch(CFG.API+"/profile?handle="+encodeURIComponent(h)).then(function(r){return r.json()}).then(function(av){
+        if(!av.taken) toast("@"+av.handle+" is available ✓");
+        else if(String(av.owner||"").toLowerCase()===String(state.wallet||"").toLowerCase()) toast("@"+av.handle+" is already yours 🔒");
+        else toast("@"+av.handle+" is taken", true);
+      }).catch(function(){ toast("Couldn't check right now", true); });
+    }
   else if(a==="page"){
       state.page=parseInt(el.getAttribute("data-p"),10)||0;
       renderBoard();
@@ -2172,6 +2237,7 @@ async function loadRemoteProfile(){
       // remote wins for identity fields; keep any local pfp if remote has none
       state.profile=Object.assign({}, state.profile||{}, {
         name:p.name||((state.profile||{}).name||""),
+        handle:p.handle||((state.profile||{}).handle||""),
         x:p.x||((state.profile||{}).x||""),
         pfp:p.pfp||((state.profile||{}).pfp||null)
       });
