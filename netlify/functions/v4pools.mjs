@@ -22,12 +22,17 @@ const INIT_TOPICS = [
 const INIT_TOPIC = INIT_TOPICS;
 const CHUNK_START = 50000;   // node caps results at 10k logs — stay well under
 
-// The Swap topic below IS verified — it equals
-//   keccak("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-// i.e. canonical Uniswap v4. The PoolManager address, however, was INFERRED
-// from a log emitter and turned out to be an ERC-20, so it is no longer
-// hardcoded — findManager() derives it from the verified topic instead.
-const KNOWN_MANAGER = null;
+// Both of these are VERIFIED against the live chain, not inferred:
+//
+//   PoolManager 0x8366a39cc670b4001a1121b8f6a443a643e40951
+//     -> whatIs() returned codeSize 24009, symbol null, hasDecimals false,
+//        supportsExtsload TRUE. Only a v4 PoolManager answers extsload(bytes32).
+//
+//   Swap topic == keccak("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
+//     -> canonical Uniswap v4.
+//
+// findManager() can still re-derive the manager if this ever changes.
+const KNOWN_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
 const V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 
 const json = (c, b) => new Response(JSON.stringify(b), {
@@ -54,7 +59,7 @@ function decodeInit(lg) {
   };
 }
 
-export async function scanV4(budgetMs = 12000) {
+export async function scanV4(budgetMs = 7000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
@@ -194,7 +199,7 @@ export async function scanTip(budgetMs = 8000) {
 //
 // DexScreener reports a v4 "pairAddress" as the 32-byte PoolId, so the client
 // already has the id it needs to ask about.
-export async function probePoolId(poolId, budgetMs = 13000) {
+export async function probePoolId(poolId, budgetMs = 7000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
@@ -357,7 +362,7 @@ async function estimateBlockAt(tsSec) {
   return { head, est, secsPerBlock, headTs };
 }
 
-export async function probeByTime(poolId, createdAtMs, budgetMs = 13000) {
+export async function probeByTime(poolId, createdAtMs, budgetMs = 7000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
@@ -424,7 +429,7 @@ export async function probeByTime(poolId, createdAtMs, budgetMs = 13000) {
 // We can find the real one empirically: v4's Swap event indexes `sender`, which
 // is whatever contract called PoolManager.swap(). Scan recent swaps and the most
 // frequent sender IS the router traders are actually using.
-export async function discoverRouter(budgetMs = 12000) {
+export async function discoverRouter(budgetMs = 7000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
@@ -434,7 +439,7 @@ export async function discoverRouter(budgetMs = 12000) {
 
   let manager = st.manager || KNOWN_MANAGER;
   if (!manager) {
-    const fm = await findManager(6000).catch(() => null);
+    const fm = await findManager(5000).catch(() => null);
     if (fm && fm.ok && fm.supportsExtsload) manager = fm.manager;
   }
   if (!manager) return { ok: false, error: "PoolManager not identified yet — run ?findmanager=1" };
@@ -541,7 +546,7 @@ export async function probeRouter(addr) {
   }
 }
 
-export async function bootstrapV4(poolIds, budgetMs = 9000) {
+export async function bootstrapV4(poolIds, budgetMs = 7000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
 
@@ -662,14 +667,14 @@ export async function bootstrapV4(poolIds, budgetMs = 9000) {
 // So instead of per-pool lookups, scan recent Initialize events from the known
 // PoolManager, collect the distinct hook addresses, and hand those to the
 // client. After that, pools resolve locally in milliseconds with no RPC at all.
-export async function learnHooks(budgetMs = 10000) {
+export async function learnHooks(budgetMs = 7000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
     || { keys: {}, manager: null, hooks: [] };
   let manager = st.manager || KNOWN_MANAGER;
   if (!manager) {
-    const fm = await findManager(6000).catch(() => null);
+    const fm = await findManager(5000).catch(() => null);
     if (fm && fm.ok && fm.supportsExtsload) manager = fm.manager;
   }
   if (!manager) return { ok: false, error: "PoolManager not identified yet — run ?findmanager=1" };
@@ -782,7 +787,7 @@ export async function whatIs(addr) {
 // The v4 Swap topic is verified by keccak — it is NOT a guess. Any log carrying
 // that topic0 is emitted BY the PoolManager, so ranking emitters of that topic
 // identifies it with no dependence on pool ids or token addresses.
-export async function findManager(budgetMs = 12000) {
+export async function findManager(budgetMs = 7000) {
   const t0 = Date.now();
   let head;
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
@@ -832,11 +837,20 @@ export async function findManager(budgetMs = 12000) {
 }
 
 export default async (req) => {
+  try { return await handle(req); }
+  catch (e) {
+    // A thrown error becomes Netlify's opaque "unknown error" page, which tells
+    // us nothing. Always answer with JSON we can actually read.
+    return json(500, { ok: false, error: String((e && e.message) || e).slice(0, 200) });
+  }
+};
+
+async function handle(req) {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
 
   if (url.searchParams.get("scan") === "1") {
-    return json(200, await scanV4(15000));
+    return json(200, await scanV4(7000));
   }
 
   // ?derive=<poolId>&token=<addr> — rebuild the PoolKey with no chain queries
@@ -852,7 +866,7 @@ export default async (req) => {
   if (attime) {
     const ts = Number(url.searchParams.get("ts") || 0);
     if (!ts) return json(400, { ok: false, error: "ts (ms) required" });
-    return json(200, await probeByTime(attime, ts));
+    return json(200, await probeByTime(attime, ts, 7000));
   }
 
   // ?testrouter=<addr> — does this contract implement execute()?
@@ -866,7 +880,7 @@ export default async (req) => {
       await store.delete("v4boot").catch(() => {});
       await store.delete("v4router").catch(() => {});
     }
-    return json(200, await bootstrapV4(idsParam));
+    return json(200, await bootstrapV4(idsParam, 7000));
   }
 
   // ?router=1 — discover the router that actually executes v4 swaps here
@@ -886,12 +900,12 @@ export default async (req) => {
 
   // ?findmanager=1 — locate the PoolManager via the verified v4 Swap topic
   if (url.searchParams.get("findmanager") === "1") {
-    return json(200, await findManager(14000));
+    return json(200, await findManager(7000));
   }
 
   // ?learn=1 — scan recent Initialize events for hook addresses
   if (url.searchParams.get("learn") === "1") {
-    return json(200, await learnHooks(14000));
+    return json(200, await learnHooks(7000));
   }
 
   // ?hooks=1 — hook contracts we've seen, so the client can include them
@@ -901,7 +915,7 @@ export default async (req) => {
     // no hooks known yet -> learn them now; this is what unlocks fast local
     // derivation for every pool afterwards
     if (!st.hooks || !st.hooks.length) {
-      await learnHooks(9000).catch(() => {});
+      await learnHooks(6500).catch(() => {});
       st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || st;
     }
     let boot = await store.get("v4boot", { type: "json" }).catch(() => null);
@@ -929,7 +943,7 @@ export default async (req) => {
   // ?tip=1 — scan the most recent blocks only. A pool created minutes ago sits
   // at the chain tip, so this finds it without waiting for the full backfill.
   if (url.searchParams.get("tip") === "1") {
-    return json(200, await scanTip(8000));
+    return json(200, await scanTip(6500));
   }
 
   const token = String(url.searchParams.get("token") || "").toLowerCase();

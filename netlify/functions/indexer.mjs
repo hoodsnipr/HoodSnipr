@@ -10,8 +10,10 @@ export default async () => {
   // then it just tracks new pools at the chain tip.
   // Learning hook addresses is the highest-value v4 work: once known, pools
   // derive locally with no RPC. Do that first, backfill with what's left.
-  const hooks = await learnHooks(6000).catch(e => ({ error: e.message }));
-  const v4 = await scanV4(4000).catch(e => ({ error: e.message }));
+  // Budgets must leave headroom inside the platform's execution limit —
+  // overrunning gets the invocation killed and nothing is written at all.
+  const hooks = await learnHooks(5000).catch(e => ({ error: e.message }));
+  const v4 = await scanV4(3000).catch(e => ({ error: e.message }));
   return new Response(JSON.stringify({
     ok: !out.error, deep,
     rows: out.rows?.length ?? 0,

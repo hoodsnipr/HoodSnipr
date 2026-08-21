@@ -124,7 +124,9 @@ export function buildBoard(tokens) {
   return rows;
 }
 
-export async function rebuild({ deep = false } = {}) {
+export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
+  const _t0 = Date.now();
+  const timeLeft = () => budgetMs - (Date.now() - _t0);
   const store = await _store("hoodsnipr-cache");
   const known = (await store.get("universe", { type: "json" }).catch(() => null)) || { t: {}, page: 1 };
 
@@ -137,7 +139,9 @@ export async function rebuild({ deep = false } = {}) {
   const stale = Object.keys(known.t)
     .sort((a, b) => (known.t[b].h24 || 0) - (known.t[a].h24 || 0))
     .slice(0, 360);
-  const fresh = await refreshKnown(store, stale, slug, { calls: 12 }).catch(() => ({}));
+  // scale the refresh to whatever time remains
+  const refreshCalls = timeLeft() > 6000 ? 12 : (timeLeft() > 3000 ? 6 : 2);
+  const fresh = await refreshKnown(store, stale, slug, { calls: refreshCalls }).catch(() => ({}));
   for (const a of Object.keys(fresh)) known.t[a] = fresh[a];
 
   // forget tokens we haven't seen in any feed for 24h — they aren't trending
