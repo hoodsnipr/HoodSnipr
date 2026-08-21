@@ -1154,12 +1154,12 @@ function openToken(poolAddr){
    +'<a class="linkout" href="https://www.geckoterminal.com/'+CFG.GT_NET+'/pools/'+esc(p.pool)+'" target="_blank" rel="noopener">open on GeckoTerminal ↗</a>'
    +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
   +'</div></div>';
-  modal.quote=null;
+  modal.quote=null; modal.force=false;
   // default to the deepest venue, but prefer v3 since that's what we can route
   var vv=versionsOf(p);
   modal.venue = vv.indexOf("v3")>=0 ? "v3" : (vv[0]||"v3");
   updFees();
-  $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; updFees(); });
+  $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); });
   // lazy metadata: socials via GT info, holders via Blockscout
   enrichSocials(p).then(function(){ var el=$("#mSocials"); if(el) el.innerHTML=socialLinks(p,16); });
   if(p.baseToken) enrichHolders([p]).then(function(){
@@ -1374,14 +1374,35 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, onStep){
   return { ok:true, out:lo, calls:calls };
 }
 async function verifyUniversalRouter(pr){
-  if(state.urOk!=null) return state.urOk;
+  if(state.urOk===true) return true;
   try{
-    var code=await pr.getCode(CFG.UNI.universalRouter);
-    state.urOk = !!(code && code!=="0x");
-  }catch(e){ state.urOk=false; }
-  return state.urOk;
+    var code=await withRetry(function(){ return pr.getCode(CFG.UNI.universalRouter); });
+    if(code && code!=="0x"){ state.urOk=true; return true; }
+    return false;                 // definitively no contract there
+  }catch(e){ return null; }       // unknown — don't cache, don't block
 }
 
+// When a simulation predicts failure we don't block the trade — we surface the
+// reason and let a second, deliberate press go through anyway. Traders own their
+// risk; our job is to make sure they know what they're accepting.
+function armForce(reason){
+  modal.force = true;
+  var b=$("#fireBtn");
+  if(b){
+    b.disabled=false;
+    b.textContent="⚠ FIRE ANYWAY";
+    b.style.background="var(--red)";
+    b.style.color="#000";
+  }
+  var box=$("#feeBox");
+  if(box){
+    var warn=document.createElement("div");
+    warn.style.cssText="margin-top:8px;font-size:11px;color:var(--red);line-height:1.5";
+    warn.textContent="⚠ "+reason+" Press again to send it anyway — gas will be spent even if it reverts.";
+    box.appendChild(warn);
+  }
+  toast("Simulation failed — press again to override", true);
+}
 var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
@@ -1404,19 +1425,41 @@ function updFees(){
 }
 // ---- Uniswap plumbing ----
 function rpc(){ return new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId); }
+// Public RPCs drop requests under load ("failed to fetch"). Retry briefly
+// instead of treating one blip as a hard failure.
+async function withRetry(fn, tries){
+  var last;
+  for(var i=0;i<(tries||3);i++){
+    try{ return await fn(); }
+    catch(e){
+      last=e;
+      var m=String((e&&(e.shortMessage||e.message))||"");
+      if(/user rejected|denied|insufficient funds/i.test(m)) throw e;   // don't retry real answers
+      await new Promise(function(r){ setTimeout(r, 350*(i+1)); });
+    }
+  }
+  throw last;
+}
+// Returns "ok" | "mismatch" | "unknown".
+// The old version cached ANY failure as false forever, so a single dropped
+// request disabled trading for the whole session — that's what you hit. Now a
+// network failure returns "unknown" and is never cached; only a contract that
+// genuinely reports the wrong factory/WETH is treated as a mismatch.
 async function verifyUni(provider){
-  if(uniVerified!==null) return uniVerified;
+  if(uniVerified==="ok" || uniVerified==="mismatch") return uniVerified;
+  var pr = provider || rpc();
   try{
-    var pr = provider || rpc();
-    var code = await pr.getCode(CFG.UNI.swapRouter02);
-    if(!code || code==="0x") throw 0;
+    var code = await withRetry(function(){ return pr.getCode(CFG.UNI.swapRouter02); });
+    if(!code || code==="0x") return (uniVerified="mismatch");
     var r = new ethers.Contract(CFG.UNI.swapRouter02,
       ["function factory() view returns (address)","function WETH9() view returns (address)"], pr);
-    var f = await r.factory(), w = await r.WETH9();
-    uniVerified = f.toLowerCase()===CFG.UNI.v3Factory.toLowerCase()
-               && w.toLowerCase()===CFG.UNI.weth.toLowerCase();
-  }catch(e){ uniVerified=false; }
-  return uniVerified;
+    var f = await withRetry(function(){ return r.factory(); });
+    var w = await withRetry(function(){ return r.WETH9(); });
+    var good = f.toLowerCase()===CFG.UNI.v3Factory.toLowerCase()
+            && w.toLowerCase()===CFG.UNI.weth.toLowerCase();
+    uniVerified = good? "ok" : "mismatch";
+    return uniVerified;
+  }catch(e){ return "unknown"; }   // network problem — do NOT cache
 }
 async function tokenDecimals(pr, addr){
   try{ return Number(await new ethers.Contract(addr,["function decimals() view returns (uint8)"],pr).decimals()); }
@@ -1459,7 +1502,15 @@ async function fire(){
   if(!amt||amt<=0){toast("Enter an amount",true);return}
   if(!p.baseToken){toast("Token address unknown for this pool",true);return}
   var btn=$("#fireBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> LOCKING ON…';
-  var done=function(){ var b=$("#fireBtn"); if(b){ b.disabled=false; b.textContent="🏹 FIRE SNIPE"; } };
+  var done=function(){
+    var b=$("#fireBtn");
+    if(b){
+      b.disabled=false;
+      b.textContent = modal.force ? "⚠ FIRE ANYWAY" : "🏹 FIRE SNIPE";
+      b.style.background = modal.force ? "var(--red)" : "";
+      b.style.color = modal.force ? "#000" : "";
+    }
+  };
   try{
     // ---- signer ----
     var signer=null, provider=null;
@@ -1492,7 +1543,10 @@ async function fire(){
 
     // ---- runtime-verify the router before a single wei moves ----
     btn.innerHTML='<span class="spin"></span> VERIFYING ROUTER…';
-    if(!(await verifyUni(rpc()))) throw new Error("Router failed onchain verification — trading disabled for safety");
+    var vres = await verifyUni(rpc());
+    if(vres==="mismatch")
+      throw new Error("The router at the configured address isn't Uniswap — refusing to send ETH to it. This is a config problem, not your trade.");
+    if(vres==="unknown") toast("Couldn't reach the RPC to verify the router — proceeding anyway", true);
 
     var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
     var netWei = ethers.parseEther(net.toFixed(18));
@@ -1534,8 +1588,10 @@ async function fire(){
         key=picked.key; needWrap=picked.wrap;
       }
 
-      if(!(await verifyUniversalRouter(rpc())))
-        throw new Error("UniversalRouter not found on this chain — v4 trading disabled for safety.");
+      var urv = await verifyUniversalRouter(rpc());
+      if(urv===false)
+        throw new Error("No contract exists at the UniversalRouter address on this chain — refusing to send ETH there.");
+      // urv===null just means the RPC didn't answer; carry on.
 
       // Derive the real output by simulation — no decimals guess, no quoter.
       btn.innerHTML='<span class="spin"></span> QUOTING V4 POOL…';
@@ -1550,8 +1606,11 @@ async function fire(){
           q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
         }
       }
-      if(!q4.ok)
-        throw new Error("$"+p.sym+" v4 pool won't route this trade — it may use hooks, be unbalanced, or hold too little liquidity for "+net.toFixed(4)+" ETH. Try a smaller size. Nothing was charged.");
+      if(!q4.ok && !modal.force){
+        armForce("Simulation couldn't route "+net.toFixed(4)+" ETH through this v4 pool (hooks, thin liquidity, or imbalance).");
+        return;
+      }
+      if(!q4.ok) q4={ ok:true, out:1n };   // forced: no slippage floor, user accepted
 
       var dec4 = await tokenDecimals(rpc(), p.baseToken);
       var minOut4 = q4.out - (q4.out*BigInt(modal.slip)/10000n);
@@ -1621,13 +1680,18 @@ async function fire(){
         amountIn:netWei, amountOutMinimum:minO, sqrtPriceLimitX96:0 }]);
       await rpc().call({ to: CFG.UNI.swapRouter02, data: data, value: netWei, from: me });
     }
-    try{ await preflight(best.fee, minOut); }
-    catch(pfErr){
-      // retry once with zero minOut to distinguish slippage from a dead pool
-      var slippageIssue=false;
-      try{ await preflight(best.fee, 0n); slippageIssue=true; }catch(e2){}
-      if(slippageIssue) throw new Error("Price moved beyond your "+(modal.slip/100)+"% slippage — raise slippage or retry");
-      throw new Error("Swap simulation reverted for $"+p.sym+" — likely a transfer-tax/honeypot token or launchpad-gated pool. Not sniped, nothing charged.");
+    if(!modal.force){
+      try{ await preflight(best.fee, minOut); }
+      catch(pfErr){
+        var slippageIssue=false;
+        try{ await preflight(best.fee, 0n); slippageIssue=true; }catch(e2){}
+        // Your call, not mine — the simulation says this will fail, but you can
+        // override it. Arming the override rather than blocking outright.
+        armForce(slippageIssue
+          ? "Simulation says price moved past your "+(modal.slip/100)+"% slippage."
+          : "Simulation says this swap reverts (transfer tax, honeypot, or gated pool).");
+        return;
+      }
     }
 
     // ---- 1) platform fee — ALWAYS charged, frozen route ----
@@ -2296,7 +2360,10 @@ async function fireLoose(){
       if(!state.burner) throw new Error("Burner not found");
       signer=new ethers.Wallet(state.burner.pk, rpc());
     }
-    if(!(await verifyUni(rpc()))) throw new Error("Router failed onchain verification — trading disabled for safety");
+    var vres = await verifyUni(rpc());
+    if(vres==="mismatch")
+      throw new Error("The router at the configured address isn't Uniswap — refusing to send ETH to it. This is a config problem, not your trade.");
+    if(vres==="unknown") toast("Couldn't reach the RPC to verify the router — proceeding anyway", true);
     var me=await signer.getAddress();
     var units=ethers.parseUnits(amt.toFixed(Math.min(18,x.dec)), x.dec);
 
@@ -2390,9 +2457,9 @@ document.addEventListener("click", function(e){
   else if(a==="close") closeModal();
   else if(a==="closebg"){ if(e.target===el) closeModal(); }
   else if(a==="paymode"){ modal.mode=el.getAttribute("data-m"); $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)}); updFees(); }
-  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; updFees(); }
+  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; modal.force=false; updFees(); }
   else if(a==="venue"){
-      modal.venue=el.getAttribute("data-v");
+      modal.venue=el.getAttribute("data-v"); modal.force=false;
       $$('[data-action="venue"]').forEach(function(b){
         var on=b.getAttribute("data-v")===modal.venue;
         b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";
