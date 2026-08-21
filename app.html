@@ -355,7 +355,17 @@ var CFG = {
     swapRouter02: "0xCaf681a66D020601342297493863E78C959E5cb2",
     quoterV2:     "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
     feeTiers: [10000, 3000, 500, 100],   // 1% first — memecoin pools live there
-    defaultSlippageBps: 500              // 5%
+    defaultSlippageBps: 500,             // 5%
+    // Uniswap v4: pools live in a singleton PoolManager and are only reachable
+    // through the UniversalRouter. Runtime-verified before any swap, same as v3.
+    universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+    V4: {
+      CMD_SWAP: 0x10,                    // Commands.V4_SWAP
+      ACT_SWAP_IN_SINGLE: 0x06,          // Actions.SWAP_EXACT_IN_SINGLE
+      ACT_SETTLE_ALL: 0x0c,
+      ACT_TAKE_ALL: 0x0f,
+      NATIVE: "0x0000000000000000000000000000000000000000"
+    }
   },
   GT: "https://api.geckoterminal.com/api/v2",
   GT_NET: "robinhood",
@@ -1168,6 +1178,63 @@ function venueToggleHtml(p){
     }).join("")
     +'</div>';
 }
+// ================= UNISWAP V4 =================
+var v4Cache={};   // token -> {manager, keys:[...]}
+async function v4KeysFor(token){
+  var k=(token||"").toLowerCase();
+  if(v4Cache[k]) return v4Cache[k];
+  try{
+    var r=await fetch(CFG.API+"/v4pools?token="+k);
+    if(!r.ok) return null;
+    var j=await r.json();
+    if(!j || !j.keys || !j.keys.length) return null;
+    v4Cache[k]=j;
+    return j;
+  }catch(e){ return null; }
+}
+// Pick the pool key for an ETH-paired v4 pool. v4 uses address(0) for native ETH.
+function pickV4Key(keys, token){
+  var NATIVE=CFG.UNI.V4.NATIVE, t=(token||"").toLowerCase();
+  var eth=keys.filter(function(k){
+    return (k.c0===NATIVE && k.c1===t) || (k.c1===NATIVE && k.c0===t);
+  });
+  var pool=(eth.length?eth:keys).filter(function(k){ return k.hooks===NATIVE; });  // skip hooked pools
+  if(!pool.length) pool = eth.length?eth:keys;
+  // lowest fee tier first tends to be the primary pool
+  pool.sort(function(a,b){ return (a.fee||0)-(b.fee||0); });
+  return pool[0]||null;
+}
+function encodeV4Swap(key, token, amountInWei, minOutWei, recipient){
+  var V4=CFG.UNI.V4, NATIVE=V4.NATIVE;
+  var zeroForOne = key.c0===NATIVE;           // ETH is currency0 -> swapping 0 for 1
+  var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
+  var coder=ethers.AbiCoder.defaultAbiCoder();
+
+  var swapParams=coder.encode(
+    ["tuple("+PK+" poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)"],
+    [[[key.c0,key.c1,key.fee,key.ts,key.hooks], zeroForOne, amountInWei, minOutWei, "0x"]]
+  );
+  var currencyIn  = zeroForOne? key.c0 : key.c1;
+  var currencyOut = zeroForOne? key.c1 : key.c0;
+  var settle=coder.encode(["address","uint128"],[currencyIn, amountInWei]);
+  var take  =coder.encode(["address","uint128"],[currencyOut, minOutWei]);
+
+  var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+  var input0=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settle,take]]);
+  var commands=ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]);
+  return { commands:commands, inputs:[input0] };
+}
+var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
+async function verifyUniversalRouter(pr){
+  if(state.urOk!=null) return state.urOk;
+  try{
+    var code=await pr.getCode(CFG.UNI.universalRouter);
+    state.urOk = !!(code && code!=="0x");
+  }catch(e){ state.urOk=false; }
+  return state.urOk;
+}
+
 var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
@@ -1184,7 +1251,7 @@ function updFees(){
    +'<div><span class="k">Est. received</span><span id="quoteLine">'+received+'</span></div>'
    +'<div><span class="k">Max slippage</span><span>'+(modal.slip/100)+'%</span></div>'
    +'<div><span class="k">Execution</span><span style="color:var(--gold)">'
-     +(modal.venue==="v4" ? "UNISWAP V4 · NOT YET ROUTABLE" : "UNISWAP V3 · ONCHAIN")+'</span></div>'
+     +(modal.venue==="v4" ? "UNISWAP V4 · UNIVERSAL ROUTER" : "UNISWAP V3 · ONCHAIN")+'</span></div>'
    +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
   if(net>0 && p.baseToken) liveQuote(p, net);
 }
@@ -1225,7 +1292,7 @@ async function bestQuote(pr, token, amountInWei){
 }
 async function liveQuote(p, netEth){
   var seq=++quoteSeq;
-  if(modal.venue==="v4") return;   // nothing to quote until UniversalRouter lands
+  if(modal.venue==="v4") return;   // v4 sizing uses the indexed price + slippage
   try{
     var pr=rpc();
     if(!(await verifyUni(pr))) return;
@@ -1282,20 +1349,91 @@ async function fire(){
 
     var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
     var netWei = ethers.parseEther(net.toFixed(18));
+    var me = ethers.getAddress(await signer.getAddress());
 
     // ---- quote (route + minOut) ----
     btn.innerHTML='<span class="spin"></span> QUOTING UNISWAP…';
-    // v4 pools live inside a singleton PoolManager and are unreachable through
-    // SwapRouter02. Say so up front instead of taking a fee on a doomed swap.
+    // ---------------- UNISWAP V4 ROUTE ----------------
     if(modal.venue==="v4"){
-      var hasV3 = versionsOf(p).indexOf("v3")>=0;
-      throw new Error("$"+p.sym+" v4 routing isn't wired up yet — it needs the UniversalRouter."
-        + (hasV3? " Switch to V3 above to snipe this token now." : " Nothing was charged.")); 
+      btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
+      var v4=await v4KeysFor(p.baseToken);
+      if(!v4 || !v4.keys.length)
+        throw new Error("No indexed v4 pool for $"+p.sym+" yet — the v4 scanner may still be backfilling. Nothing was charged.");
+      var key=pickV4Key(v4.keys, p.baseToken);
+      if(!key) throw new Error("No ETH-paired v4 pool for $"+p.sym+". Nothing was charged.");
+
+      if(!(await verifyUniversalRouter(rpc())))
+        throw new Error("UniversalRouter not found on this chain — v4 trading disabled for safety.");
+
+      // No v4 quoter wired, so derive minOut from the indexed price and let the
+      // slippage setting absorb the difference. The preflight below is what
+      // actually protects the user — a bad estimate reverts before signing.
+      var dec4 = p.dec || 18;
+      var expected = p.price>0 ? (net*state.ethUsd)/p.price : 0;
+      if(!(expected>0)) throw new Error("No price available for $"+p.sym+" — can't size a safe v4 swap.");
+      var expWei = ethers.parseUnits(expected.toFixed(Math.min(18,dec4)), dec4);
+      var minOut4 = expWei - (expWei*BigInt(modal.slip)/10000n);
+
+      var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, me);
+      var deadline=BigInt(Math.floor(Date.now()/1000)+900);
+
+      // preflight the exact call before any signature or fee
+      btn.innerHTML='<span class="spin"></span> PREFLIGHT V4…';
+      var urIface=new ethers.Interface(UROUTER_ABI);
+      var data4=urIface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
+      try{
+        await rpc().call({ to:CFG.UNI.universalRouter, data:data4, value:netWei, from:me });
+      }catch(pf){
+        var pm=(pf&&(pf.shortMessage||pf.message))||"";
+        if(/slippage|too little|minimum/i.test(pm))
+          throw new Error("Price moved beyond your "+(modal.slip/100)+"% slippage — raise it and retry. Nothing was charged.");
+        throw new Error("v4 swap simulation reverted for $"+p.sym+" — the pool may be hooked or illiquid. Nothing was charged.");
+      }
+
+      // fee first, then the v4 swap
+      btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
+      var f4=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(fee.toFixed(18)) });
+      await f4.wait();
+
+      btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…';
+      var ur=new ethers.Contract(CFG.UNI.universalRouter, UROUTER_ABI, signer);
+      var tx4;
+      try{
+        tx4=await ur.execute(enc.commands, enc.inputs, deadline, { value:netWei });
+      }catch(se){
+        var sm4=(se&&(se.shortMessage||se.message))||"";
+        if(/missing revert data|estimate/i.test(sm4))
+          tx4=await ur.execute(enc.commands, enc.inputs, deadline, { value:netWei, gasLimit:900000n });
+        else throw se;
+      }
+      btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
+      var rc4=await tx4.wait();
+      if(!rc4 || rc4.status!==1) throw new Error("v4 swap reverted onchain");
+
+      var got4=null;
+      try{
+        var if4=new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
+        rc4.logs.forEach(function(lg){
+          if((lg.address||"").toLowerCase()!==p.baseToken.toLowerCase()) return;
+          try{ var ev=if4.parseLog(lg);
+            if(ev && String(ev.args[1]).toLowerCase()===me.toLowerCase()) got4=ev.args[2];
+          }catch(e){}
+        });
+      }catch(e){}
+      var out4=+(ethers.formatUnits(got4!=null?got4:minOut4, dec4));
+
+      recordTrade(p, amt, fee, modal.mode, out4, rc4.hash);
+      toast("Sniped "+out4.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" via V4 ⚡");
+      closeModal();
+      done();
+      return;
     }
+
+    // ---------------- UNISWAP V3 ROUTE ----------------
     var best = await bestQuote(rpc(), p.baseToken, netWei);
     if(!best){
       if(versionsOf(p).indexOf("v4")>=0)
-        throw new Error("$"+p.sym+" only has a Uniswap v4 pool, which needs the UniversalRouter — not wired up yet. Nothing was charged.");
+        throw new Error("No v3 pool for $"+p.sym+" — switch to V4 above to snipe it. Nothing was charged.");
       throw new Error("No Uniswap v3 WETH pool for $"+p.sym+" — it may still be on a launchpad bonding curve. Nothing was charged.");
     }
     var minOut = best.out - (best.out * BigInt(modal.slip) / 10000n);
@@ -1305,7 +1443,6 @@ async function fire(){
     // address BEFORE asking for any signature. Opaque estimate failures
     // become readable errors here, and no fee is taken on a doomed swap. ----
     btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
-    var me = await signer.getAddress();
     var routerIface = new ethers.Interface(
       ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"]);
     async function preflight(feeTier, minO){
