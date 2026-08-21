@@ -358,6 +358,10 @@ var CFG = {
     defaultSlippageBps: 500,             // 5%
     // Uniswap v4: pools live in a singleton PoolManager and are only reachable
     // through the UniversalRouter. Runtime-verified before any swap, same as v3.
+    // Ethereum mainnet's UniversalRouter. Almost certainly NOT the address on
+    // chain 4663 — calling execute() on an unrelated contract reverts with no
+    // data, which is exactly the failure we saw. Treated as a fallback only;
+    // the real router is discovered from onchain swap activity at boot.
     universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
     V4: {
       CMD_SWAP: 0x10,                    // Commands.V4_SWAP
@@ -1364,6 +1368,20 @@ function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap){
   return { commands:commands, inputs:[input0] };
 }
 var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
+// Use the router observed executing v4 swaps on this chain, falling back to the
+// configured address only if discovery hasn't answered yet.
+function v4Router(){ return state.v4Router || CFG.UNI.universalRouter; }
+async function ensureV4Router(){
+  if(state.v4Router) return state.v4Router;
+  try{
+    var r=await fetch(CFG.API+"/v4pools?router=1");
+    if(r.ok){
+      var j=await r.json();
+      if(j && j.ok && j.router){ state.v4Router=j.router; return j.router; }
+    }
+  }catch(e){}
+  return CFG.UNI.universalRouter;
+}
 
 // There is no v4 Quoter wired on this chain, and guessing minOut from the
 // indexed USD price silently assumed 18 decimals — which is why swaps reverted
@@ -1380,7 +1398,7 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, onStep){
     try{
       var enc=encodeV4Swap(key, token, amountInWei, minOut, me, wrap);
       var data=iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
-      await pr.call({ to:CFG.UNI.universalRouter, data:data, value:amountInWei, from:me });
+      await pr.call({ to:v4Router(), data:data, value:amountInWei, from:me });
       return true;
     }catch(e){ return false; }
   }
@@ -1404,7 +1422,7 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, onStep){
 async function verifyUniversalRouter(pr){
   if(state.urOk===true) return true;
   try{
-    var code=await withRetry(function(){ return pr.getCode(CFG.UNI.universalRouter); });
+    var code=await withRetry(function(){ return pr.getCode(v4Router()); });
     if(code && code!=="0x"){ state.urOk=true; return true; }
     return false;                 // definitively no contract there
   }catch(e){ return null; }       // unknown — don't cache, don't block
@@ -1626,6 +1644,8 @@ async function fire(){
         key=picked.key; needWrap=picked.wrap;
       }
 
+      btn.innerHTML='<span class="spin"></span> LOCATING V4 ROUTER…';
+      await ensureV4Router();
       var urv = await verifyUniversalRouter(rpc());
       if(urv===false)
         throw new Error("No contract exists at the UniversalRouter address on this chain — refusing to send ETH there.");
@@ -1644,8 +1664,17 @@ async function fire(){
           q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
         }
       }
+      if(!q4.ok){
+        // A revert with no data usually means we're calling the wrong contract,
+        // not that the pool is bad — re-discover the router and try once more.
+        var forced=await fetch(CFG.API+"/v4pools?router=1").then(function(r){return r.json()}).catch(function(){return null});
+        if(forced && forced.ok && forced.router && forced.router!==state.v4Router){
+          state.v4Router=forced.router;
+          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap);
+        }
+      }
       if(!q4.ok && !modal.force){
-        armForce("Simulation couldn't route "+net.toFixed(4)+" ETH through this v4 pool (hooks, thin liquidity, or imbalance).");
+        armForce("Simulation couldn't route "+net.toFixed(4)+" ETH through this v4 pool via "+short(v4Router())+".");
         return;
       }
       if(!q4.ok) q4={ ok:true, out:1n };   // forced: no slippage floor, user accepted
@@ -1663,7 +1692,7 @@ async function fire(){
       await f4.wait();
 
       btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…'+(needWrap?' (WRAP+SWAP)':'');
-      var ur=new ethers.Contract(CFG.UNI.universalRouter, UROUTER_ABI, signer);
+      var ur=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
       var tx4;
       try{
         tx4=await ur.execute(enc.commands, enc.inputs, deadline, { value:netWei });
@@ -2621,6 +2650,7 @@ state.burner = load("hs_burner", null);
 // derived locally instead of needing a log lookup every time
 fetch(CFG.API+"/v4pools?hooks=1").then(function(r){return r.json()}).then(function(j){
   if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
+  if(j && j.router) state.v4Router=j.router;
 }).catch(function(){});
 
 autoReconnect();
