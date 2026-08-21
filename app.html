@@ -106,7 +106,6 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .chainbar .k{font-family:var(--mono);font-size:8.5px;color:var(--mute);letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chainbar .v{font-family:var(--mono);font-size:14px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(min-width:700px){ .chainbar .v{font-size:17px} .chainbar .k{font-size:9.5px} }
-.chainbar .sub{font-family:var(--mono);font-size:9px;color:var(--green);margin-top:2px;min-height:11px}
 .chainbar .v.bump{animation:bump .7s ease-out}
 @keyframes bump{0%{color:var(--green);transform:scale(1.16)}100%{color:var(--text);transform:scale(1)}}
 
@@ -265,7 +264,7 @@ canvas.share{display:none}
     <div class="chainbar" id="chainBar">
       <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">…</div></div>
       <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">…</div></div>
-      <div class="cb"><div class="k">PAIRS ON CHAIN</div><div class="v" id="cbTokens">…</div><div class="sub" id="cbTokensSub"></div></div>
+      <div class="cb"><div class="k">PAIRS ON CHAIN</div><div class="v" id="cbTokens">…</div></div>
     </div>
     <div class="board" id="board"></div>
     <div class="pager" id="pager"></div>
@@ -753,55 +752,51 @@ function localStats(){
   });
   return { vol24:vol, liq:liq, tokenCount:Object.keys(toks).length, pools:Object.keys(seen).length };
 }
-// Chain stats come from ONE authoritative place (the /chainstats function:
-// Blockscout for real chain-wide txns, RPC for block height, server-computed
-// DEX totals). Local aggregation is only a cold-start placeholder, and a
-// thin poll can never drag the numbers down — that was the flip-flop.
 async function pullChainStats(){
   try{
     var r=await fetch(CFG.API+"/chainstats");
     if(!r.ok) throw 0;
     var c=await r.json();
-    if(c && (c.block||c.txns24||c.vol24)){ state.chain=c; state.chainAuthoritative=true; renderChainBar(); return; }
+    if(c){
+      // chainstats no longer carries vol24/liq — merge without letting it
+      // overwrite the board's authoritative totals
+      delete c.vol24; delete c.liq;
+      state.chain=Object.assign({}, state.chain||{}, c);
+      renderChainBar();
+      return;
+    }
   }catch(e){}
   state.chainAuthoritative=false;
 }
 function renderChainBar(){
-  var c=state.chain||{}, l=localStats(), e;
-  var best=state.bestStats||(state.bestStats={});
-  var vol = c.vol24!=null? c.vol24 : l.vol24;
-  var liq = c.liq!=null? c.liq : l.liq;
-  if(!state.chainAuthoritative){
-    if(vol>(best.vol||0)) best.vol=vol; else vol=best.vol||vol;
-    if(liq>(best.liq||0)) best.liq=liq; else liq=best.liq||liq;
+  var c=state.chain||{}, e;
+  // ONE source of truth: whatever the board payload reported. Two endpoints
+  // were each supplying vol24, so the bar flipped between $366M and $72M on
+  // alternating polls. Local summing is only a cold-start placeholder now.
+  var vol = c.vol24;
+  var liq = c.liq;
+  if(vol==null || liq==null){
+    var l=localStats();
+    if(vol==null) vol=l.vol24;
+    if(liq==null) liq=l.liq;
   }
+  // guard against a mid-sweep dip making the number visibly jump backwards
+  var b=state.statBest||(state.statBest={});
+  if(vol>0){ if(vol >= (b.vol||0)*0.7) b.vol=vol; else vol=b.vol; }
+  if(liq>0){ if(liq >= (b.liq||0)*0.7) b.liq=liq; else liq=b.liq; }
+
   if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "…";
   if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
 
-  // TOKENS CREATED — cumulative census, only ever climbs
-  var created = c.poolsIndexed!=null? c.poolsIndexed
-              : (c.tokensCreated!=null? c.tokensCreated : Math.max(best.tok||0, l.tokenCount||0));
-  if(created>(best.tok||0)) best.tok=created; else created=best.tok||created;
+  var created = c.poolsIndexed!=null? c.poolsIndexed : (c.tokensCreated||0);
   var el=$("#cbTokens");
   if(el){
-    var prev=state.lastTokenCount;
     if(created>0){
+      var prev=state.lastTokenCount;
       el.textContent = created.toLocaleString();
-      if(prev!=null && created>prev){
-        // subtle flash only — no toast. The count also rises as the indexer
-        // backfills, which isn't a launch and shouldn't interrupt the user.
-        el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
-      }
+      if(prev!=null && created>prev){ el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
       state.lastTokenCount=created;
     } else el.textContent="…";
-  }
-  var sub=$("#cbTokensSub");
-  if(sub){
-    var bits=[];
-    if(c.tokensNewHour>0) bits.push("+"+c.tokensNewHour+" past hour");
-    else if(c.tokensNewDay>0) bits.push("+"+c.tokensNewDay+" past 24h");
-    if(c.tokensTradeable) bits.push(c.tokensTradeable.toLocaleString()+" tradeable now");
-    sub.textContent = bits.join(" · ");
   }
 }
 function setLive(){
