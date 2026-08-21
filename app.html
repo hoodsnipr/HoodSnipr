@@ -1379,6 +1379,19 @@ var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadl
 // Use the router observed executing v4 swaps on this chain, falling back to the
 // configured address only if discovery hasn't answered yet.
 function v4Router(){ return state.v4Router || CFG.UNI.universalRouter; }
+// Confirms a contract actually exists at the router address we're about to send
+// ETH to. Returns true / false / null(unknown) — a network failure must never
+// masquerade as "no contract there".
+async function verifyUniversalRouter(pr){
+  var addr=v4Router();
+  if(state.urOkFor===addr) return true;
+  try{
+    var code=await withRetry(function(){ return pr.getCode(addr); });
+    if(code && code!=="0x"){ state.urOkFor=addr; return true; }
+    return false;
+  }catch(e){ return null; }
+}
+
 var v4BootPromise=null;
 async function ensureV4Router(){
   if(state.v4Router) return state.v4Router;
@@ -1405,6 +1418,29 @@ async function ensureV4Router(){
 // simulating the swap: binary-search the largest amountOutMinimum that still
 // succeeds. That value IS the achievable output, in raw units, with no
 // decimals assumption anywhere.
+// When a simulation predicts failure we don't block the trade — we surface the
+// reason and let a second, deliberate press send it anyway. Traders own their
+// risk; our job is to make sure they know what they're accepting.
+function armForce(reason){
+  modal.force = true;
+  var b=$("#fireBtn");
+  if(b){
+    b.disabled=false;
+    b.textContent="⚠ FIRE ANYWAY";
+    b.style.background="var(--red)";
+    b.style.color="#000";
+  }
+  var box=$("#feeBox");
+  if(box && !box.querySelector(".forcewarn")){
+    var warn=document.createElement("div");
+    warn.className="forcewarn";
+    warn.style.cssText="margin-top:8px;font-size:11px;color:var(--red);line-height:1.5";
+    warn.textContent="⚠ "+reason+" Press again to send it anyway — gas will be spent even if it reverts.";
+    box.appendChild(warn);
+  }
+  toast("Simulation failed — press again to override", true);
+}
+
 async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut){
   var pr=rpc(), iface=new ethers.Interface(UROUTER_ABI);
   var deadline=BigInt(Math.floor(Date.now()/1000)+900);
