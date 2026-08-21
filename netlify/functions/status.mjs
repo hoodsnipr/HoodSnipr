@@ -8,7 +8,6 @@ import { runIndex } from "./_index.mjs";
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
-  out.storeMode = storeMode();
   const out = { now: new Date().toISOString(), storeMode: storeMode() };
 
   try {

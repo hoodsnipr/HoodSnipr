@@ -19,7 +19,8 @@ export default async (req) => {
   if (req.method === "GET") {
     const addr = (new URL(req.url).searchParams.get("addr") || "").toLowerCase();
     if (!/^0x[0-9a-f]{40}$/.test(addr)) return json(400, { error: "bad addr" });
-    const p = await await _store("hoodsnipr-profiles").get(addr, { type: "json" }).catch(() => null);
+    const ps = await _store("hoodsnipr-profiles");
+    const p = await ps.get(addr, { type: "json" }).catch(() => null);
     return json(200, p || {});
   }
   if (req.method !== "POST") return json(405, { error: "GET or POST only" });

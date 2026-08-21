@@ -26,12 +26,18 @@ async function loadBlobs() {
 }
 
 function memStore(name) {
-  const k = key => name + "::" + key;
+  const pfx = name + "::";
+  const k = key => pfx + key;
   return {
     async get(key) { const v = memory.get(k(key)); return v === undefined ? null : v; },
     async setJSON(key, val) { memory.set(k(key), val); },
     async set(key, val) { memory.set(k(key), val); },
-    async delete(key) { memory.delete(k(key)); }
+    async delete(key) { memory.delete(k(key)); },
+    async list() {
+      const blobs = [];
+      for (const key of memory.keys()) if (key.startsWith(pfx)) blobs.push({ key: key.slice(pfx.length) });
+      return { blobs };
+    }
   };
 }
 
@@ -45,7 +51,8 @@ export async function store(name = "hoodsnipr-cache") {
       async get(key, opts) { try { return await s.get(key, opts); } catch (e) { return null; } },
       async setJSON(key, val) { try { await s.setJSON(key, val); } catch (e) { memory.set(name + "::" + key, val); } },
       async set(key, val) { try { await s.set(key, val); } catch (e) { memory.set(name + "::" + key, val); } },
-      async delete(key) { try { await s.delete(key); } catch (e) {} }
+      async delete(key) { try { await s.delete(key); } catch (e) {} },
+      async list(opts) { try { return (await s.list(opts)) || { blobs: [] }; } catch (e) { return { blobs: [] }; } }
     };
   } catch (e) {
     _mode = "memory:getStore threw";
