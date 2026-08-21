@@ -56,12 +56,10 @@ export default async () => {
     totalTxns: bs.totalTxns ?? null,
     addresses: bs.addresses ?? null,
     avgBlockTime: bs.avgBlockTime ?? null,
-    vol24: dex.vol24 ?? null,
-    liq: dex.liq ?? null,
-    tokenCount: dex.tokenCount ?? null,
-    tokensCreated: dex.tokensCreated ?? null,
-    tokensNewHour: dex.tokensNewHour ?? null,
-    tokensNewDay: dex.tokensNewDay ?? null
+    // NOTE: vol24/liq deliberately NOT returned here. The board endpoint is the
+    // single source for those; publishing them from two places made the stats
+    // bar flip between different numbers on every poll.
+    tokenCount: dex.tokenCount ?? null
   };
   if (out.block || out.txns24 || out.vol24) await store.setJSON("chainstats", out).catch(() => {});
   return json(200, out);

@@ -110,6 +110,22 @@ export async function sweepMarket(store, tokens, { calls = 45, deadline = 0, pri
   }
   st.cursor = c;
   st.refresh = rc;
+
+  // ---- chain-wide 24h volume ----
+  // Summing only the tokens we've priced so far understates badly (we showed
+  // $366M against DexScreener's $2.46B) and jumps around as the sweep rotates.
+  // Instead we keep a per-token record of h24 and total ACROSS EVERYTHING we've
+  // ever seen, so the number climbs toward the real total and never oscillates.
+  let vol24 = 0, liqTotal = 0, priced = 0;
+  const cutoff = Date.now() - 6 * 3600e3;      // ignore records we haven't refreshed in 6h
+  for (const a of Object.keys(st.d)) {
+    const rec = st.d[a];
+    if (!rec || (rec.t || 0) < cutoff) continue;
+    vol24 += +rec.h24 || 0;
+    liqTotal += +rec.liq || 0;
+    priced++;
+  }
+  st.totals = { vol24, liq: liqTotal, priced, t: Date.now() };
   // keep the blob bounded: drop the least liquid when it grows large
   const keys = Object.keys(st.d);
   if (keys.length > 6000) {

@@ -219,8 +219,13 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   for (const t of Object.keys(mkt.d)) overlay[t] = Object.assign({}, overlay[t], mkt.d[t]);
   const rows = buildChainRows({ poolsIdx: idx, swaps: sw, tokmeta: tm, ethUsd, liqMap, overlay, market: mkt.d });
 
-  let vol24 = 0, liq = 0;
-  for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
+  // Chain-wide totals come from the market sweep's running record (every token
+  // it has ever priced), NOT from the visible rows — the board is capped at
+  // 2,500 and filtered, so summing it would always undercount.
+  const totals = mkt.totals || {};
+  let vol24 = totals.vol24 || 0, liq = totals.liq || 0;
+  if (!vol24) for (const r of rows) vol24 += r.h24 || 0;
+  if (!liq) for (const r of rows) liq += r.liq || 0;
   const payload = {
     ts: Date.now(), v: 5, rows: rows.slice(0, 2500),
     stats: {
@@ -231,6 +236,7 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
       backfillDone: !!idx.done, backfillCursor: idx.lo, backfillChunk: idx.chunk,
       swapCursor: sw.cursor, head, vol24, liq, ethUsd,
       marketTokens: Object.keys(mkt.d).length, marketLaps: mkt.laps || 0,
+      marketPriced: totals.priced || 0,
       universeTokens: tokenList.length
     }
   };
