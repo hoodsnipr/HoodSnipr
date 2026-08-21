@@ -1215,8 +1215,10 @@ function deriveV4Key(token, targetId){
     { pair:sortCurrencies(NATIVE, t), wrap:false },
     { pair:sortCurrencies(WETH, t),   wrap:true  }
   ];
-  // hooks are almost always the zero address for plain pools
-  var hookOpts=[NATIVE];
+  // Plain pools use the zero hook, but launchpad pools use a hook contract.
+  // We can't brute-force a 160-bit address, so we try the hooks we've already
+  // seen on this chain — one successful lookup teaches the app the rest.
+  var hookOpts=[NATIVE].concat(state.v4Hooks||[]);
 
   // fast pass: the standard fee/spacing combinations
   for(var pi=0; pi<pairings.length; pi++){
@@ -1233,11 +1235,13 @@ function deriveV4Key(token, targetId){
   for(var p2=0; p2<pairings.length; p2++){
     for(var f2=0; f2<V4_FEE_TIERS.length; f2++){
       for(var s2=0; s2<V4_SPACINGS.length; s2++){
-        var cc=pairings[p2].pair;
-        if(v4PoolId(cc[0],cc[1],V4_FEE_TIERS[f2],V4_SPACINGS[s2],NATIVE).toLowerCase()===id)
-          return { key:{ c0:cc[0].toLowerCase(), c1:cc[1].toLowerCase(), fee:V4_FEE_TIERS[f2],
-                         ts:V4_SPACINGS[s2], hooks:NATIVE, id:id },
-                   wrap:pairings[p2].wrap };
+        for(var h2=0; h2<hookOpts.length; h2++){
+          var cc=pairings[p2].pair, hk2=hookOpts[h2];
+          if(v4PoolId(cc[0],cc[1],V4_FEE_TIERS[f2],V4_SPACINGS[s2],hk2).toLowerCase()===id)
+            return { key:{ c0:cc[0].toLowerCase(), c1:cc[1].toLowerCase(), fee:V4_FEE_TIERS[f2],
+                           ts:V4_SPACINGS[s2], hooks:String(hk2).toLowerCase(), id:id },
+                     wrap:pairings[p2].wrap };
+        }
       }
     }
   }
@@ -1245,6 +1249,27 @@ function deriveV4Key(token, targetId){
 }
 
 var v4ProbeCache={};
+// Uses the pool's creation timestamp to search a narrow block window — this is
+// what recovers pools that use hook contracts, which derivation can't.
+async function v4KeyByTime(poolId, createdAt){
+  var id=String(poolId||"").toLowerCase();
+  if(!/^0x[0-9a-f]{64}$/.test(id) || !createdAt) return null;
+  var ms = typeof createdAt==="number" ? createdAt : Date.parse(createdAt);
+  if(!ms) return null;
+  try{
+    var r=await fetch(CFG.API+"/v4pools?attime="+id+"&ts="+ms);
+    if(!r.ok) return null;
+    var j=await r.json();
+    if(j && j.ok && j.key){
+      if(j.key.hooks && j.key.hooks!=="0x0000000000000000000000000000000000000000"){
+        state.v4Hooks=(state.v4Hooks||[]);
+        if(state.v4Hooks.indexOf(j.key.hooks)<0) state.v4Hooks.push(j.key.hooks);
+      }
+      return j.key;
+    }
+    return null;
+  }catch(e){ return null; }
+}
 async function v4KeyByPoolId(poolId){
   var id=String(poolId||"").toLowerCase();
   if(!/^0x[0-9a-f]{64}$/.test(id)) return null;   // not a v4 pool id
@@ -1283,7 +1308,10 @@ async function v4KeysFor(token, allowScan){
 // Pick the pool key for an ETH-paired v4 pool. v4 uses address(0) for native ETH.
 function pickV4Key(keys, token){
   var NATIVE=CFG.UNI.V4.NATIVE, WETH=CFG.UNI.weth.toLowerCase(), t=(token||"").toLowerCase();
-  var unhooked=function(k){ return (k.hooks||NATIVE)===NATIVE; };   // hooked pools can do anything
+  // Hooks can implement arbitrary logic, but refusing them outright means most
+  // launchpad pools are unsnipeable. We allow them and let the simulation prove
+  // the swap works before anything is signed.
+  var unhooked=function(){ return true; };
   // native-ETH pools first (we can pay with msg.value directly)
   var native=keys.filter(function(k){
     return (k.c0===NATIVE && k.c1===t) || (k.c1===NATIVE && k.c0===t);
@@ -1563,7 +1591,17 @@ async function fire(){
       var derived=deriveV4Key(p.baseToken, p.pool);
       if(derived){ key=derived.key; needWrap=derived.wrap; }
 
-      // 2) fall back to the onchain probe
+      // 2) timestamp-targeted lookup — recovers hooked pools
+      if(!key && p.created){
+        var timed=await v4KeyByTime(p.pool, p.created);
+        if(timed){
+          var tp=pickV4Key([timed], p.baseToken);
+          if(tp){ key=tp.key; needWrap=tp.wrap; }
+          else { key=timed; needWrap=(timed.c0===CFG.UNI.weth.toLowerCase()||timed.c1===CFG.UNI.weth.toLowerCase()); }
+        }
+      }
+
+      // 3) generic onchain probe
       var direct = key? null : await v4KeyByPoolId(p.pool);
       if(!key && direct){
         var dp=pickV4Key([direct], p.baseToken);
@@ -1577,7 +1615,7 @@ async function fire(){
         var isId=/^0x[0-9a-f]{64}$/i.test(pid);
         throw new Error("Couldn't resolve the v4 pool for $"+p.sym+". "
           + (isId
-              ? "The pool id doesn't match any standard fee/spacing combination — it likely uses a custom hook contract, which we don't route for safety."
+              ? "Couldn't locate its Initialize log to read the pool's hook configuration. This usually resolves on a retry."
               : "The indexer reported this pool as '"+pid.slice(0,12)+"…', which isn't a v4 pool id, so we can't rebuild its key.")
           + " Nothing was charged.");
       }
@@ -2578,6 +2616,12 @@ state.burner = load("hs_burner", null);
   $$(".tf").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-tf")===state.tf); });
   if(state.tf==="d30") setTimeout(ensure30d, 800);   // 30D needs its ranger primed
 })();
+
+// learn which hook contracts exist on this chain so v4 keys with hooks can be
+// derived locally instead of needing a log lookup every time
+fetch(CFG.API+"/v4pools?hooks=1").then(function(r){return r.json()}).then(function(j){
+  if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
+}).catch(function(){});
 
 autoReconnect();
 document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
