@@ -399,6 +399,73 @@ export async function probeByTime(poolId, createdAtMs, budgetMs = 13000) {
   return { ok: false, error: lastErr || "not found near estimated block " + est.est, estBlock: est.est, secsPerBlock: est.secsPerBlock };
 }
 
+// ---------------------------------------------------------------------------
+// ROUTER DISCOVERY.
+//
+// "execution reverted (no data present)" on a pool that clearly has liquidity
+// means the call never reached a working router. The UniversalRouter address I
+// hardcoded is Ethereum mainnet's — chain 4663 almost certainly deploys it
+// elsewhere, and calling execute() on an unrelated contract reverts exactly
+// like this.
+//
+// We can find the real one empirically: v4's Swap event indexes `sender`, which
+// is whatever contract called PoolManager.swap(). Scan recent swaps and the most
+// frequent sender IS the router traders are actually using.
+export async function discoverRouter(budgetMs = 12000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+
+  const cached = await store.get("v4router", { type: "json" }).catch(() => null);
+  if (cached && cached.router && Date.now() - cached.t < 6 * 3600e3) return { ok: true, ...cached, cached: true };
+
+  const manager = st.manager;
+  if (!manager) return { ok: false, error: "PoolManager unknown — resolve one v4 pool first" };
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: "rpc: " + e.message }; }
+
+  const senders = {};
+  let win = 3000, from = head;
+  while (Date.now() - t0 < budgetMs - 2000 && Object.keys(senders).length < 40 && from > head - 400000) {
+    const lo = Math.max(0, from - win);
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16), address: manager
+      }]);
+      for (const lg of (logs || [])) {
+        // v4 Swap(PoolId indexed id, address indexed sender, ...)
+        if (!lg.topics || lg.topics.length < 3) continue;
+        const sender = addrFromTopic(lg.topics[2]);
+        if (!sender || /^0x0+$/.test(sender)) continue;
+        senders[sender] = (senders[sender] || 0) + 1;
+      }
+      from = lo;
+    } catch (e) {
+      win = Math.max(200, Math.floor(win / 3));
+      if (win <= 200) from = Math.max(0, from - 200);
+    }
+  }
+
+  const ranked = Object.entries(senders).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length) return { ok: false, error: "no v4 swaps seen recently", manager };
+
+  // keep only addresses that are contracts (an EOA would be a direct caller)
+  const out = [];
+  for (const [addr, count] of ranked.slice(0, 6)) {
+    try {
+      const code = await rpc("eth_getCode", [addr, "latest"]);
+      if (code && code !== "0x") out.push({ addr, swaps: count, codeSize: (code.length - 2) / 2 });
+    } catch (e) {}
+  }
+  if (!out.length) return { ok: false, error: "no contract senders found", manager, ranked: ranked.slice(0, 5) };
+
+  const rec = { router: out[0].addr, candidates: out, manager, t: Date.now() };
+  await store.setJSON("v4router", rec).catch(() => {});
+  return { ok: true, ...rec };
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -423,11 +490,17 @@ export default async (req) => {
     return json(200, await probeByTime(attime, ts));
   }
 
+  // ?router=1 — discover the router that actually executes v4 swaps here
+  if (url.searchParams.get("router") === "1") {
+    return json(200, await discoverRouter());
+  }
+
   // ?hooks=1 — hook contracts we've seen, so the client can include them
   // as derivation candidates
   if (url.searchParams.get("hooks") === "1") {
     const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
-    return json(200, { hooks: st.hooks || [], manager: st.manager || null });
+    const rt = await store.get("v4router", { type: "json" }).catch(() => null);
+    return json(200, { hooks: st.hooks || [], manager: st.manager || null, router: rt?.router || null });
   }
 
   // ?probe=<poolId> — find a pool by its id without knowing the event signature
