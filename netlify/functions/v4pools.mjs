@@ -534,8 +534,12 @@ export async function bootstrapV4(poolIds, budgetMs = 9000) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
 
+  // A cached record from before capability probing has no routerVerified flag —
+  // trusting it is how we kept handing back an unverified router. Only reuse
+  // entries that were actually probed.
   const cached = await store.get("v4boot", { type: "json" }).catch(() => null);
-  if (cached && cached.router && Date.now() - cached.t < 6 * 3600e3) {
+  if (cached && cached.router && cached.routerVerified && cached.v === 2
+      && Date.now() - cached.t < 6 * 3600e3) {
     return { ok: true, ...cached, cached: true };
   }
 
@@ -599,12 +603,28 @@ export async function bootstrapV4(poolIds, budgetMs = 9000) {
   let chosen = null;
   for (const c of candidates) {
     const pr = await probeRouter(c.addr).catch(() => null);
-    if (pr) { c.implementsExecute = !!pr.implementsExecute; c.revertData = pr.revertData || null; }
+    if (pr) {
+      c.implementsExecute = !!pr.implementsExecute;
+      c.revertData = pr.revertData || null;
+      c.probeMsg = pr.message || null;
+    }
     if (pr && pr.implementsExecute && !chosen) chosen = c.addr;
+  }
+  // Nothing among the swap senders implements execute()? Then the router is a
+  // contract that CALLS one of them. Probe the wider candidate set too.
+  if (!chosen) {
+    for (const [addr] of ranked.slice(0, 10)) {
+      if (candidates.some(c => c.addr === addr)) continue;
+      const pr = await probeRouter(addr).catch(() => null);
+      if (pr && pr.implementsExecute) {
+        candidates.push({ addr, swaps: senders[addr] || 0, implementsExecute: true, revertData: pr.revertData });
+        chosen = addr; break;
+      }
+    }
   }
   // fall back to the busiest only if none respond to execute()
   const rec = {
-    manager, router: chosen || candidates[0]?.addr || null,
+    v: 2, manager, router: chosen || candidates[0]?.addr || null,
     routerVerified: !!chosen, candidates,
     swapTopic: topic0, t: Date.now()
   };
@@ -648,6 +668,10 @@ export default async (req) => {
   // ?boot=1 — one-shot: PoolManager + router
   if (url.searchParams.get("boot") === "1") {
     const idsParam = (url.searchParams.get("ids") || "").split(",").filter(Boolean);
+    if (url.searchParams.get("force") === "1") {
+      await store.delete("v4boot").catch(() => {});
+      await store.delete("v4router").catch(() => {});
+    }
     return json(200, await bootstrapV4(idsParam));
   }
 
@@ -660,14 +684,16 @@ export default async (req) => {
   // as derivation candidates
   if (url.searchParams.get("hooks") === "1") {
     const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
-    let rt = await store.get("v4router", { type: "json" }).catch(() => null);
-    if (!rt || !rt.router) {
-      const b = await bootstrapV4([]).catch(() => null);
-      if (b && b.router) rt = { router: b.router, manager: b.manager };
+    let boot = await store.get("v4boot", { type: "json" }).catch(() => null);
+    if (!boot || !boot.routerVerified || boot.v !== 2) {
+      boot = await bootstrapV4([]).catch(() => null);
     }
     return json(200, {
-      hooks: st.hooks || [], manager: (rt && rt.manager) || st.manager || null,
-      router: (rt && rt.router) || null
+      hooks: st.hooks || [],
+      manager: (boot && boot.manager) || st.manager || KNOWN_MANAGER,
+      router: (boot && boot.router) || null,
+      routerVerified: !!(boot && boot.routerVerified),
+      candidates: (boot && boot.candidates) || []
     });
   }
 
