@@ -20,7 +20,7 @@ const INIT_TOPICS = [
   "0x9e5fdb1dbcd8227784f3a3765e991e72fd8e71bfc967286dcf973ff804adc183"  // ...,uint160
 ];
 const INIT_TOPIC = INIT_TOPICS;
-const CHUNK_START = 200000;
+const CHUNK_START = 50000;   // node caps results at 10k logs — stay well under
 
 const json = (c, b) => new Response(JSON.stringify(b), {
   status: c, headers: { "content-type": "application/json", "cache-control": "public, max-age=30" }
@@ -181,7 +181,8 @@ export async function scanTip(budgetMs = 8000) {
 //
 // DexScreener reports a v4 "pairAddress" as the 32-byte PoolId, so the client
 // already has the id it needs to ask about.
-export async function probePoolId(poolId) {
+export async function probePoolId(poolId, budgetMs = 13000) {
+  const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
     || { keys: {}, manager: null, lo: null, done: false, chunk: CHUNK_START };
@@ -189,26 +190,40 @@ export async function probePoolId(poolId) {
   const id = String(poolId || "").toLowerCase();
   if (!/^0x[0-9a-f]{64}$/.test(id)) return { ok: false, error: "poolId must be 32 bytes" };
 
+  // already known?
+  for (const tok of Object.keys(st.keys || {})) {
+    const hit = (st.keys[tok] || []).find(k => String(k.id).toLowerCase() === id);
+    if (hit) return { ok: true, key: hit, manager: st.manager, cached: true };
+  }
+
+  const cache = (await store.get("v4probe", { type: "json" }).catch(() => null)) || {};
+  if (cache[id] && cache[id].key) return { ok: true, key: cache[id].key, manager: st.manager, cached: true };
+
   let head;
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
   catch (e) { return { ok: false, error: "rpc: " + e.message }; }
 
-  // Narrow filter (a single indexed id), so a wide range is cheap.
-  const windows = [[0, head]];
-  for (const [from, to] of windows) {
+  // This RPC rejects wide ranges ("logs matched by query exceeds limit of
+  // 10000"), so walk BACKWARDS from the tip in chunks. Trending tokens are new,
+  // so their pool is usually found within the first few windows.
+  let chunk = 100000;
+  let hi = head;
+  let scanned = 0, lastErr = null;
+  while (Date.now() - t0 < budgetMs - 1500 && hi > 0) {
+    const lo = Math.max(0, hi - chunk);
     try {
       const logs = await rpc("eth_getLogs", [{
-        fromBlock: "0x" + from.toString(16),
-        toBlock: "0x" + to.toString(16),
+        fromBlock: "0x" + lo.toString(16),
+        toBlock: "0x" + hi.toString(16),
         topics: [null, id]
       }]);
+      scanned += (hi - lo);
       for (const lg of (logs || [])) {
-        if (!lg.topics || lg.topics.length < 4) continue;   // Initialize has 3 indexed args
+        if (!lg.topics || lg.topics.length < 4) continue;
         const k = decodeInit(lg);
         if (!k) continue;
         if (!st.manager) st.manager = k.manager;
-        // record the REAL topic0 so future scans can use it
-        if (!st.topics) st.topics = [];
+        st.topics = st.topics || [];
         if (!st.topics.includes(lg.topics[0])) st.topics.push(lg.topics[0]);
         const ZERO = "0x0000000000000000000000000000000000000000";
         for (const side of [k.c0, k.c1]) {
@@ -216,46 +231,65 @@ export async function probePoolId(poolId) {
           const list = st.keys[side] || (st.keys[side] = []);
           if (!list.some(x => x.id === k.id)) list.push(k);
         }
+        cache[id] = { key: k, t: Date.now() };
         await store.setJSON("v4pools", st).catch(() => {});
-        return { ok: true, key: k, topic0: lg.topics[0], manager: k.manager };
+        await store.setJSON("v4probe", cache).catch(() => {});
+        return { ok: true, key: k, topic0: lg.topics[0], manager: k.manager, scannedBlocks: scanned };
       }
+      hi = lo;
+      if (chunk < 400000) chunk = Math.min(400000, chunk * 2);   // widen while it works
     } catch (e) {
-      return { ok: false, error: "getLogs: " + String(e.message).slice(0, 90) };
+      lastErr = String(e.message || e).slice(0, 90);
+      chunk = Math.max(2000, Math.floor(chunk / 4));
+      if (chunk <= 2000) { hi = Math.max(0, hi - 2000); }
     }
   }
-  return { ok: false, error: "no Initialize log found for that pool id" };
+  return { ok: false, error: lastErr || "not found in " + scanned.toLocaleString() + " blocks scanned", scannedBlocks: scanned, head };
 }
 
 // ---------------------------------------------------------------------------
 // DIAGNOSTIC — sample recent logs and report which topics actually appear, so
 // we can identify the PoolManager and its real event signature instead of
 // guessing hashes.
-export async function diagTopics(blocks = 40000) {
+export async function diagTopics(blocks = 2000) {
   let head;
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
   catch (e) { return { ok: false, error: e.message }; }
-  const from = Math.max(0, head - blocks);
-  try {
-    const logs = await rpc("eth_getLogs", [{
-      fromBlock: "0x" + from.toString(16), toBlock: "0x" + head.toString(16), topics: []
-    }]);
-    const byTopic = {}, byAddr = {};
-    for (const lg of (logs || [])) {
-      const t = lg.topics?.[0];
-      if (t) byTopic[t] = (byTopic[t] || 0) + 1;
-      const a = String(lg.address || "").toLowerCase();
-      // 3 indexed args + data is the Initialize shape
-      if (lg.topics && lg.topics.length === 4) {
-        byAddr[a] = byAddr[a] || { count: 0, topics: {} };
-        byAddr[a].count++;
-        byAddr[a].topics[t] = (byAddr[a].topics[t] || 0) + 1;
-      }
+
+  // The node caps results at 10,000 logs, so sample a SMALL window near the tip
+  // and shrink further if it still complains.
+  let win = Math.min(blocks, 2000);
+  let logs = null, err = null;
+  for (let attempt = 0; attempt < 5 && !logs; attempt++) {
+    const from = Math.max(0, head - win);
+    try {
+      logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + from.toString(16), toBlock: "0x" + head.toString(16)
+      }]);
+    } catch (e) {
+      err = String(e.message || e).slice(0, 100);
+      win = Math.max(50, Math.floor(win / 4));
     }
-    const top = Object.entries(byTopic).sort((a, b) => b[1] - a[1]).slice(0, 12);
-    const cands = Object.entries(byAddr).sort((a, b) => b[1].count - a[1].count).slice(0, 8)
-      .map(([addr, v]) => ({ addr, logs: v.count, topics: Object.keys(v.topics).slice(0, 4) }));
-    return { ok: true, head, from, totalLogs: (logs || []).length, topTopics: top, threeIndexedCandidates: cands };
-  } catch (e) { return { ok: false, error: String(e.message).slice(0, 120) }; }
+  }
+  if (!logs) return { ok: false, error: err, note: "even a small window failed" };
+
+  const byTopic = {}, byAddr = {};
+  for (const lg of logs) {
+    const t = lg.topics?.[0];
+    if (t) byTopic[t] = (byTopic[t] || 0) + 1;
+    const a = String(lg.address || "").toLowerCase();
+    if (lg.topics && lg.topics.length === 4) {
+      byAddr[a] = byAddr[a] || { count: 0, topics: {} };
+      byAddr[a].count++;
+      byAddr[a].topics[t] = (byAddr[a].topics[t] || 0) + 1;
+    }
+  }
+  return {
+    ok: true, head, windowBlocks: win, logsSampled: logs.length,
+    topTopics: Object.entries(byTopic).sort((a, b) => b[1] - a[1]).slice(0, 12),
+    threeIndexedCandidates: Object.entries(byAddr).sort((a, b) => b[1].count - a[1].count).slice(0, 8)
+      .map(([addr, v]) => ({ addr, logs: v.count, topics: Object.keys(v.topics).slice(0, 4) }))
+  };
 }
 
 export default async (req) => {
