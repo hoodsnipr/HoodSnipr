@@ -292,12 +292,45 @@ export async function diagTopics(blocks = 2000) {
   };
 }
 
+// Same derivation the client uses, exposed for diagnostics:
+//   /v4pools?derive=<poolId>&token=<addr>
+import { keccak256, AbiCoder } from "ethers";
+const FEES=[100,500,3000,10000,20000,25000,2500,0x800000];
+const SPACINGS=[1,10,60,200,2,4,20,50,100,500];
+const ZERO="0x0000000000000000000000000000000000000000";
+const WETHA="0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
+function poolIdOf(c0,c1,fee,ts,hooks){
+  return keccak256(AbiCoder.defaultAbiCoder().encode(
+    ["address","address","uint24","int24","address"],[c0,c1,fee,ts,hooks]));
+}
+export function deriveKey(token, targetId){
+  const t=String(token||"").toLowerCase(), id=String(targetId||"").toLowerCase();
+  if(!/^0x[0-9a-f]{40}$/.test(t) || !/^0x[0-9a-f]{64}$/.test(id)) return null;
+  const sort=(a,b)=> a.toLowerCase()<b.toLowerCase()? [a,b]:[b,a];
+  for(const [base,wrap] of [[ZERO,false],[WETHA,true]]){
+    const [c0,c1]=sort(base,t);
+    for(const fee of FEES) for(const ts of SPACINGS){
+      if(poolIdOf(c0,c1,fee,ts,ZERO).toLowerCase()===id)
+        return { key:{c0:c0.toLowerCase(),c1:c1.toLowerCase(),fee,ts,hooks:ZERO,id}, wrap };
+    }
+  }
+  return null;
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
 
   if (url.searchParams.get("scan") === "1") {
     return json(200, await scanV4(15000));
+  }
+
+  // ?derive=<poolId>&token=<addr> — rebuild the PoolKey with no chain queries
+  const der = url.searchParams.get("derive");
+  if (der) {
+    const tok = url.searchParams.get("token") || "";
+    const r = deriveKey(tok, der);
+    return json(200, r ? { ok: true, ...r } : { ok: false, error: "no standard fee/spacing combination matches this id (custom hooks?)" });
   }
 
   // ?probe=<poolId> — find a pool by its id without knowing the event signature
