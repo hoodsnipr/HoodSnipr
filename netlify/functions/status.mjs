@@ -23,6 +23,14 @@ export default async (req) => {
     out.feedPage = u?.page ?? null;
   } catch (e) { out.universeError = e.message; }
 
+  try {
+    const v4 = await store.get("v4pools", { type: "json" });
+    out.v4 = v4 ? {
+      manager: v4.manager, tokensWithKeys: Object.keys(v4.keys || {}).length,
+      backfillDone: !!v4.done, cursor: v4.lo ?? null
+    } : { tokensWithKeys: 0 };
+  } catch (e) { out.v4Error = e.message; }
+
   if (url.searchParams.get("run") === "1") {
     const r = await rebuild({ deep: url.searchParams.get("deep") === "1" }).catch(e => ({ error: e.message }));
     out.run = { rows: r.rows?.length ?? 0, stats: r.stats, error: r.error };
