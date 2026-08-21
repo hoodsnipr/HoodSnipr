@@ -29,7 +29,7 @@ export async function rpc(method, params) {
     });
     const j = await r.json().catch(() => ({ error: { message: "bad json" } }));
     if (j.error) {
-      if (isLimit(j.error.message) && attempt === 0) { limited = true; await sleep(1200); continue; }
+      if (isLimit(j.error.message) && attempt === 0) { await sleep(1200); continue; }   // retry quietly
       if (isLimit(j.error.message)) limited = true;
       throw new Error(method + ": " + (j.error.message || "rpc error"));
     }

@@ -27,6 +27,17 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   const left = () => budgetMs - (Date.now() - t0);
   const errors = [];
   resetBudget(rpcBudget);
+
+  // Phase deadlines. Backfill used to run FIRST and ate the whole budget on slow
+  // getLogs calls, so liquidity and metadata never executed — which is why the
+  // board stayed at zero rows despite 108k pools being indexed. Discovery is
+  // already far ahead of what we can display, so it now runs LAST with leftovers.
+  const phase = {
+    liq:   Math.floor(budgetMs * 0.42),
+    meta:  Math.floor(budgetMs * 0.66),
+    swaps: Math.floor(budgetMs * 0.84)
+  };
+  const usedBy = ms => (Date.now() - t0) < ms;
   const store = await _store("hoodsnipr-cache");
 
   let blobsOk = true;
@@ -37,56 +48,97 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
   catch (e) { errors.push("eth_blockNumber: " + e.message); return { ok: false, blobsOk, errors }; }
 
-  // ---------- A. enumerate every pool from factory logs ----------
+  // pool index is needed by every phase, so load it up front
   const idx = (await store.get("pools_idx", { type: "json" }).catch(() => null))
-    || { pools: {}, lo: head, done: false, chunk: 1000000 };
-  if (!idx.chunk) idx.chunk = 1000000;
+    || { pools: {}, lo: head, done: false, chunk: 250000 };
+  // this RPC times out on very wide ranges; never grow past what has worked
+  if (!idx.chunk || idx.chunk > 250000) idx.chunk = 250000;
   let chunksRun = 0, poolsFound = 0;
-  let dirty = false;
 
-  while (left() > 4000 && !idx.done && idx.lo > 0) {
-    const size = Math.max(2000, idx.chunk);
-    const from = Math.max(0, idx.lo - size), to = idx.lo;
-    try {
-      const logs = await getLogs(from, to, [[TOPIC.POOL_CREATED, TOPIC.PAIR_CREATED]]);
-      for (const lg of logs) {
-        const ta = addrFromTopic(lg.topics[1]), tb = addrFromTopic(lg.topics[2]);
-        const w = words(lg.data);
-        const isV3 = String(lg.topics[0]).toLowerCase() === TOPIC.POOL_CREATED;
-        const poolWord = isV3 ? w[1] : w[0];
-        if (!poolWord) continue;
-        const pool = "0x" + poolWord.slice(24).toLowerCase();
-        const other = ta === WETH ? tb : (tb === WETH ? ta : null);
-        if (!other) continue;                       // WETH-paired only = snipeable
-        if (!idx.pools[pool]) { idx.pools[pool] = other; poolsFound++; dirty = true; }
-      }
-      chunksRun++;
-      if (idx.chunk < 1000000) idx.chunk = Math.min(1000000, idx.chunk * 2);   // recover
-      idx.lo = from;
-      if (from === 0) idx.done = true;
-    } catch (e) {
-      // too many logs / range too wide — back off and retry the same window
-      idx.chunk = Math.max(2000, Math.floor(idx.chunk / 4));
-      errors.push("poolLogs@" + from + " (chunk->" + idx.chunk + "): " + e.message.slice(0, 80));
-      if (idx.chunk <= 2000) { idx.lo = from; }    // give up on this window, move on
-    }
-    if (dirty) { await store.setJSON("pools_idx", idx).catch(e => errors.push("save pools: " + e.message)); dirty = false; }
-  }
-  if (dirty) await store.setJSON("pools_idx", idx).catch(() => {});
-
-  // ---------- B. swaps -> price + compact volume ----------
+  // swap state is read by the metadata phase (to prioritise traded tokens), so
+  // load it before the phases run; the log SCAN happens later in its own phase.
   const sw = (await store.get("swaps", { type: "json" }).catch(() => null))
     || { cursor: Math.max(0, head - 20000), v: {}, px: {}, fb: -1, hb: -1, chunk: 20000 };
   if (!sw.chunk) sw.chunk = 20000;
   if (!sw.v) sw.v = {};
-
   const fb = fineIdx(), hb = hourIdx();
-  if (sw.fb !== fb) { for (const p in sw.v) sw.v[p].f[fb] = 0; sw.fb = fb; }
-  if (sw.hb !== hb) { for (const p in sw.v) sw.v[p].h[hb] = 0; sw.hb = hb; }
+  if (sw.fb !== fb) { for (const p in sw.v) if (sw.v[p]) sw.v[p].f[fb] = 0; sw.fb = fb; }
+  if (sw.hb !== hb) { for (const p in sw.v) if (sw.v[p]) sw.v[p].h[hb] = 0; sw.hb = hb; }
+
+  // ---------- B2. LIQUIDITY SWEEP over ALL pools ----------
+  // 38k pools were indexed but liquidity was only measured for the handful that
+  // had recent swaps, so everything else looked dead and got filtered out. This
+  // rotates a WETH balanceOf across the whole pool set, which is the cheapest
+  // way to learn which pools are actually alive.
+  const lq = (await store.get("liq", { type: "json" }).catch(() => null)) || { m: {}, cursor: 0, sweeps: 0 };
+  // Discovery walks the chain newest-first, so the natural key order is roughly
+  // newest-first too — exactly what a memecoin sniper wants swept first.
+  const allPools = Object.keys(idx.pools);
+  let liqChecked = 0;
+  if (allPools.length && usedBy(phase.liq) && budgetLeft() > 250) {
+    const SEL = "0x70a08231";
+    let c = lq.cursor || 0;
+    while (usedBy(phase.liq) && budgetLeft() > 300) {
+      const slice = [];
+      for (let i = 0; i < 250; i++) { slice.push(allPools[c % allPools.length]); c++; }
+      const calls = slice.map(p => ({
+        method: "eth_call",
+        params: [{ to: WETH, data: SEL + "000000000000000000000000" + p.slice(2) }, "latest"]
+      }));
+      const res = await rpcBatch(calls).catch(() => []);
+      slice.forEach((p, k) => {
+        const raw = res[k];
+        if (raw == null) return;
+        try {
+          const bal = Number(BigInt(raw)) / 1e18;
+          if (bal > 0.001) lq.m[p] = bal; else delete lq.m[p];
+          liqChecked++;
+        } catch (e) {}
+      });
+      if (c >= allPools.length && (lq.cursor || 0) < allPools.length) { lq.sweeps = (lq.sweeps || 0) + 1; }
+      if (c % allPools.length < 120 && c > allPools.length) break;   // completed a lap
+    }
+    lq.cursor = c % Math.max(1, allPools.length);
+    await store.setJSON("liq", lq).catch(e => errors.push("save liq: " + e.message));
+  }
+
+  // ---------- C. metadata for tokens we can show ----------
+  const tm = (await store.get("tokmeta", { type: "json" }).catch(() => null)) || {};
+  if (usedBy(phase.meta) && budgetLeft() > 100) {
+    // Only tokens whose pool holds real WETH are worth naming. Fetching
+    // metadata for all 38k would take ~10 hours; this targets the few thousand
+    // that are actually tradeable.
+    const need = [];
+    const seen = new Set();
+    const pushTok = p => {
+      const t = idx.pools[p];
+      if (t && !tm[t] && !seen.has(t)) { seen.add(t); need.push(t); }
+    };
+    // 1) pools with recent swaps  2) pools ranked by WETH held
+    for (const p of Object.keys(sw.v)) { pushTok(p); if (need.length >= 300) break; }
+    if (need.length < 300) {
+      const ranked = Object.keys(lq.m).sort((a, b) => lq.m[b] - lq.m[a]);
+      for (const p of ranked) { pushTok(p); if (need.length >= 300) break; }
+    }
+    for (let i = 0; i < need.length && usedBy(phase.meta) && budgetLeft() > 90; i += 30) {
+      const slice = need.slice(i, i + 30);
+      try {
+        const calls = [];
+        for (const a of slice) calls.push(...metaCalls(a));
+        const res = await rpcBatch(calls);
+        slice.forEach((a, k) => {
+          tm[a] = { s: decodeStr(res[k * 3]) || "?", n: decodeStr(res[k * 3 + 1]) || "", d: decodeUint(res[k * 3 + 2]) ?? 18 };
+        });
+      } catch (e) { errors.push("meta: " + e.message.slice(0, 60)); }
+    }
+    await store.setJSON("tokmeta", tm).catch(e => errors.push("save tokmeta: " + e.message));
+  }
+
+  // ---------- B. swaps -> price + compact volume ----------
 
   if (head - sw.cursor > 500000) sw.cursor = head - 200000;   // never fall hopelessly behind
   let swapSlices = 0, swapsSeen = 0;
-  while (left() > 3000 && sw.cursor < head) {
+  while (usedBy(phase.swaps) && sw.cursor < head && budgetLeft() > 20) {
     const to = Math.min(head, sw.cursor + sw.chunk);
     try {
       const logs = await getLogs(sw.cursor + 1, to, [[TOPIC.SWAP_V3, TOPIC.SWAP_V2]]);
@@ -133,72 +185,38 @@ export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   }
   await store.setJSON("swaps", sw).catch(e => errors.push("save swaps: " + e.message));
 
-  // ---------- B2. LIQUIDITY SWEEP over ALL pools ----------
-  // 38k pools were indexed but liquidity was only measured for the handful that
-  // had recent swaps, so everything else looked dead and got filtered out. This
-  // rotates a WETH balanceOf across the whole pool set, which is the cheapest
-  // way to learn which pools are actually alive.
-  const lq = (await store.get("liq", { type: "json" }).catch(() => null)) || { m: {}, cursor: 0, sweeps: 0 };
-  const allPools = Object.keys(idx.pools);
-  let liqChecked = 0;
-  if (allPools.length && left() > 3000 && budgetLeft() > 200) {
-    const SEL = "0x70a08231";
-    let c = lq.cursor || 0;
-    while (left() > 2500 && budgetLeft() > 130) {
-      const slice = [];
-      for (let i = 0; i < 120; i++) { slice.push(allPools[c % allPools.length]); c++; }
-      const calls = slice.map(p => ({
-        method: "eth_call",
-        params: [{ to: WETH, data: SEL + "000000000000000000000000" + p.slice(2) }, "latest"]
-      }));
-      const res = await rpcBatch(calls).catch(() => []);
-      slice.forEach((p, k) => {
-        const raw = res[k];
-        if (raw == null) return;
-        try {
-          const bal = Number(BigInt(raw)) / 1e18;
-          if (bal > 0.001) lq.m[p] = bal; else delete lq.m[p];
-          liqChecked++;
-        } catch (e) {}
-      });
-      if (c >= allPools.length && (lq.cursor || 0) < allPools.length) { lq.sweeps = (lq.sweeps || 0) + 1; }
-      if (c % allPools.length < 120 && c > allPools.length) break;   // completed a lap
-    }
-    lq.cursor = c % Math.max(1, allPools.length);
-    await store.setJSON("liq", lq).catch(e => errors.push("save liq: " + e.message));
-  }
+  // ---------- D. enumerate more pools (LAST — leftovers only) ----------
+  let dirty = false;
 
-  // ---------- C. metadata for tokens we can show ----------
-  const tm = (await store.get("tokmeta", { type: "json" }).catch(() => null)) || {};
-  if (left() > 2000 && budgetLeft() > 100) {
-    // Only tokens whose pool holds real WETH are worth naming. Fetching
-    // metadata for all 38k would take ~10 hours; this targets the few thousand
-    // that are actually tradeable.
-    const need = [];
-    const seen = new Set();
-    const pushTok = p => {
-      const t = idx.pools[p];
-      if (t && !tm[t] && !seen.has(t)) { seen.add(t); need.push(t); }
-    };
-    // 1) pools with recent swaps  2) pools ranked by WETH held
-    for (const p of Object.keys(sw.v)) { pushTok(p); if (need.length >= 300) break; }
-    if (need.length < 300) {
-      const ranked = Object.keys(lq.m).sort((a, b) => lq.m[b] - lq.m[a]);
-      for (const p of ranked) { pushTok(p); if (need.length >= 300) break; }
+  while (left() > 3000 && !idx.done && idx.lo > 0 && budgetLeft() > 20) {
+    const size = Math.max(2000, idx.chunk);
+    const from = Math.max(0, idx.lo - size), to = idx.lo;
+    try {
+      const logs = await getLogs(from, to, [[TOPIC.POOL_CREATED, TOPIC.PAIR_CREATED]]);
+      for (const lg of logs) {
+        const ta = addrFromTopic(lg.topics[1]), tb = addrFromTopic(lg.topics[2]);
+        const w = words(lg.data);
+        const isV3 = String(lg.topics[0]).toLowerCase() === TOPIC.POOL_CREATED;
+        const poolWord = isV3 ? w[1] : w[0];
+        if (!poolWord) continue;
+        const pool = "0x" + poolWord.slice(24).toLowerCase();
+        const other = ta === WETH ? tb : (tb === WETH ? ta : null);
+        if (!other) continue;                       // WETH-paired only = snipeable
+        if (!idx.pools[pool]) { idx.pools[pool] = other; poolsFound++; dirty = true; }
+      }
+      chunksRun++;
+      if (idx.chunk < 250000) idx.chunk = Math.min(250000, Math.floor(idx.chunk * 1.5));  // recover, capped
+      idx.lo = from;
+      if (from === 0) idx.done = true;
+    } catch (e) {
+      // too many logs / range too wide — back off and retry the same window
+      idx.chunk = Math.max(2000, Math.floor(idx.chunk / 4));
+      if (errors.length < 4) errors.push("poolLogs@" + from + " (chunk->" + idx.chunk + "): " + e.message.slice(0, 60));
+      if (idx.chunk <= 2000) { idx.lo = from; }    // give up on this window, move on
     }
-    for (let i = 0; i < need.length && left() > 1500 && budgetLeft() > 90; i += 30) {
-      const slice = need.slice(i, i + 30);
-      try {
-        const calls = [];
-        for (const a of slice) calls.push(...metaCalls(a));
-        const res = await rpcBatch(calls);
-        slice.forEach((a, k) => {
-          tm[a] = { s: decodeStr(res[k * 3]) || "?", n: decodeStr(res[k * 3 + 1]) || "", d: decodeUint(res[k * 3 + 2]) ?? 18 };
-        });
-      } catch (e) { errors.push("meta: " + e.message.slice(0, 60)); }
-    }
-    await store.setJSON("tokmeta", tm).catch(e => errors.push("save tokmeta: " + e.message));
+    if (dirty) { await store.setJSON("pools_idx", idx).catch(e => errors.push("save pools: " + e.message)); dirty = false; }
   }
+  if (dirty) await store.setJSON("pools_idx", idx).catch(() => {});
 
   // ---------- D. board ----------
   const ethUsd = (await store.get("ethusd", { type: "json" }).catch(() => null))?.v || 3400;
