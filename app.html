@@ -481,7 +481,7 @@ function boardRowToPool(r){
     img:r.img||null, price:r.px, mcap:r.mc, liq:r.liq,
     m5:r.m5, h1:r.h1, h6:r.h6, h24:r.h24,
     cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
-    site:r.site, tw:r.tw, tg:r.tg, dec:r.d,
+    site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     created:r.cr? new Date(r.cr).toISOString() : null,
     holders:r.h, dec:r.d, src:"BOARD"
   };
@@ -1022,7 +1022,7 @@ function renderBoard(){
       +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
       +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
+      +'<div class="n">'+(String(p.ver||"").toLowerCase()==="v4"?'<span style="color:var(--gold)">V4</span> · ':'')+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -1041,9 +1041,10 @@ function renderBoard(){
     var c=state.chain||{};
     if(state.boardWarming){
       var cc=state.chain||{};
-      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer warming up.</span> '
-        +(cc.poolsIndexed? cc.poolsIndexed.toLocaleString()+' pools found on-chain; ' : '')
-        +'scanning which hold liquidity — the board fills in over the next few minutes.';
+      tn.innerHTML='<span style="color:var(--gold)">⚙️ Indexing Robinhood Chain.</span> '
+        +(cc.poolsIndexed? cc.poolsIndexed.toLocaleString()+' pools discovered; ' : '')
+        +(cc.marketTokens? cc.marketTokens.toLocaleString()+' priced so far — ' : '')
+        +'the board fills in over the next several minutes.';
       return;
     }
     tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
@@ -1323,7 +1324,13 @@ async function fire(){
     // ---- quote (route + minOut) ----
     btn.innerHTML='<span class="spin"></span> QUOTING UNISWAP…';
     var best = await bestQuote(rpc(), p.baseToken, netWei);
-    if(!best) throw new Error("No Uniswap v3 WETH pool found for $"+p.sym+" — it may still be on a launchpad bonding curve or v4-only");
+    if(!best){
+      // v4 pools live in a singleton PoolManager and are NOT reachable through
+      // SwapRouter02 — be explicit rather than failing with a vague message.
+      if((p.ver||"").toLowerCase()==="v4")
+        throw new Error("$"+p.sym+" trades on Uniswap v4, which needs the UniversalRouter — v4 sniping isn't wired up yet. Nothing was charged.");
+      throw new Error("No Uniswap v3 WETH pool for $"+p.sym+" — it may still be on a launchpad bonding curve. Nothing was charged.");
+    }
     var minOut = best.out - (best.out * BigInt(modal.slip) / 10000n);
     var dec = (modal.quote && modal.quote.dec) || await tokenDecimals(rpc(), p.baseToken);
 
