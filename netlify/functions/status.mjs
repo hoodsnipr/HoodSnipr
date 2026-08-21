@@ -23,13 +23,20 @@ export default async (req) => {
 
   try {
     const sw = await store.get("swaps", { type: "json" });
-    out.poolsWithVolume = sw ? Object.keys(sw.vol || {}).length : 0;
+    out.poolsWithVolume = sw ? Object.keys(sw.v || sw.vol || {}).length : 0;
     out.swapCursor = sw?.cursor ?? null;
   } catch (e) { out.swapsError = e.message; }
 
+  try {
+    const lq = await store.get("liq", { type: "json" });
+    out.poolsWithLiquidity = lq ? Object.keys(lq.m || {}).length : 0;
+    out.liqSweepCursor = lq?.cursor ?? null;
+    out.liqSweepsCompleted = lq?.sweeps ?? 0;
+  } catch (e) { out.liqError = e.message; }
+
   // ?run=1 forces an indexing step right now and reports what happened
   if (url.searchParams.get("run") === "1") {
-    out.run = await runIndex({ budgetMs: 20000 }).catch(e => ({ fatal: e.message }));
+    out.run = await runIndex({ budgetMs: 20000, rpcBudget: 900 }).catch(e => ({ fatal: e.message }));
   }
 
   return new Response(JSON.stringify(out, null, 2), {

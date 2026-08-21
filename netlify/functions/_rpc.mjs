@@ -4,27 +4,61 @@
 const RPC = "https://rpc.mainnet.chain.robinhood.com";
 
 let id = 0;
+
+// Robinhood's public RPC throttles us ("Rate Limit Hit, limit will reset in 60
+// seconds"), and batching counts per sub-call — not per HTTP request. So every
+// run gets a hard call budget, and we back off instead of hammering.
+let budget = 1500;
+let spent = 0;
+let limited = false;
+export function resetBudget(n = 1500) { budget = n; spent = 0; limited = false; }
+export function budgetLeft() { return Math.max(0, budget - spent); }
+export function rpcSpent() { return spent; }
+export function wasLimited() { return limited; }
+function spend(n) { spent += n; }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function isLimit(msg) { return /rate limit|too many requests|429/i.test(String(msg || "")); }
+
 export async function rpc(method, params) {
-  const r = await fetch(RPC, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params })
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(method + ": " + (j.error.message || "rpc error"));
-  return j.result;
+  if (budgetLeft() <= 0) throw new Error("rpc budget exhausted");
+  spend(1);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(RPC, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params })
+    });
+    const j = await r.json().catch(() => ({ error: { message: "bad json" } }));
+    if (j.error) {
+      if (isLimit(j.error.message) && attempt === 0) { limited = true; await sleep(1200); continue; }
+      if (isLimit(j.error.message)) limited = true;
+      throw new Error(method + ": " + (j.error.message || "rpc error"));
+    }
+    return j.result;
+  }
+  throw new Error(method + ": rate limited");
 }
 
 // batched call — one HTTP round trip for many reads
 export async function rpcBatch(calls) {
   if (!calls.length) return [];
+  if (budgetLeft() <= 0) return new Array(calls.length).fill(null);
+  if (calls.length > budgetLeft()) calls = calls.slice(0, budgetLeft());
+  spend(calls.length);
   const body = calls.map((c, i) => ({ jsonrpc: "2.0", id: i, method: c.method, params: c.params }));
   const r = await fetch(RPC, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
-  const j = await r.json();
+  const j = await r.json().catch(() => null);
   const out = new Array(calls.length).fill(null);
-  if (Array.isArray(j)) for (const item of j) if (!item.error) out[item.id] = item.result;
+  if (Array.isArray(j)) {
+    for (const item of j) {
+      if (item.error) { if (isLimit(item.error.message)) limited = true; continue; }
+      out[item.id] = item.result;
+    }
+  } else if (j && j.error && isLimit(j.error.message)) {
+    limited = true;
+  }
   return out;
 }
 

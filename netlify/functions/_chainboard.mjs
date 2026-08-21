@@ -127,7 +127,9 @@ export function buildChainRows({ poolsIdx, swaps, tokmeta, ethUsd, liqMap, overl
     const ov = (overlay || {})[tok] || {};
     if (!px && ov.px) px = ov.px;
 
-    const hasSomething = h24 > 0 || h6 > 0 || h1 > 0 || m5 > 0 || liq > 50;
+    // A pool holding real WETH is tradeable even if we haven't recorded a swap
+    // for it yet (volume history builds over the first 24h of indexing).
+    const hasSomething = h24 > 0 || h6 > 0 || h1 > 0 || m5 > 0 || liq > 25;
     if (!hasSomething) continue;
 
     const row = {

@@ -13,7 +13,8 @@
 //     (5-min) + 24 hourly buckets per pool = ~576KB. Same accuracy for
 //     5M/1H/6H/24H, 90x smaller.
 import { store as _store, storeMode } from "./_store.mjs";
-import { rpc, rpcBatch, getLogs, TOPIC, addrFromTopic, words, toInt256, metaCalls, decodeStr, decodeUint } from "./_rpc.mjs";
+import { rpc, rpcBatch, getLogs, TOPIC, addrFromTopic, words, toInt256, metaCalls, decodeStr, decodeUint,
+         resetBudget, budgetLeft, rpcSpent, wasLimited } from "./_rpc.mjs";
 import { buildChainRows, poolLiquidity } from "./_chainboard.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
@@ -21,10 +22,11 @@ const FINE = 12, HOURS = 24;            // 12x5min = 1h, 24x1h = 24h
 const fineIdx = () => Math.floor(Date.now() / 300000) % FINE;
 const hourIdx = () => Math.floor(Date.now() / 3600000) % HOURS;
 
-export async function runIndex({ budgetMs = 20000 } = {}) {
+export async function runIndex({ budgetMs = 20000, rpcBudget = 1200 } = {}) {
   const t0 = Date.now();
   const left = () => budgetMs - (Date.now() - t0);
   const errors = [];
+  resetBudget(rpcBudget);
   const store = await _store("hoodsnipr-cache");
 
   let blobsOk = true;
@@ -131,20 +133,60 @@ export async function runIndex({ budgetMs = 20000 } = {}) {
   }
   await store.setJSON("swaps", sw).catch(e => errors.push("save swaps: " + e.message));
 
+  // ---------- B2. LIQUIDITY SWEEP over ALL pools ----------
+  // 38k pools were indexed but liquidity was only measured for the handful that
+  // had recent swaps, so everything else looked dead and got filtered out. This
+  // rotates a WETH balanceOf across the whole pool set, which is the cheapest
+  // way to learn which pools are actually alive.
+  const lq = (await store.get("liq", { type: "json" }).catch(() => null)) || { m: {}, cursor: 0, sweeps: 0 };
+  const allPools = Object.keys(idx.pools);
+  let liqChecked = 0;
+  if (allPools.length && left() > 3000 && budgetLeft() > 200) {
+    const SEL = "0x70a08231";
+    let c = lq.cursor || 0;
+    while (left() > 2500 && budgetLeft() > 130) {
+      const slice = [];
+      for (let i = 0; i < 120; i++) { slice.push(allPools[c % allPools.length]); c++; }
+      const calls = slice.map(p => ({
+        method: "eth_call",
+        params: [{ to: WETH, data: SEL + "000000000000000000000000" + p.slice(2) }, "latest"]
+      }));
+      const res = await rpcBatch(calls).catch(() => []);
+      slice.forEach((p, k) => {
+        const raw = res[k];
+        if (raw == null) return;
+        try {
+          const bal = Number(BigInt(raw)) / 1e18;
+          if (bal > 0.001) lq.m[p] = bal; else delete lq.m[p];
+          liqChecked++;
+        } catch (e) {}
+      });
+      if (c >= allPools.length && (lq.cursor || 0) < allPools.length) { lq.sweeps = (lq.sweeps || 0) + 1; }
+      if (c % allPools.length < 120 && c > allPools.length) break;   // completed a lap
+    }
+    lq.cursor = c % Math.max(1, allPools.length);
+    await store.setJSON("liq", lq).catch(e => errors.push("save liq: " + e.message));
+  }
+
   // ---------- C. metadata for tokens we can show ----------
   const tm = (await store.get("tokmeta", { type: "json" }).catch(() => null)) || {};
-  if (left() > 2000) {
-    // prioritise tokens that actually traded
-    const active = Object.keys(sw.v).map(p => idx.pools[p]).filter(Boolean);
+  if (left() > 2000 && budgetLeft() > 100) {
+    // Only tokens whose pool holds real WETH are worth naming. Fetching
+    // metadata for all 38k would take ~10 hours; this targets the few thousand
+    // that are actually tradeable.
     const need = [];
-    for (const t of active) if (t && !tm[t] && !need.includes(t)) { need.push(t); if (need.length >= 60) break; }
-    if (need.length < 60) {
-      for (const p in idx.pools) {
-        const t = idx.pools[p];
-        if (t && !tm[t] && !need.includes(t)) { need.push(t); if (need.length >= 60) break; }
-      }
+    const seen = new Set();
+    const pushTok = p => {
+      const t = idx.pools[p];
+      if (t && !tm[t] && !seen.has(t)) { seen.add(t); need.push(t); }
+    };
+    // 1) pools with recent swaps  2) pools ranked by WETH held
+    for (const p of Object.keys(sw.v)) { pushTok(p); if (need.length >= 300) break; }
+    if (need.length < 300) {
+      const ranked = Object.keys(lq.m).sort((a, b) => lq.m[b] - lq.m[a]);
+      for (const p of ranked) { pushTok(p); if (need.length >= 300) break; }
     }
-    for (let i = 0; i < need.length && left() > 1500; i += 30) {
+    for (let i = 0; i < need.length && left() > 1500 && budgetLeft() > 90; i += 30) {
       const slice = need.slice(i, i + 30);
       try {
         const calls = [];
@@ -160,11 +202,9 @@ export async function runIndex({ budgetMs = 20000 } = {}) {
 
   // ---------- D. board ----------
   const ethUsd = (await store.get("ethusd", { type: "json" }).catch(() => null))?.v || 3400;
-  let liqMap = {};
-  if (left() > 1500) {
-    const active = Object.keys(sw.v).slice(0, 400);
-    liqMap = await poolLiquidity(active, ethUsd).catch(() => ({}));
-  }
+  // liquidity comes from the swept map (WETH held x2 x price), no extra calls
+  const liqMap = {};
+  for (const p of Object.keys(lq.m)) liqMap[p] = lq.m[p] * 2 * ethUsd;
   const overlay = (await store.get("overlay", { type: "json" }).catch(() => null)) || {};
   const rows = buildChainRows({ poolsIdx: idx, swaps: sw, tokmeta: tm, ethUsd, liqMap, overlay });
 
@@ -178,7 +218,8 @@ export async function runIndex({ budgetMs = 20000 } = {}) {
       poolsActive: Object.keys(sw.v).length,
       tokensCreated: Object.keys(tm).length,
       backfillDone: !!idx.done, backfillCursor: idx.lo, backfillChunk: idx.chunk,
-      swapCursor: sw.cursor, head, vol24, liq, ethUsd
+      swapCursor: sw.cursor, head, vol24, liq, ethUsd,
+      poolsWithLiq: Object.keys(lq.m).length, liqSweeps: lq.sweeps || 0
     }
   };
   await store.setJSON("board2", payload).catch(e => errors.push("save board: " + e.message));
@@ -191,6 +232,9 @@ export async function runIndex({ budgetMs = 20000 } = {}) {
     tokensWithMeta: Object.keys(tm).length,
     boardRows: rows.length,
     backfillDone: !!idx.done, backfillCursor: idx.lo, backfillChunk: idx.chunk,
+    poolsWithLiq: Object.keys(lq.m).length,
+    liqChecked, liqCursor: lq.cursor, liqSweeps: lq.sweeps || 0,
+    rpcCalls: rpcSpent(), rpcLimited: wasLimited(),
     msUsed: Date.now() - t0, errors
   };
 }
