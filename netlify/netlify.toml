@@ -1,0 +1,38 @@
+# HoodSnipr — Netlify config
+[build]
+  publish = "."
+  # Must NOT be empty: with no build command Netlify can skip `npm install`,
+  # which makes every function that imports a package fail to bundle (404).
+  command = "npm install --no-audit --no-fund"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Explicit functions config. Netlify can fail to auto-detect the functions
+# directory when the publish dir is the repo root — declaring it here (plus the
+# bundler and Node version) removes the guesswork.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# /api/foo -> /.netlify/functions/foo
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    # v0.2: plain JS everywhere — no unsafe-eval needed. Keep it that way.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://api.geckoterminal.com https://api.dexscreener.com https://rpc.mainnet.chain.robinhood.com https://robinhoodchain.blockscout.com https://cdnjs.cloudflare.com; frame-src https://www.geckoterminal.com https://dexscreener.com; frame-ancestors 'self'"
+
+[[headers]]
+  for = "/favicon.svg"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"

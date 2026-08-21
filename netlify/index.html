@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoodSnipr — Every trending token. One arrow away.</title>
+<meta name="description" content="Snipe trending tokens on Robinhood Chain. 0.25% fee. $QUIVR powered.">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#07090B">
+<meta property="og:title" content="HoodSnipr — Every trending token. One arrow away.">
+<meta property="og:description" content="The sniping terminal for Robinhood Chain. 0.25% fee. $QUIVR powered.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;800&family=Space+Grotesk:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --void:#07090B; --panel:#0E1114; --panel2:#141920; --line:#1E252C;
+  --green:#00C805; --green-dim:rgba(0,200,5,.14); --green-glow:rgba(0,200,5,.45);
+  --red:#FF5000; --bone:#EDF3EE; --mute:#76807C; --gold:#FFD166;
+  --disp:'Unbounded',sans-serif; --body:'Space Grotesk',sans-serif; --mono:'DM Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--void);color:var(--bone);font-family:var(--body);overflow-x:hidden;
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
+}
+::selection{background:var(--green);color:#000}
+a{color:inherit}
+button{font-family:inherit;cursor:pointer;border:none}
+
+/* ===== grain + vignette (scope glass) ===== */
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:90;
+  background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%);
+}
+.scanline{
+  position:fixed;inset:0;pointer-events:none;z-index:91;opacity:.05;
+  background:repeating-linear-gradient(0deg, transparent 0 2px, #00C805 2px 3px);
+}
+
+/* ===== THE RETICLE — follows the cursor across the whole page ===== */
+#reticle{
+  position:fixed;top:0;left:0;width:120px;height:120px;margin:-60px 0 0 -60px;
+  pointer-events:none;z-index:95;opacity:0;transition:opacity .4s;
+  will-change:transform;
+}
+#reticle.on{opacity:.95}
+
+/* native cursor hidden only on real pointers — the reticle IS the cursor */
+@media (pointer:fine){
+  body.scoped, body.scoped *{cursor:none}
+  /* keep a real cursor where precision or text entry matters */
+  body.scoped input, body.scoped textarea, body.scoped select{cursor:auto}
+  body.scoped input[type=range]{cursor:pointer}
+}
+/* exact-position center dot — zero lag, this is what you actually aim with */
+#dot{
+  position:fixed;top:0;left:0;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:99px;
+  background:var(--green);box-shadow:0 0 8px var(--green-glow);
+  pointer-events:none;z-index:97;opacity:0;transition:opacity .3s,width .12s,height .12s,margin .12s;
+  will-change:transform;
+}
+#dot.on{opacity:1}
+#dot.hot{width:13px;height:13px;margin:-6.5px 0 0 -6.5px;background:var(--gold);box-shadow:0 0 12px rgba(255,209,102,.6)}
+/* cursor toggle — escape hatch, bottom-right of HUD */
+#cursorToggle{
+  position:fixed;bottom:34px;right:16px;z-index:93;background:transparent;
+  border:1px solid var(--line);color:var(--mute);border-radius:99px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;padding:6px 11px;opacity:.5;
+  transition:opacity .2s,border-color .2s,color .2s;
+}
+#cursorToggle:hover{opacity:1;border-color:var(--green);color:var(--green)}
+@media (pointer:coarse){#cursorToggle{display:none}}
+#reticle svg{width:100%;height:100%;filter:drop-shadow(0 0 6px var(--green-glow))}
+#reticle .rr{transform-origin:center;animation:spin 14s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#retLabel{
+  position:absolute;top:100%;left:50%;transform:translateX(-50%);
+  font-family:var(--mono);font-size:9px;color:var(--green);letter-spacing:.14em;white-space:nowrap;
+}
+
+/* ===== HUD corners ===== */
+.hud{position:fixed;font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.12em;z-index:92;pointer-events:none;opacity:.8}
+.hud b{color:var(--bone);font-weight:500}
+#hudTL{top:14px;left:16px}
+#hudTR{top:14px;right:16px;text-align:right}
+#hudBL{bottom:14px;left:16px}
+#hudBR{bottom:14px;right:16px;text-align:right}
+@media(max-width:640px){#hudBL,#hudBR{display:none}}
+
+/* ===== nav ===== */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:80;display:flex;justify-content:center;
+  padding:calc(24px + env(safe-area-inset-top)) 12px 0;
+}
+.navpill{
+  display:flex;align-items:center;gap:18px;background:rgba(14,17,20,.8);backdrop-filter:blur(10px);
+  border:1px solid var(--line);border-radius:99px;padding:9px 18px;
+}
+.navpill .logo{display:flex;align-items:center;gap:8px;font-family:var(--disp);font-weight:800;font-size:13px}
+.navpill .logo span{color:var(--green)}
+.navpill a{font-family:var(--mono);font-size:11px;color:var(--mute);text-decoration:none;letter-spacing:.08em}
+.navpill a:hover{color:var(--green)}
+.navpill .cta{background:var(--green);color:#000;font-weight:700;font-size:11px;padding:8px 14px;border-radius:99px;text-decoration:none;font-family:var(--body);letter-spacing:.02em}
+@media(max-width:640px){.navpill a:not(.cta){display:none}}
+
+/* ===== HERO ===== */
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;position:relative;padding:110px 18px 60px}
+.bootline{font-family:var(--mono);font-size:11px;color:var(--green);letter-spacing:.18em;min-height:16px;margin-bottom:26px}
+.bootline .cur{animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.hero h1{
+  font-family:var(--disp);font-weight:800;font-size:clamp(30px,7.4vw,74px);line-height:1.04;letter-spacing:-.01em;
+}
+.hero h1 .g{color:var(--green);text-shadow:0 0 34px var(--green-glow)}
+.hero .sub{color:var(--mute);font-size:clamp(14px,2vw,17px);max-width:520px;margin:22px auto 0;line-height:1.6}
+.hero .btns{display:flex;gap:12px;margin-top:34px;flex-wrap:wrap;justify-content:center}
+.btn-g{background:var(--green);color:#000;font-weight:700;font-size:15px;padding:15px 28px;border-radius:14px;text-decoration:none;box-shadow:0 0 30px rgba(0,200,5,.25);transition:transform .15s}
+.btn-g:hover{transform:translateY(-2px)}
+.btn-o{background:transparent;color:var(--green);border:1.5px solid var(--green);font-weight:700;font-size:15px;padding:15px 28px;border-radius:14px;text-decoration:none;transition:background .15s}
+.btn-o:hover{background:var(--green-dim)}
+.chainbadge{
+  display:inline-flex;align-items:center;gap:8px;margin-top:30px;font-family:var(--mono);font-size:11px;
+  color:var(--mute);border:1px solid var(--line);padding:8px 16px;border-radius:99px;letter-spacing:.1em;
+}
+.chainbadge i{width:7px;height:7px;border-radius:99px;background:var(--green);animation:blink 1.6s infinite;display:inline-block;font-style:normal}
+
+/* hero mega-scope behind text */
+.megascope{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:.13}
+.megascope svg{width:min(88vw,760px);height:auto}
+.megascope .ring{transform-origin:center;animation:spin 40s linear infinite}
+.megascope .ring2{transform-origin:center;animation:spin 28s linear infinite reverse}
+
+/* ===== tape ===== */
+.tape{overflow:hidden;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--panel);padding:11px 0}
+.tape-in{display:flex;width:max-content;animation:tape 30s linear infinite}
+@keyframes tape{to{transform:translateX(-50%)}}
+.tape span{font-family:var(--mono);font-size:12px;padding:0 26px;white-space:nowrap;color:var(--mute)}
+.tape .u{color:var(--green)} .tape .d{color:var(--red)} .tape b{color:var(--bone);font-weight:500}
+
+/* ===== sections ===== */
+section{max-width:1020px;margin:0 auto;padding:110px 20px}
+.eyebrow{font-family:var(--mono);font-size:11px;color:var(--green);letter-spacing:.22em;margin-bottom:14px}
+.acq{position:relative;display:inline-block;padding:6px 14px}
+.acq h2{font-family:var(--disp);font-weight:800;font-size:clamp(24px,4.6vw,44px);letter-spacing:-.01em;line-height:1.1}
+.acq .ck{position:absolute;width:16px;height:16px;border:2px solid var(--green);opacity:0;transition:all .5s cubic-bezier(.2,1.3,.4,1)}
+.acq .c1{top:0;left:0;border-right:none;border-bottom:none}
+.acq .c2{top:0;right:0;border-left:none;border-bottom:none}
+.acq .c3{bottom:0;left:0;border-right:none;border-top:none}
+.acq .c4{bottom:0;right:0;border-left:none;border-top:none}
+.acq.locked .ck{opacity:1}
+.acq.locked .c1{top:-6px;left:-6px}.acq.locked .c2{top:-6px;right:-6px}
+.acq.locked .c3{bottom:-6px;left:-6px}.acq.locked .c4{bottom:-6px;right:-6px}
+.acq .tag{
+  position:absolute;top:-22px;right:-8px;font-family:var(--mono);font-size:9px;color:var(--green);
+  letter-spacing:.2em;opacity:0;transition:opacity .4s .3s;
+}
+.acq.locked .tag{opacity:1}
+.lead{color:var(--mute);font-size:16px;line-height:1.7;max-width:640px;margin-top:20px}
+.lead b{color:var(--bone)}
+
+/* ===== how (3 shots) ===== */
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:44px}
+.shot{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 22px;position:relative;overflow:hidden;transition:border-color .2s, transform .2s}
+.shot:hover{border-color:var(--green);transform:translateY(-4px)}
+.shot .n{font-family:var(--mono);font-size:11px;color:var(--green);letter-spacing:.16em}
+.shot h3{font-family:var(--disp);font-size:17px;font-weight:600;margin:12px 0 10px}
+.shot p{color:var(--mute);font-size:14px;line-height:1.65}
+.shot .ic{font-size:26px;position:absolute;top:20px;right:20px;opacity:.85}
+
+/* ===== timeframes strip ===== */
+.tfrow{display:flex;gap:10px;margin-top:40px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:4px}
+.tfrow::-webkit-scrollbar{display:none}
+.tfchip{flex:0 0 auto;min-width:112px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 16px;text-align:center;cursor:pointer;transition:all .2s}
+.tfchip:hover,.tfchip.on{border-color:var(--green);background:var(--green-dim)}
+.tfchip .t{font-family:var(--disp);font-weight:800;font-size:22px}
+.tfchip .s{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.12em;margin-top:6px}
+.tfchip.on .t{color:var(--green)}
+#tfReadout{font-family:var(--mono);font-size:12px;color:var(--green);margin-top:16px;letter-spacing:.08em;min-height:18px}
+
+/* ===== live mini board ===== */
+.liveboard{margin-top:16px;background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;min-height:64px}
+.lbrow{display:flex;align-items:center;gap:11px;padding:11px 14px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit;transition:background .15s}
+.lbrow:last-child{border-bottom:none}
+.lbrow:hover{background:var(--panel2)}
+.lbrow .r{font-family:var(--mono);font-size:11px;color:var(--mute);width:20px}
+.lbrow .r.top{color:var(--gold)}
+.lbrow img{width:28px;height:28px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
+.lbrow .t{flex:1;min-width:0}
+.lbrow .t b{font-size:14px;display:block}
+.lbrow .t span{font-size:11px;color:var(--mute)}
+.lbrow .px{text-align:right;font-family:var(--mono);font-size:12px;min-width:78px}
+.lbrow .px .c{font-size:11px}
+.lbrow .vv{text-align:right;font-family:var(--mono);font-size:12px;min-width:64px}
+.lbrow .vv small{display:block;font-size:9px;color:var(--mute);letter-spacing:.1em}
+.lbrow .u{color:var(--green)}.lbrow .d{color:var(--red)}
+.lbskel{height:50px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:tape 1.2s linear infinite}
+.lbfoot{display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em;flex-wrap:wrap;gap:8px}
+.lbcta{color:var(--green);text-decoration:none;border:1px solid var(--line);border-radius:99px;padding:7px 14px}
+.lbcta:hover{border-color:var(--green)}
+@media(max-width:560px){.lbrow .vv{display:none}}
+
+/* ===== fee calculator ===== */
+.calc{background:linear-gradient(150deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:22px;padding:32px 28px;margin-top:44px}
+.calc .row{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
+.calc label{font-family:var(--mono);font-size:11px;color:var(--mute);letter-spacing:.14em}
+.calc .big{font-family:var(--mono);font-size:30px;color:var(--bone)}
+.calc .big em{font-style:normal;color:var(--green)}
+input[type=range]{width:100%;margin:18px 0 26px;accent-color:var(--green);height:4px}
+.tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.tier{background:var(--void);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center;cursor:pointer;transition:all .15s}
+.tier:hover{border-color:var(--green)}
+.tier.on{border-color:var(--green);background:var(--green-dim);box-shadow:0 0 18px rgba(0,200,5,.12)}
+.tier .tn{font-weight:700;font-size:13px}
+.tier .tr{font-family:var(--mono);font-size:11px;color:var(--mute);margin-top:3px}
+.tier .tf{font-family:var(--mono);font-size:15px;color:var(--green);margin-top:6px}
+.calcout{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:22px}
+.co{background:var(--void);border:1px solid var(--line);border-radius:12px;padding:14px}
+.co .k{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em}
+.co .v{font-family:var(--mono);font-size:17px;margin-top:6px}
+.co .v.g{color:var(--green)} .co .v.gold{color:var(--gold)}
+
+/* ===== quivr band ===== */
+.quivr{background:radial-gradient(ellipse 90% 70% at 50% 0%, rgba(0,200,5,.09), transparent 65%)}
+.qstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:40px}
+.qs{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
+.qs .k{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.16em}
+.qs .v{font-family:var(--disp);font-weight:600;font-size:19px;margin-top:8px}
+.qs .s{font-size:12px;color:var(--mute);margin-top:4px}
+
+/* ===== roadmap = range markers ===== */
+.range{margin-top:50px;position:relative;padding-left:34px}
+.range::before{content:"";position:absolute;left:10px;top:6px;bottom:6px;width:2px;background:linear-gradient(var(--green),var(--line))}
+.rm{position:relative;padding:0 0 40px}
+.rm::before{
+  content:"";position:absolute;left:-30px;top:4px;width:14px;height:14px;border-radius:99px;
+  border:2px solid var(--green);background:var(--void);transition:background .3s, box-shadow .3s;
+}
+.rm.hit::before{background:var(--green);box-shadow:0 0 14px var(--green-glow)}
+.rm .dist{font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.2em}
+.rm h4{font-family:var(--disp);font-size:17px;font-weight:600;margin:6px 0}
+.rm p{color:var(--mute);font-size:14px;line-height:1.6;max-width:560px}
+
+/* ===== footer ===== */
+footer{border-top:1px solid var(--line);padding:50px 20px 90px;text-align:center}
+footer .fx{font-family:var(--mono);font-size:11px;color:var(--mute);letter-spacing:.1em;line-height:2}
+footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;line-height:1.7}
+
+.reveal{opacity:0;transform:translateY(26px);transition:opacity .7s, transform .7s}
+.reveal.in{opacity:1;transform:none}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation:none!important;transition:none!important}
+  .reveal{opacity:1;transform:none}
+  #reticle{display:none}
+}
+</style>
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<!-- cursor reticle -->
+<div id="reticle" aria-hidden="true">
+  <svg viewBox="0 0 120 120">
+    <g class="rr">
+      <circle cx="60" cy="60" r="44" fill="none" stroke="#00C805" stroke-width="1.6" stroke-dasharray="8 10"/>
+    </g>
+    <circle cx="60" cy="60" r="27" fill="none" stroke="#00C805" stroke-width="1.4"/>
+    <line x1="60" y1="8"  x2="60" y2="26" stroke="#00C805" stroke-width="1.6"/>
+    <line x1="60" y1="94" x2="60" y2="112" stroke="#00C805" stroke-width="1.6"/>
+    <line x1="8"  y1="60" x2="26" y2="60" stroke="#00C805" stroke-width="1.6"/>
+    <line x1="94" y1="60" x2="112" y2="60" stroke="#00C805" stroke-width="1.6"/>
+    <circle cx="60" cy="60" r="2.4" fill="#00C805"/>
+  </svg>
+  <div id="retLabel">TRACKING</div>
+</div>
+<div id="dot" aria-hidden="true"></div>
+<button id="cursorToggle" type="button" aria-label="Toggle mouse cursor visibility">CURSOR: HIDDEN</button>
+
+<!-- HUD -->
+<div class="hud" id="hudTL">HOODSNIPR <b>v0.1</b></div>
+<div class="hud" id="hudTR">NET <b>ROBINHOOD·L2</b></div>
+<div class="hud" id="hudBL">RANGE <b id="hudRange">1000m</b></div>
+<div class="hud" id="hudBR">FEE <b>25bps</b> · <span style="color:var(--gold)">$QUIVR</span></div>
+
+<nav>
+  <div class="navpill">
+    <div class="logo">
+      <svg width="18" height="18" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15" fill="none" stroke="#00C805" stroke-width="4"/><circle cx="20" cy="20" r="4" fill="#00C805"/><line x1="20" y1="0" x2="20" y2="9" stroke="#00C805" stroke-width="4"/><line x1="20" y1="31" x2="20" y2="40" stroke="#00C805" stroke-width="4"/><line x1="0" y1="20" x2="9" y2="20" stroke="#00C805" stroke-width="4"/><line x1="31" y1="20" x2="40" y2="20" stroke="#00C805" stroke-width="4"/></svg>
+      Hood<span>Snipr</span>
+    </div>
+    <a href="#hunt">THE HUNT</a>
+    <a href="#fee">FEE</a>
+    <a href="#quivr">$QUIVR</a>
+    <a href="#range">RANGE</a>
+    <a class="cta" href="./app.html">Launch app</a>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="megascope" aria-hidden="true">
+    <svg viewBox="0 0 400 400">
+      <g class="ring"><circle cx="200" cy="200" r="182" fill="none" stroke="#00C805" stroke-width="1" stroke-dasharray="3 14"/></g>
+      <g class="ring2"><circle cx="200" cy="200" r="150" fill="none" stroke="#00C805" stroke-width="1" stroke-dasharray="30 22"/></g>
+      <circle cx="200" cy="200" r="110" fill="none" stroke="#00C805" stroke-width="1"/>
+      <line x1="200" y1="10" x2="200" y2="120" stroke="#00C805" stroke-width="1"/>
+      <line x1="200" y1="280" x2="200" y2="390" stroke="#00C805" stroke-width="1"/>
+      <line x1="10" y1="200" x2="120" y2="200" stroke="#00C805" stroke-width="1"/>
+      <line x1="280" y1="200" x2="390" y2="200" stroke="#00C805" stroke-width="1"/>
+      <circle cx="200" cy="200" r="3" fill="#00C805"/>
+    </svg>
+  </div>
+
+  <div class="bootline"><span id="boot"></span><span class="cur">▮</span></div>
+  <h1>EVERY TRENDING TOKEN.<br><span class="g">ONE ARROW AWAY.</span></h1>
+  <p class="sub">The sniping terminal for Robinhood Chain. Live volume-ranked targets on 5M · 1H · 6H · 24H · 30D, real charts, one-tap Uniswap execution at 0.25%.</p>
+  <div class="btns">
+    <a class="btn-g" href="./app.html">🏹 Launch HoodSnipr</a>
+    <a class="btn-o" href="#quivr">Hold $QUIVR</a>
+  </div>
+  <div class="chainbadge"><i></i> LIVE ON ROBINHOOD CHAIN · <span id="heroStat">connecting to the chain…</span></div>
+</header>
+
+<!-- ============ TAPE ============ -->
+<div class="tape"><div class="tape-in" id="tape"></div></div>
+
+<!-- ============ HUNT ============ -->
+<section id="hunt">
+  <div class="eyebrow">// 01 · TARGETING SYSTEM</div>
+  <div class="acq"><h2>THE HUNT, IN THREE SHOTS</h2>
+    <span class="ck c1"></span><span class="ck c2"></span><span class="ck c3"></span><span class="ck c4"></span>
+    <span class="tag">◉ TARGET LOCKED</span>
+  </div>
+  <p class="lead">Discovery on a new chain is broken — movers surface on X screenshots hours late. HoodSnipr puts <b>real onchain volume</b> on a board that re-ranks the moment you flip the window.</p>
+
+  <div class="shots">
+    <div class="shot reveal"><div class="ic">📡</div><div class="n">SHOT 01</div><h3>SCAN</h3><p>The trending board ranks every Robinhood Chain token by traded volume. Sparklines, window-relative change, honeypot badges. Top three wear gold.</p></div>
+    <div class="shot reveal"><div class="ic">🎯</div><div class="n">SHOT 02</div><h3>LOCK</h3><p>Flip 5M for scalps or 30D for conviction. The whole board re-sorts instantly — the timeframe is the trigger discipline.</p></div>
+    <div class="shot reveal"><div class="ic">🏹</div><div class="n">SHOT 03</div><h3>LOOSE</h3><p>Quote from Uniswap v3, set your slippage, sign. 0.25% fee to a frozen wallet, the rest swapped. Connected wallet or in-browser burner. Tokens land in your address.</p></div>
+  </div>
+
+  <div class="tfrow" id="tfrow">
+    <div class="tfchip" data-tf="5M"><div class="t">5M</div><div class="s">SCALP WINDOW</div></div>
+    <div class="tfchip on" data-tf="1H"><div class="t">1H</div><div class="s">MOMENTUM</div></div>
+    <div class="tfchip" data-tf="6H"><div class="t">6H</div><div class="s">THE SWING</div></div>
+    <div class="tfchip" data-tf="24H"><div class="t">24H</div><div class="s">DAILY LEADERS</div></div>
+    <div class="tfchip" data-tf="30D"><div class="t">30D</div><div class="s">CONVICTION</div></div>
+  </div>
+  <div id="tfReadout">> SCANNING ROBINHOOD CHAIN…</div>
+  <div class="liveboard" id="liveBoard"></div>
+  <div class="lbfoot">
+    <span id="lbAge">live from the same feed the terminal uses</span>
+    <a class="lbcta" href="./app.html">OPEN TERMINAL →</a>
+  </div>
+</section>
+
+<!-- ============ FEE ============ -->
+<section id="fee">
+  <div class="eyebrow">// 02 · BALLISTICS</div>
+  <div class="acq"><h2>0.25%. FROZEN. THAT'S IT.</h2>
+    <span class="ck c1"></span><span class="ck c2"></span><span class="ck c3"></span><span class="ck c4"></span>
+    <span class="tag">◉ TARGET LOCKED</span>
+  </div>
+  <p class="lead">A quarter of what the big Telegram bots charge. The fee wallet is a <b>frozen constant</b> — hardcoded in the client, immutable in the contract. No admin key can bend the arrow's path. Run the numbers yourself:</p>
+
+  <div class="calc reveal">
+    <div class="row">
+      <label>SNIPE SIZE</label>
+      <div class="big"><em id="ethVal">0.50</em> ETH</div>
+    </div>
+    <input type="range" id="ethRange" min="0.01" max="5" step="0.01" value="0.5" aria-label="Snipe size in ETH">
+    <label style="display:block;margin-bottom:10px">YOUR TIER · HOLD $QUIVR, PAY LESS</label>
+    <div class="tiers" id="tiers">
+      <div class="tier on" data-fee="25"><div class="tn">Free Range</div><div class="tr">0 QUIVR</div><div class="tf">0.25%</div></div>
+      <div class="tier" data-fee="20"><div class="tn">Archer</div><div class="tr">100K</div><div class="tf">0.20%</div></div>
+      <div class="tier" data-fee="15"><div class="tn">Marksman</div><div class="tr">1M</div><div class="tf">0.15%</div></div>
+      <div class="tier" data-fee="10"><div class="tn">Deadeye ★</div><div class="tr">10M</div><div class="tf">0.10%</div></div>
+    </div>
+    <div class="calcout">
+      <div class="co"><div class="k">PLATFORM FEE</div><div class="v" id="oFee">0.001250 ETH</div></div>
+      <div class="co"><div class="k">NET SWAPPED</div><div class="v g" id="oNet">0.498750 ETH</div></div>
+      <div class="co"><div class="k">VS 1% BOTS, YOU KEEP</div><div class="v gold" id="oSave">+0.003750 ETH</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ QUIVR ============ -->
+<section id="quivr" class="quivr">
+  <div class="eyebrow">// 03 · AMMUNITION</div>
+  <div class="acq"><h2>$QUIVR — THE QUIVER<br>HOLDS THE ARROWS</h2>
+    <span class="ck c1"></span><span class="ck c2"></span><span class="ck c3"></span><span class="ck c4"></span>
+    <span class="tag">◉ TARGET LOCKED</span>
+  </div>
+  <p class="lead">The platform token of HoodSnipr, live on Robinhood Chain. No staking locks in v1 — <b>carrying the quiver is enough.</b> Balance is read at quote time; your fee tier applies automatically.</p>
+  <div class="qstats">
+    <div class="qs reveal"><div class="k">SUPPLY</div><div class="v">1,000,000,000</div><div class="s">Fixed. Mint authority burned at deploy.</div></div>
+    <div class="qs reveal"><div class="k">FEE SPLIT</div><div class="v">50% → BUYBACK</div><div class="s">Half of platform fees market-buy $QUIVR. Public txs.</div></div>
+    <div class="qs reveal"><div class="k">LIQUIDITY</div><div class="v">LOCKED</div><div class="s">Lock proof published before trading opens.</div></div>
+    <div class="qs reveal"><div class="k">CHAIN</div><div class="v">ROBINHOOD</div><div class="s">Arbitrum Orbit L2 · settles to Ethereum.</div></div>
+  </div>
+</section>
+
+<!-- ============ RANGE (roadmap) ============ -->
+<section id="range">
+  <div class="eyebrow">// 04 · DOWNRANGE</div>
+  <div class="acq"><h2>RANGE MARKERS</h2>
+    <span class="ck c1"></span><span class="ck c2"></span><span class="ck c3"></span><span class="ck c4"></span>
+    <span class="tag">◉ TARGET LOCKED</span>
+  </div>
+  <div class="range">
+    <div class="rm reveal"><div class="dist">100m · v0.1 — THE SCOPE</div><h4>Prototype live</h4><p>Trending board, wallet + send-ETH flows, fee model, $QUIVR tiers. Simulated data, real architecture.</p></div>
+    <div class="rm reveal"><div class="dist">250m · v0.2 — FIRST BLOOD</div><h4>Live chain data</h4><p>Robinhood Chain RPC + indexer feeds, real wallet snipes through native DEX liquidity, honeypot badges on the board.</p></div>
+    <div class="rm reveal"><div class="dist">500m · v0.3 — THE QUIVER FILLS</div><h4>$QUIVR TGE</h4><p>Token generation, LP lock with published proof, fee tiers switched on, buyback engine humming.</p></div>
+    <div class="rm reveal"><div class="dist">750m · v0.4 — LONGSHOT</div><h4>Send-ETH factory + limit snipes</h4><p>Audited deposit-address factory contract. Trigger snipes when a volume threshold crosses. Mobile PWA.</p></div>
+    <div class="rm reveal"><div class="dist">1000m · v1.0 — DEADEYE</div><h4>Auto-snipe strategies</h4><p>Strategy builder, portfolio tracking, and cross-chain expansion. One Snipr, every chain worth hunting.</p></div>
+  </div>
+</section>
+
+<footer>
+  <svg width="34" height="34" viewBox="0 0 40 40" style="margin-bottom:16px"><circle cx="20" cy="20" r="15" fill="none" stroke="#00C805" stroke-width="3"/><circle cx="20" cy="20" r="4" fill="#00C805"/><line x1="20" y1="0" x2="20" y2="10" stroke="#00C805" stroke-width="3"/><line x1="20" y1="30" x2="20" y2="40" stroke="#00C805" stroke-width="3"/><line x1="0" y1="20" x2="10" y2="20" stroke="#00C805" stroke-width="3"/><line x1="30" y1="20" x2="40" y2="20" stroke="#00C805" stroke-width="3"/></svg>
+  <div class="fx">HOODSNIPR · $QUIVR · ROBINHOOD CHAIN<br>nock. draw. loose.</div>
+  <div style="margin-top:18px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+    <a href="./quivr-paper.pdf" target="_blank" rel="noopener" style="font-family:var(--mono);font-size:11px;color:var(--green);text-decoration:none;border:1px solid var(--line);padding:9px 16px;border-radius:99px;letter-spacing:.1em">📄 THE QUIVR PAPER</a>
+    <a href="./app.html" style="font-family:var(--mono);font-size:11px;color:var(--green);text-decoration:none;border:1px solid var(--line);padding:9px 16px;border-radius:99px;letter-spacing:.1em">🏹 LAUNCH APP</a>
+  </div>
+  <p class="disc">Live market data from GeckoTerminal and DexScreener. Trading memecoins involves total-loss risk. Trending volume is not a signal of quality. The 0.25% fee is non-refundable on transaction failure. Not investment advice. HoodSnipr is an independent platform and is not affiliated with, endorsed by, or connected to Robinhood Markets, Inc.; "Robinhood Chain" identifies only the network on which the platform operates. Verify every transaction in your wallet before signing.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------- boot sequence ---------- */
+  var bootEl = document.getElementById('boot');
+  var lines = [
+    "INITIALIZING SCOPE …",
+    "LINKING ROBINHOOD CHAIN RPC … OK",
+    "PULLING LIVE POOLS · 5M · 1H · 6H · 24H · 30D …",
+    "FEE ROUTE FROZEN @ 25BPS … OK",
+    "SCOPE READY. HAPPY HUNTING."
+  ];
+  if (reduced) { bootEl.textContent = lines[lines.length-1]; }
+  else {
+    var li = 0, ci = 0;
+    (function type(){
+      if (li >= lines.length) return;
+      var line = lines[li];
+      if (ci <= line.length) { bootEl.textContent = line.slice(0, ci++); setTimeout(type, 26); }
+      else { li++; ci = 0; setTimeout(type, li < lines.length ? 420 : 0); }
+    })();
+  }
+
+  /* ---------- cursor reticle ---------- */
+  var ret = document.getElementById('reticle');
+  var retLabel = document.getElementById('retLabel');
+  var dot = document.getElementById('dot');
+  var toggle = document.getElementById('cursorToggle');
+  var fine = window.matchMedia('(pointer: fine)').matches;
+
+  if (fine && !reduced) {
+    var rx = innerWidth/2, ry = innerHeight/2, tx = rx, ty = ry;
+
+    /* The native cursor is hidden and the scope replaces it. Two layers:
+       the outer rings LERP (that's the "settling optic" feel), the center dot
+       tracks EXACTLY. You aim with the dot, so nothing ever feels laggy. */
+    var scoped = true;
+    function setScoped(on){
+      scoped = on;
+      document.body.classList.toggle('scoped', on);
+      toggle.textContent = on ? 'CURSOR: HIDDEN' : 'CURSOR: SHOWN';
+      toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+      if (!on) { ret.classList.remove('on'); dot.classList.remove('on'); }
+    }
+    setScoped(true);
+
+    document.addEventListener('mousemove', function(e){
+      tx = e.clientX; ty = e.clientY;
+      // exact position — no smoothing, this is the real pointer
+      dot.style.transform = 'translate(' + tx + 'px,' + ty + 'px)';
+      if (scoped) { ret.classList.add('on'); dot.classList.add('on'); }
+    }, { passive: true });
+
+    document.addEventListener('mouseleave', function(){ ret.classList.remove('on'); dot.classList.remove('on'); });
+    document.addEventListener('mouseenter', function(){ if (scoped) { ret.classList.add('on'); dot.classList.add('on'); } });
+    // never trap someone with an invisible cursor while a dialog/print/tab-switch is up
+    window.addEventListener('blur', function(){ ret.classList.remove('on'); dot.classList.remove('on'); });
+
+    (function loop(){
+      rx += (tx - rx) * 0.22; ry += (ty - ry) * 0.22;
+      ret.style.transform = 'translate(' + rx + 'px,' + ry + 'px)';
+      requestAnimationFrame(loop);
+    })();
+
+    // recoil on click — the scope kicks
+    document.addEventListener('mousedown', function(){ if (scoped) ret.style.scale = '0.86'; });
+    document.addEventListener('mouseup',   function(){ ret.style.scale = '1'; });
+
+    // reticle reacts to targets
+    document.querySelectorAll('a, button, .tier, .tfchip, .shot').forEach(function(el){
+      el.addEventListener('mouseenter', function(){
+        retLabel.textContent = 'TARGET ACQUIRED'; retLabel.style.color = '#FFD166';
+        ret.style.filter = 'drop-shadow(0 0 10px rgba(0,200,5,.6))'; dot.classList.add('hot');
+      });
+      el.addEventListener('mouseleave', function(){
+        retLabel.textContent = 'TRACKING'; retLabel.style.color = '';
+        ret.style.filter = ''; dot.classList.remove('hot');
+      });
+    });
+
+    // escape hatches: the toggle button, or press Esc
+    toggle.addEventListener('click', function(){ setScoped(!scoped); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') setScoped(false); });
+    // any keyboard navigation restores the cursor — never fight assistive input
+    document.addEventListener('keydown', function(e){ if (e.key === 'Tab') setScoped(false); });
+
+  } else if (toggle) {
+    toggle.style.display = 'none';
+  }
+
+  /* ---------- LIVE DATA (same shared edge cache the terminal uses) ---------- */
+  var API = "/.netlify/functions";
+  var GT = "https://api.geckoterminal.com/api/v2", GT_NET = "robinhood";
+  var WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
+  var STABLES = ["USDC","USDT","USDG","DAI","USDE","FDUSD","USD1","PYUSD","TUSD","USDS","GHO","FRAX","LUSD","BUSD"];
+  var ETHISH = ["WETH","ETH","WSTETH","STETH","RETH","CBETH","EZETH","WEETH"];
+  var STOCKS = ["AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","GOOG","META","AMD","NFLX","COIN","HOOD","SPY","QQQ","PLTR","MSTR","GME","AMC","INTC","JPM","V","MA","DIS","BA","XOM","WMT","KO","PFE","T","F","NIO","BABA","SOFI","RIVN","LCID","CRCL","UNH","LLY","AVGO","ORCL","CRM","ADBE","ABNB","UBER","SHOP","PYPL","SNAP","RDDT","SMCI","ARM","MU","QCOM","TSM","IBIT","GLD","SLV","VOO","VTI"];
+  var live = { pools: [], tf: "1H", ts: 0, stats: null };
+  var TFKEY = { "5M":"m5", "1H":"h1", "6H":"h6", "24H":"h24", "30D":"h24" };
+
+  function fUsd(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return"$"+(n/1e9).toFixed(2)+"B"; if(n>=1e6)return"$"+(n/1e6).toFixed(2)+"M"; if(n>=1e3)return"$"+(n/1e3).toFixed(1)+"K"; return "$"+(+n).toFixed(0); }
+  function fPx(p){ p=+p; if(!isFinite(p))return"—"; if(p>=1)return p.toFixed(3); if(p>=0.01)return p.toFixed(4); if(p>=1e-6)return p.toFixed(7); return p.toExponential(2); }
+  function esc(x){ return String(x==null?"":x).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+  function keep(p){
+    var sym=(p.sym||"").toUpperCase();
+    if(p.baseToken && p.baseToken.toLowerCase()===WETH) return false;
+    if(ETHISH.indexOf(sym)>=0 || STABLES.indexOf(sym)>=0 || STABLES.indexOf(sym.replace(/^W/,""))>=0) return false;
+    var base = /x$/.test(p.sym||"") ? sym.slice(0,-1) : sym;
+    if(STOCKS.indexOf(base)>=0) return false;
+    if(/xstock|tokenized|\betf\b|\bequity\b/i.test((p.name||"")+" "+(p.fullName||""))) return false;
+    return (p.h24>0||p.h1>0||p.m5>0) && p.liq>500;
+  }
+  function fromGT(j, out, seen){
+    var inc={};
+    (j.included||[]).forEach(function(t){ if(t.type==="token") inc[t.id]={img:(t.attributes||{}).image_url||null,sym:(t.attributes||{}).symbol||null,name:(t.attributes||{}).name||null}; });
+    (j.data||[]).forEach(function(p){
+      var a=p.attributes||{}, id=(a.address||"").toLowerCase(); if(!id||seen[id])return; seen[id]=1;
+      var v=a.volume_usd||{}, c=a.price_change_percentage||{}, rel=p.relationships||{};
+      var bt=rel.base_token&&rel.base_token.data?rel.base_token.data.id:null, m=(bt&&inc[bt])||{};
+      out.push({ pool:a.address, sym:m.sym||(a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+        name:m.name||"", fullName:a.name||"", img:(m.img&&m.img!=="missing.png")?m.img:null,
+        baseToken:bt?bt.split("_").pop():null, price:+a.base_token_price_usd||null,
+        m5:+(v.m5||0), h1:+(v.h1||0), h6:+(v.h6||0), h24:+(v.h24||0),
+        cm5:+(c.m5||0), ch1:+(c.h1||0), ch6:+(c.h6||0), ch24:+(c.h24||0),
+        liq:+a.reserve_in_usd||0, mcap:+a.market_cap_usd||+a.fdv_usd||null });
+    });
+  }
+  function fromDS(pairs){
+    var out=[], seen={};
+    (pairs||[]).forEach(function(p){
+      if(!/robinhood/i.test(p.chainId||"")) return;
+      var id=(p.pairAddress||"").toLowerCase(); if(!id||seen[id])return; seen[id]=1;
+      out.push({ pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?", name:(p.baseToken||{}).name||"",
+        fullName:"", img:(p.info&&p.info.imageUrl)||null, baseToken:(p.baseToken||{}).address||null,
+        price:+p.priceUsd||null,
+        m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h6:+(p.volume&&p.volume.h6||0), h24:+(p.volume&&p.volume.h24||0),
+        cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch6:+(p.priceChange&&p.priceChange.h6||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+        liq:+(p.liquidity&&p.liquidity.usd||0), mcap:+p.marketCap||+p.fdv||null });
+    });
+    return out;
+  }
+  async function pullMarket(){
+    var gtOut=[], seen={}, dsOut=[];
+    try{
+      var r=await fetch(API+"/market");
+      if(r.ok){
+        var pay=await r.json();
+        (pay.gtPages||[]).forEach(function(pg){ fromGT(pg,gtOut,seen); });
+        dsOut=fromDS(pay.dsPairs||[]);
+        if(pay.stats) live.stats=pay.stats;
+      } else throw 0;
+    }catch(e){
+      // direct fallback so the page still lives on a plain static host
+      try{
+        var a=await fetch(GT+"/networks/"+GT_NET+"/trending_pools?page=1&include=base_token");
+        if(a.ok) fromGT(await a.json(), gtOut, seen);
+        var b=await fetch(GT+"/networks/"+GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token");
+        if(b.ok) fromGT(await b.json(), gtOut, seen);
+      }catch(e2){}
+    }
+    var map={};
+    gtOut.forEach(function(p){ map[(p.baseToken||p.pool||"").toLowerCase()]=p; });
+    dsOut.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase();
+      if(map[k]){ if(!map[k].img)map[k].img=p.img; if(!map[k].mcap)map[k].mcap=p.mcap; }
+      else map[k]=p; });
+    var all=Object.keys(map).map(function(k){return map[k]}).filter(keep);
+    if(all.length){ live.pools=all; live.ts=Date.now(); }
+    return live.pools;
+  }
+  function avatar(sym){
+    var ch=(sym||"?").charAt(0).toUpperCase();
+    var c=document.createElement("canvas"); c.width=c.height=56;
+    var g=c.getContext("2d");
+    g.fillStyle="#141920"; g.beginPath(); g.arc(28,28,28,0,6.2832); g.fill();
+    g.strokeStyle="#00C805"; g.lineWidth=2.5; g.beginPath(); g.arc(28,28,26,0,6.2832); g.stroke();
+    g.fillStyle="#00C805"; g.font="700 26px 'Space Grotesk',sans-serif"; g.textAlign="center"; g.textBaseline="middle";
+    g.fillText(ch,28,30);
+    return c.toDataURL();
+  }
+  document.addEventListener("error", function(e){
+    var t=e.target;
+    if(t && t.dataset && t.dataset.sym && !t.dataset.fb){ t.dataset.fb="1"; t.src=avatar(t.dataset.sym); }
+  }, true);
+
+  /* ---------- ticker tape (live) ---------- */
+  var tapeEl = document.getElementById('tape');
+  function renderTape(){
+    var top = live.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,14);
+    if(!top.length){ tapeEl.innerHTML='<span>CONNECTING TO ROBINHOOD CHAIN…</span>'; return; }
+    var html='';
+    for(var pass=0; pass<2; pass++){
+      top.forEach(function(t){
+        var up=t.ch24>=0;
+        html += '<span>$'+esc(t.sym)+' <b>'+fPx(t.price)+'</b> <span class="'+(up?'u':'d')+'">'+(up?'▲':'▼')+Math.abs(t.ch24).toFixed(1)+'%</span></span>';
+      });
+      html += '<span>$QUIVR <b style="color:#FFD166">TGE SOON</b> 🏹</span>';
+    }
+    tapeEl.innerHTML = html;
+  }
+
+  /* ---------- live mini board + timeframe chips ---------- */
+  var boardEl = document.getElementById('liveBoard');
+  var readout = document.getElementById('tfReadout');
+  function volOf(p){ return p[TFKEY[live.tf]] || 0; }
+  function chgOf(p){ return live.tf==="5M"?p.cm5 : live.tf==="1H"?p.ch1 : live.tf==="6H"?p.ch6 : p.ch24; }
+  function renderBoard(){
+    if(!live.pools.length){ boardEl.innerHTML='<div class="lbskel"></div><div class="lbskel"></div><div class="lbskel"></div>'; return; }
+    var rows=live.pools.slice().sort(function(a,b){return volOf(b)-volOf(a)}).slice(0,5);
+    boardEl.innerHTML = rows.map(function(p,i){
+      var c=chgOf(p), up=c>=0;
+      return '<a class="lbrow" href="./app.html">'
+        +'<span class="r'+(i<3?' top':'')+'">'+String(i+1).padStart(2,'0')+'</span>'
+        +'<img src="'+(p.img?esc(p.img):avatar(p.sym))+'" data-sym="'+esc(p.sym)+'" alt="" loading="lazy">'
+        +'<span class="t"><b>$'+esc(p.sym)+'</b><span>MC '+fUsd(p.mcap)+'</span></span>'
+        +'<span class="px">$'+fPx(p.price)+'<span class="c '+(up?'u':'d')+'"> '+(up?'+':'')+(+c).toFixed(1)+'%</span></span>'
+        +'<span class="vv">'+fUsd(volOf(p))+'<small>VOL '+live.tf+'</small></span>'
+        +'</a>';
+    }).join('');
+    var age=live.ts? Math.round((Date.now()-live.ts)/1000)+'s ago' : '';
+    var lb=document.getElementById('lbAge');
+    if(lb) lb.textContent = 'live · '+live.pools.length+' tokens tracked · updated '+age;
+  }
+  function typeOut(msg){
+    if(reduced){ readout.textContent=msg; return; }
+    var i=0; readout.textContent='';
+    (function tw(){ if(i<=msg.length){ readout.textContent=msg.slice(0,i++); setTimeout(tw,10); } })();
+  }
+  function updateReadout(){
+    var rows=live.pools.slice().sort(function(a,b){return volOf(b)-volOf(a)});
+    if(!rows.length){ typeOut('> SCANNING ROBINHOOD CHAIN…'); return; }
+    var t=rows[0];
+    typeOut('> RANKING BY '+live.tf+' VOLUME · TOP TARGET: $'+t.sym+' · '+fUsd(volOf(t)));
+  }
+  document.querySelectorAll('.tfchip').forEach(function(chip){
+    chip.addEventListener('click', function(){
+      document.querySelectorAll('.tfchip').forEach(function(c){ c.classList.remove('on'); });
+      chip.classList.add('on');
+      live.tf = chip.getAttribute('data-tf');
+      renderBoard(); updateReadout();
+    });
+  });
+
+  /* ---------- hero stat ---------- */
+  function renderHero(){
+    var el=document.getElementById('heroStat'); if(!el) return;
+    if(!live.pools.length){ el.textContent='connecting to the chain…'; return; }
+    var st=live.stats||{};
+    var v24= st.vol24!=null? st.vol24 : live.pools.reduce(function(a,p){return a+(p.h24||0)},0);
+    var tx = st.txns24? ' · '+(st.txns24>=1e6?(st.txns24/1e6).toFixed(2)+'M':st.txns24>=1e3?(st.txns24/1e3).toFixed(1)+'K':st.txns24)+' 24H TXNS' : '';
+    el.textContent = fUsd(v24)+' 24H VOLUME'+tx+' · '+(st.tokenCount||live.pools.length)+' TOKENS';
+  }
+
+  async function tick(){
+    if(document.hidden) return;
+    await pullMarket();
+    renderTape(); renderBoard(); renderHero();
+    if(!readout.dataset.seeded){ readout.dataset.seeded="1"; updateReadout(); }
+  }
+  renderBoard();
+  tick();
+  setInterval(tick, 20000);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) tick(); });
+
+  /* ---------- fee calculator ---------- */
+  var range = document.getElementById('ethRange');
+  var feeBps = 25;
+  function recalc(){
+    var eth = parseFloat(range.value);
+    document.getElementById('ethVal').textContent = eth.toFixed(2);
+    var fee = eth * feeBps / 10000;
+    var net = eth - fee;
+    var save = eth * 100 / 10000 - fee; // vs 1% bots
+    document.getElementById('oFee').textContent = fee.toFixed(6) + ' ETH';
+    document.getElementById('oNet').textContent = net.toFixed(6) + ' ETH';
+    document.getElementById('oSave').textContent = '+' + save.toFixed(6) + ' ETH';
+  }
+  range.addEventListener('input', recalc);
+  document.querySelectorAll('.tier').forEach(function(t){
+    t.addEventListener('click', function(){
+      document.querySelectorAll('.tier').forEach(function(x){ x.classList.remove('on'); });
+      t.classList.add('on');
+      feeBps = parseInt(t.getAttribute('data-fee'), 10);
+      recalc();
+    });
+  });
+  recalc();
+
+  /* ---------- scroll: reveals, target-lock headings, range markers, HUD range ---------- */
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if (en.isIntersecting) {
+        en.target.classList.add('in');
+        if (en.target.classList.contains('rm')) en.target.classList.add('hit');
+        io.unobserve(en.target);
+      }
+    });
+  }, { threshold: 0.18 });
+  document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+
+  var ioLock = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if (en.isIntersecting) { en.target.classList.add('locked'); ioLock.unobserve(en.target); }
+    });
+  }, { threshold: 0.6 });
+  document.querySelectorAll('.acq').forEach(function(el){ ioLock.observe(el); });
+
+  // HUD range finder counts down with scroll
+  var hudRange = document.getElementById('hudRange');
+  function updRange(){
+    var max = document.documentElement.scrollHeight - innerHeight;
+    var pct = max > 0 ? scrollY / max : 0;
+    hudRange.textContent = Math.max(0, Math.round(1000 - pct * 1000)) + 'm';
+  }
+  document.addEventListener('scroll', updRange, { passive: true });
+  updRange();
+
+  /* ---------- GSAP flourishes ---------- */
+  if (window.gsap && !reduced) {
+    gsap.registerPlugin(ScrollTrigger);
+    gsap.from('.hero h1', { y: 40, opacity: 0, duration: 1, ease: 'power3.out', delay: .2 });
+    gsap.from('.hero .sub, .hero .btns, .chainbadge', { y: 24, opacity: 0, duration: .8, stagger: .12, ease: 'power2.out', delay: .6 });
+    gsap.to('.megascope', {
+      scale: 1.35, opacity: 0.03, ease: 'none',
+      scrollTrigger: { trigger: '.hero', start: 'top top', end: 'bottom top', scrub: true }
+    });
+    gsap.utils.toArray('.qs').forEach(function(el, i){
+      gsap.from(el, { y: 30, opacity: 0, duration: .6, delay: i * .06,
+        scrollTrigger: { trigger: el, start: 'top 85%' } });
+    });
+  }
+})();
+</script>
+</body>
+</html>

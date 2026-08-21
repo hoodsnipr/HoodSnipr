@@ -1,0 +1,2178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>HoodSnipr — live trending on Robinhood Chain</title>
+<meta name="description" content="Live volume-ranked token sniping on Robinhood Chain. 5M/1H/24H/30D. Real charts. 0.25% fee.">
+<meta name="theme-color" content="#0C0E10">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+<style>
+:root{
+  --void:#0C0E10;--panel:#15181C;--panel2:#1B1F24;--line:#242A30;
+  --green:#00C805;--green-dim:rgba(0,200,5,.14);--red:#FF5000;
+  --text:#F0F4F1;--mute:#7C8683;--gold:#FFD166;
+  --body:'Space Grotesk',system-ui,sans-serif;--mono:'DM Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--void);color:var(--text);font-family:var(--body);min-height:100vh;
+  overflow-x:hidden;
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
+}
+/* every horizontal strip scrolls instead of wrapping — no more stacked rows */
+.xscroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.xscroll::-webkit-scrollbar{display:none}
+::selection{background:var(--green);color:#000}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input{font-family:var(--mono);outline:none}
+a{color:inherit}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes pop{0%{transform:scale(.94);opacity:0}100%{transform:scale(1);opacity:1}}
+@keyframes shimmer{to{background-position:-200% 0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+header{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top));
+  border-bottom:1px solid var(--line);position:sticky;top:0;
+  background:rgba(12,14,16,.96);backdrop-filter:blur(10px);z-index:30
+}
+.logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+.logo{min-width:0}
+.logo b{font-weight:700;font-size:19px;letter-spacing:-.02em;white-space:nowrap}
+.logo b span{color:var(--green)}
+.logo .sub{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em}
+.hstat{display:flex;align-items:center;gap:8px}
+.live{font-family:var(--mono);font-size:11px;color:var(--green);display:flex;align-items:center;gap:6px}
+.live i{width:7px;height:7px;border-radius:99px;background:var(--green);animation:pulse 1.8s infinite;display:inline-block}
+.live.err i{background:var(--red);animation:none}
+.wbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:10px 16px;border-radius:99px;white-space:nowrap;min-height:40px}
+.wbtn.on{background:var(--panel2);color:var(--green);border:1px solid var(--green);font-family:var(--mono)}
+.wwrap{position:relative}
+.wmenu{position:absolute;top:calc(100% + 8px);right:0;background:var(--panel2);border:1px solid var(--line);border-radius:14px;min-width:190px;overflow:hidden;box-shadow:0 12px 34px rgba(0,0,0,.5);animation:pop .15s ease-out;z-index:60}
+.wmenu button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:12px 15px;font-size:13px;font-weight:700;color:var(--text)}
+.wmenu button:hover{background:var(--panel)}
+.wmenu button.danger{color:var(--red)}
+.wmenu .who{padding:11px 15px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--mute)}
+
+.toptape{
+  overflow:hidden;border-bottom:1px solid var(--line);
+  background:linear-gradient(90deg,var(--panel),var(--panel2),var(--panel));
+  position:relative;width:100%;display:block;min-height:38px;z-index:19
+}
+.toptape::before,.toptape::after{content:"";position:absolute;top:0;bottom:0;width:32px;z-index:2;pointer-events:none}
+.toptape::before{left:0;background:linear-gradient(90deg,var(--void),transparent)}
+.toptape::after{right:0;background:linear-gradient(270deg,var(--void),transparent)}
+.tt-in{display:flex;width:max-content;animation:slide 42s linear infinite;padding:9px 0}
+.toptape:hover .tt-in{animation-play-state:paused}
+@keyframes slide{to{transform:translateX(-50%)}}
+.tt{display:flex;align-items:center;gap:7px;padding:0 16px;white-space:nowrap;text-decoration:none;color:inherit;border-right:1px solid var(--line)}
+.tt:hover{background:rgba(0,200,5,.06)}
+.tt .n{font-family:var(--mono);font-size:10px;width:16px}
+.tt .n.gold{color:#FFD166}
+.tt img{width:20px;height:20px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
+.tt b{font-size:13px;font-weight:700}
+.tt .p{font-family:var(--mono);font-size:11px;color:var(--mute)}
+.tt .c{font-family:var(--mono);font-size:11px;font-weight:500}
+@media (prefers-reduced-motion: reduce){.tt-in{animation:none;overflow-x:auto}}
+.tabswrap{position:sticky;top:0;z-index:18;background:var(--void);border-bottom:1px solid var(--line)}
+.tabs{
+  display:flex;gap:8px;padding:11px 16px;max-width:960px;margin:0 auto;
+  flex-wrap:nowrap;white-space:nowrap
+}
+.tab{
+  background:transparent;color:var(--mute);border:1px solid var(--line);
+  font-weight:700;font-size:13px;padding:9px 15px;border-radius:99px;
+  flex:0 0 auto;min-height:38px
+}
+.tab.on{background:var(--text);color:#000;border-color:var(--text)}
+main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-inset-bottom))}
+@media(min-width:1024px){ main{padding-left:20px;padding-right:20px} }
+
+.tfbar{display:block;margin:10px 0 12px}
+.tfpills{display:flex;gap:6px;flex-wrap:nowrap;white-space:nowrap;padding-bottom:2px}
+.tf{font-family:var(--mono);font-size:12px;padding:8px 14px;border-radius:9px;border:1px solid var(--line);color:var(--mute);flex:0 0 auto;min-height:36px}
+.tf.on{border-color:var(--green);color:var(--green);background:var(--green-dim)}
+.src{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap}
+.src b{color:var(--green);font-weight:500}
+
+.chainbar{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.chainbar .cb{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 8px;text-align:center;min-width:0}
+.chainbar .k{font-family:var(--mono);font-size:8.5px;color:var(--mute);letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chainbar .v{font-family:var(--mono);font-size:14px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(min-width:700px){ .chainbar .v{font-size:17px} .chainbar .k{font-size:9.5px} }
+.chainbar .sub{font-family:var(--mono);font-size:9px;color:var(--green);margin-top:2px;min-height:11px}
+.chainbar .v.bump{animation:bump .7s ease-out}
+@keyframes bump{0%{color:var(--green);transform:scale(1.16)}100%{color:var(--text);transform:scale(1)}}
+
+.board{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.row{display:flex;align-items:center;gap:10px;padding:12px 12px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s;min-height:62px}
+@media(min-width:700px){ .row{gap:14px;padding:13px 16px} }
+.row:last-child{border-bottom:none}
+.row:hover{background:var(--panel2)}
+.rank{font-family:var(--mono);font-size:11px;color:var(--mute);width:22px;font-weight:500}
+.rank.gold{color:#FFD166;text-shadow:0 0 10px rgba(255,209,102,.35)}
+.rank.silver{color:#C8D2D6}
+.rank.bronze{color:#C97B3C}
+.timg{width:34px;height:34px;border-radius:99px;object-fit:cover;background:var(--panel2);flex:none}
+.timg.lg{width:44px;height:44px}
+.tok{flex:1;min-width:0}
+.tok .s{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:2px}
+.tok .n{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pr{text-align:right;min-width:78px;flex:0 0 auto}
+.pr .p{font-family:var(--mono);font-size:13px}
+.pr .c{font-family:var(--mono);font-size:12px}
+.up{color:var(--green)}.dn{color:var(--red)}
+.vl{text-align:right;min-width:68px;flex:0 0 auto}
+.vl .v{font-family:var(--mono);font-size:12px}
+.vl .k{font-size:10px;color:var(--mute)}
+.snp{color:var(--green);border:1.5px solid var(--green);font-weight:700;font-size:12px;padding:9px 13px;border-radius:99px;transition:all .15s;flex:0 0 auto;min-height:38px}
+.snp:hover{background:var(--green);color:#000}
+@media(max-width:620px){ .vl{display:none} }
+@media(max-width:400px){
+  .rank{display:none}
+  .timg{width:30px;height:30px}
+  .tok .s{font-size:14px}
+  .pr{min-width:70px}
+  .snp{padding:8px 10px;font-size:11px}
+}
+
+.pager{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:12px;flex-wrap:wrap}
+.pager button{font-family:var(--mono);font-size:12px;padding:11px 18px;border-radius:99px;border:1px solid var(--line);color:var(--green);background:transparent;transition:all .15s;min-height:44px}
+.pager button:hover:not(:disabled){border-color:var(--green);background:var(--green-dim)}
+.pager button:disabled{color:var(--mute);opacity:.4;cursor:default}
+.pager .pinfo{font-family:var(--mono);font-size:11px;color:var(--mute);letter-spacing:.06em}
+.pager .more{background:var(--green);color:#000;font-weight:700;border:none;padding:10px 22px}
+.note{font-size:11px;color:var(--mute);text-align:center;margin-top:10px;line-height:1.6}
+.skel{height:54px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--panel) 30%,var(--panel2) 50%,var(--panel) 70%);background-size:200% 100%;animation:shimmer 1.2s linear infinite}
+.progress{font-family:var(--mono);font-size:11px;color:var(--gold);text-align:center;padding:10px}
+
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);display:flex;align-items:flex-end;justify-content:center;z-index:50}
+.modal{
+  background:var(--panel2);border:1px solid var(--line);border-bottom:none;
+  border-radius:20px 20px 0 0;width:100%;max-width:640px;
+  max-height:min(92vh,92dvh);overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:18px 16px calc(30px + env(safe-area-inset-bottom));
+  animation:pop .22s ease-out
+}
+@media(min-width:760px){
+  .modal-bg{align-items:center}
+  .modal{border-radius:20px;border-bottom:1px solid var(--line);max-height:88vh;padding-bottom:26px}
+}
+.mhead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.mhead h2{font-size:18px}
+.mhead .px{font-family:var(--mono);font-size:12px;color:var(--mute)}
+.x{color:var(--mute);font-size:20px;padding:4px 8px}
+.chart{width:100%;height:min(52vh,340px);min-height:240px;border:1px solid var(--line);border-radius:12px;margin-top:12px;background:var(--void)}
+.mstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-top:10px}
+.ms{background:var(--void);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.ms .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.1em}
+.ms .v{font-family:var(--mono);font-size:13px;margin-top:3px}
+
+.paytog{display:flex;gap:8px;margin-top:14px}
+.paytog button{flex:1;padding:10px 0;border-radius:10px;font-weight:700;font-size:13px;background:var(--void);color:var(--mute);border:1px solid var(--line)}
+.paytog button.on{background:var(--green-dim);color:var(--green);border-color:var(--green)}
+.amt{width:100%;margin-top:10px;background:var(--void);border:1px solid var(--line);border-radius:12px;color:var(--text);font-size:20px;padding:13px 14px;min-height:48px}
+.qamt{display:flex;gap:6px;margin-top:8px}
+.qamt button{flex:1;padding:9px 0;background:var(--void);border:1px solid var(--line);border-radius:8px;color:var(--mute);font-family:var(--mono);font-size:12px;min-height:38px}
+.fees{margin-top:12px;background:var(--void);border-radius:12px;padding:11px 13px;font-family:var(--mono);font-size:12px}
+.fees div{display:flex;justify-content:space-between;padding:3px 0}
+.fees .k{color:var(--mute)}
+.fire{width:100%;margin-top:14px;background:var(--green);color:#000;font-weight:700;font-size:16px;padding:14px 0;border-radius:14px}
+.fire:disabled{background:var(--panel);color:var(--mute)}
+.warn{font-size:10px;color:var(--mute);text-align:center;margin-top:9px;line-height:1.6}
+.linkout{display:block;text-align:center;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--mute);text-decoration:none}
+.linkout:hover{color:var(--green)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+@media(min-width:700px){ .card{padding:20px} }
+.card h3{font-size:15px;margin-bottom:10px}
+.frow{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.finput{flex:1;min-width:140px;background:var(--void);border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:16px;padding:11px 12px;min-height:44px}
+.sbtn{background:var(--green);color:#000;font-weight:700;font-size:13px;padding:10px 16px;border-radius:10px}
+.obtn{color:var(--green);border:1px solid var(--green);font-weight:700;font-size:13px;padding:10px 16px;border-radius:10px;text-align:center}
+.dbtn{color:var(--red);border:1px solid var(--red);font-weight:700;font-size:12px;padding:8px 14px;border-radius:10px}
+.addr{font-family:var(--mono);font-size:12px;color:var(--green);word-break:break-all;background:var(--void);padding:9px 11px;border-radius:8px;margin-top:8px}
+.hint{font-size:12px;color:var(--mute);line-height:1.6;margin-top:8px}
+.pfp{width:64px;height:64px;border-radius:99px;background:var(--void);border:2px solid var(--green);object-fit:cover}
+.lrow{display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--line);min-height:58px}
+.lrow:last-child{border-bottom:none}
+.lrow img{width:34px;height:34px;border-radius:99px;object-fit:cover;background:var(--void)}
+.lrow .nm{flex:1;font-weight:700;font-size:14px;min-width:0}
+.lrow .nm .h{font-family:var(--mono);font-size:10px;color:var(--mute);font-weight:400}
+.lrow .pnl{font-family:var(--mono);font-size:14px}
+.pstats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+@media(max-width:560px){ .pstats{grid-template-columns:1fr} }
+.pst{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+.pst .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.14em}
+.pst .v{font-family:var(--mono);font-size:18px;margin-top:5px}
+.pst .s{font-size:10px;color:var(--mute);margin-top:2px}
+.pvchart{height:150px}
+.pvchart svg{width:100%;height:100%;display:block}
+.hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
+.loose:hover{background:var(--red);color:#000}
+.toast{position:fixed;bottom:calc(20px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
+.toast.bad{background:var(--red)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,.3);border-top-color:#000;border-radius:99px;animation:spin .8s linear infinite;vertical-align:-2px}
+.empty{text-align:center;color:var(--mute);padding:40px 16px;font-size:14px}
+canvas.share{display:none}
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="./index.html">
+    <svg width="26" height="26" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15" fill="none" stroke="#00C805" stroke-width="3"/><circle cx="20" cy="20" r="4" fill="#00C805"/><line x1="20" y1="0" x2="20" y2="10" stroke="#00C805" stroke-width="3"/><line x1="20" y1="30" x2="20" y2="40" stroke="#00C805" stroke-width="3"/><line x1="0" y1="20" x2="10" y2="20" stroke="#00C805" stroke-width="3"/><line x1="30" y1="20" x2="40" y2="20" stroke="#00C805" stroke-width="3"/></svg>
+    <span><b>Hood<span>Snipr</span></b><div class="sub">ROBINHOOD CHAIN · LIVE</div></span>
+  </a>
+  <div class="hstat">
+    <div class="live" id="liveDot"><i></i><span id="liveTxt">LIVE</span></div>
+    <div class="wwrap"><button class="wbtn" id="walletBtn" data-action="connect">Connect wallet</button><div id="wmenu"></div></div>
+  </div>
+</header>
+
+<div class="toptape" id="topTape" aria-label="Top 10 trending tokens">
+  <div class="tt-in" id="ttIn"></div>
+</div>
+
+<div class="tabswrap"><div class="tabs xscroll" id="tabs">
+  <button class="tab on" data-tab="board">🎯 Trending</button>
+  <button class="tab" data-tab="new">🆕 New</button>
+  <button class="tab" data-tab="port">💼 Portfolio</button>
+  <button class="tab" data-tab="wallet">👝 Wallets</button>
+  <button class="tab" data-tab="ranks">🏆 Ranks</button>
+</div></div>
+
+<main>
+  <!-- ============ BOARD ============ -->
+  <div id="v-board">
+    <div class="tfbar">
+      <div class="tfpills xscroll" id="tfpills">
+        <button class="tf" data-tf="m5">5M</button>
+        <button class="tf on" data-tf="h1">1H</button>
+        <button class="tf" data-tf="h6">6H</button>
+        <button class="tf" data-tf="h24">24H</button>
+        <button class="tf" data-tf="d30">30D</button>
+      </div>
+      <div class="src"><b id="pageLabel" style="color:var(--gold)">🔥 TRENDING · TOP 50</b> · <span id="ageTxt">…</span></div>
+    </div>
+    <div class="chainbar" id="chainBar">
+      <div class="cb"><div class="k">24H VOLUME</div><div class="v" id="cbVol">…</div></div>
+      <div class="cb"><div class="k">LIQUIDITY</div><div class="v" id="cbLiq">…</div></div>
+      <div class="cb"><div class="k">PAIRS ON CHAIN</div><div class="v" id="cbTokens">…</div><div class="sub" id="cbTokensSub"></div></div>
+    </div>
+    <div class="board" id="board"></div>
+    <div class="pager" id="pager"></div>
+    <div class="note"><span id="trackNote">Tracking the chain…</span><br>Volume ≠ quality — trending is frequently manipulation. Total-loss risk.</div>
+  </div>
+
+  <!-- ============ NEW LAUNCHES ============ -->
+  <div id="v-new" style="display:none">
+    <div class="tfbar"><div class="src">LAUNCHED IN THE LAST HOUR · ROBINHOOD CHAIN</div><div class="src" id="newAge"></div></div>
+    <div class="board" id="newBoard"></div>
+    <div class="note">Fresh pools from GeckoTerminal, same stock/stable/ETH filters. Brand-new tokens are the highest-risk trades on any chain — most go to zero, many are rugs. Snipe accordingly.</div>
+  </div>
+
+  <!-- ============ PORTFOLIO ============ -->
+  <div id="v-port" style="display:none">
+    <div class="pstats" id="pStats"></div>
+    <div class="card" style="padding:14px">
+      <h3 style="margin-bottom:4px">📈 Portfolio value</h3>
+      <div id="pvChart" class="pvchart"></div>
+    </div>
+    <div class="card">
+      <h3>💼 Holdings</h3>
+      <div id="holdBox"><div class="empty">Connect a wallet or arm your burner, then refresh.</div></div>
+      <div class="frow"><button class="obtn" data-action="port-refresh">↻ Refresh holdings</button></div>
+      <p class="hint">Holdings pulled live from Blockscout for both wallets, priced via the trending indexers. LOOSE sells through Uniswap v3 with the same 0.25% fee, taken from the ETH you receive.</p>
+    </div>
+  </div>
+
+  <!-- ============ WALLETS ============ -->
+  <div id="v-wallet" style="display:none">
+    <div class="card">
+      <h3>🔗 Connected wallet</h3>
+      <div id="cwBox"><p class="hint">Connect MetaMask / Rabby / any EVM wallet. HoodSnipr adds Robinhood Chain (4663) automatically.</p>
+      <div class="frow"><button class="sbtn" data-action="connect">Connect wallet</button></div></div>
+    </div>
+    <div class="card">
+      <h3>🏹 HoodSnipr wallet <span style="font-family:var(--mono);font-size:10px;color:var(--gold)">BURNER</span></h3>
+      <p class="hint">A throwaway wallet generated <b>in your browser</b>. Send Robinhood-Chain ETH to it and snipe without connecting anything. Keys never leave this device — HoodSnipr cannot see or recover them. Export the key before clearing browser data, and keep only what you're actively sniping with.</p>
+      <div id="bwBox"></div>
+    </div>
+  </div>
+
+  <!-- ============ RANKS ============ -->
+  <div id="v-ranks" style="display:none">
+    <div class="card">
+      <h3>🏆 PnL leaderboard</h3>
+      <div id="ranksBox"><div class="empty">Loading…</div></div>
+      <p class="hint">Ranked by realized + unrealized PnL from snipes recorded on HoodSnipr, tied to the wallet that made them.</p>
+    </div>
+  </div>
+</main>
+
+<canvas class="share" id="shareCanvas" width="1200" height="630"></canvas>
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script>
+(function(){
+"use strict";
+/* ================================================================
+   HOODSNIPR v0.2 — LIVE DATA
+   Indexers: GeckoTerminal (network: robinhood) + DexScreener, merged
+   Chain: Robinhood Chain — chainId 4663 · ETH gas · Blockscout
+   ================================================================ */
+
+// ---------------- CONFIG — the parts YOU must set ----------------
+var CFG = {
+  CHAIN: {
+    chainId: 4663,
+    chainIdHex: "0x1237",
+    chainName: "Robinhood Chain",
+    rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"],
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    blockExplorerUrls: ["https://robinhoodchain.blockscout.com"]
+  },
+  // Fee route — LIVE. Charged on every snipe (buy) and every loose (sell).
+  FEE_WALLET: "0xb67cBE7fD1258108fE214bA0138d89FC0772791d",
+  FEE_BPS: 25,
+  EXPLORER_API: "https://robinhoodchain.blockscout.com/api/v2",
+  // Uniswap on Robinhood Chain (4663). weth/v3Factory are from Uniswap's own
+  // deployments repo (github.com/Uniswap/contracts, deployments/4663.md),
+  // cross-checked against 1inch + pons docs. router/quoter are RUNTIME-VERIFIED
+  // before any swap: the app calls factory() and WETH9() onchain and refuses to
+  // trade unless they match the verified factory + WETH. Never skip that check.
+  UNI: {
+    weth:      "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    v3Factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+    swapRouter02: "0xCaf681a66D020601342297493863E78C959E5cb2",
+    quoterV2:     "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+    feeTiers: [10000, 3000, 500, 100],   // 1% first — memecoin pools live there
+    defaultSlippageBps: 500              // 5%
+  },
+  GT: "https://api.geckoterminal.com/api/v2",
+  GT_NET: "robinhood",
+  DS: "https://api.dexscreener.com",
+  DS_CHAINS: ["robinhoodchain", "robinhood"],   // slug probed at runtime
+  API: "/.netlify/functions",
+  // Board filters — tokenized stocks + stablecoins are not snipe targets.
+  FILTERS: {
+    ethSyms: ["WETH","ETH","WSTETH","STETH","RETH","CBETH","EZETH","WEETH","METH","OETH","FRXETH","SFRXETH"],
+    stableSyms: ["USDC","USDT","USDG","DAI","USDE","FDUSD","USD1","PYUSD","TUSD","USDS","GHO","FRAX","LUSD","BUSD","USDB","WUSD"],
+    stockSyms: ["AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","GOOG","META","AMD","NFLX","COIN","HOOD","SPY","QQQ","PLTR","MSTR","GME","AMC","INTC","BRK","JPM","V","MA","DIS","BA","XOM","WMT","KO","PFE","T","F","NIO","BABA","SOFI","RIVN","LCID","CRCL","OPEN","UNH","LLY","AVGO","ORCL","CRM","ADBE","ABNB","UBER","SHOP","SQ","PYPL","SNAP","RDDT","DJT","SMCI","ARM","MU","QCOM","TSM","ASML","NVO","SPOT","RBLX","DKNG","MARA","RIOT","CLSK","IBIT","GLD","SLV","TLT","VOO","VTI","IWM","DIA"],
+    stockDexes: ["nado"],                 // stock-token DEXs by GT dex id — extend as you spot them
+    namePatterns: [/xstock/i, /stock/i, /tokenized/i, /equity/i, /etf/i, /shares?/i]
+  },
+  REFRESH_MS: 12000,   // one prebuilt-board call — cheap, so poll briskly
+  ETH_USD_FALLBACK: 3400
+};
+// The fee route and router set are load-bearing — freeze every layer.
+Object.freeze(CFG.UNI); Object.freeze(CFG.CHAIN); Object.freeze(CFG.FILTERS); Object.freeze(CFG);
+
+var $=function(s){return document.querySelector(s)}, $$=function(s){return Array.prototype.slice.call(document.querySelectorAll(s))};
+var state = {
+  tf:(function(){
+    // remember the last timeframe across reloads; fall back to 1H if the saved
+    // value is stale or bogus (e.g. a timeframe we've since renamed/removed)
+    try{
+      var v=JSON.parse(localStorage.getItem("hs_tf"));
+      return ["m5","h1","h6","h24","d30"].indexOf(v)>=0 ? v : "h1";
+    }catch(e){ return "h1"; }
+  })(),
+  pools:[], dsChain:null, ethUsd:CFG.ETH_USD_FALLBACK,
+  wallet:null, provider:null, burner:null, burnerBal:null,
+  d30:{}, d30Loading:false, lastUpdate:0, srcs:[], chain:{}, page:0, universe:{}, lastTokenCount:null,
+  trades: load("hs_trades", []),
+  profile: load("hs_profile", null)
+};
+
+function load(k,d){ try{var v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d} }
+function save(k,v){ try{localStorage.setItem(k,JSON.stringify(v))}catch(e){} }
+function toast(msg,bad){
+  var t=document.createElement("div"); t.className="toast"+(bad?" bad":""); t.textContent=msg;
+  $("#toastRoot").appendChild(t); setTimeout(function(){t.remove()},3400);
+}
+function fmtUsd(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return"$"+(n/1e9).toFixed(2)+"B"; if(n>=1e6)return"$"+(n/1e6).toFixed(2)+"M"; if(n>=1e3)return"$"+(n/1e3).toFixed(1)+"K"; return"$"+(+n).toFixed(0) }
+function fmtP(p){ p=+p; if(!isFinite(p))return"—"; if(p>=1000)return p.toFixed(0); if(p>=1)return p.toFixed(3); if(p>=0.01)return p.toFixed(4); if(p>=1e-6)return p.toFixed(7); return p.toExponential(2) }
+function short(a){ return a? a.slice(0,6)+"…"+a.slice(-4) : "" }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]}) }
+
+// ================= DATA LAYER =================
+async function gt(path){
+  var r = await fetch(CFG.GT+path, { headers:{ "accept":"application/json" } });
+  if(!r.ok) throw new Error("GT "+r.status);
+  return r.json();
+}
+function parseGTPage(j, out, seen){
+  var inc={};
+  (j.included||[]).forEach(function(t){
+    if(t.type==="token") inc[t.id]={ img:(t.attributes||{}).image_url||null,
+      sym:(t.attributes||{}).symbol||null, name:(t.attributes||{}).name||null };
+  });
+  (j.data||[]).forEach(function(p){
+    var a=p.attributes||{}, id=(a.address||p.id||"").toLowerCase();
+    if(!id||seen[id])return; seen[id]=1;
+    var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
+    var rel=p.relationships||{};
+    var btId = rel.base_token&&rel.base_token.data ? rel.base_token.data.id : null;
+    var meta_ = (btId && inc[btId]) || {};
+    out.push({
+      pool:a.address, fullName:a.name||"",
+      sym: meta_.sym || (a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+      tokenName: meta_.name || "",
+      img: (meta_.img && meta_.img!=="missing.png") ? meta_.img : null,
+      baseToken: btId ? btId.split("_").pop() : null,
+      price:+a.base_token_price_usd||null,
+      m5:+(vol.m5||0), h1:+(vol.h1||0), h6:+(vol.h6||0), h24:+(vol.h24||0),
+      cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch6:+(chg.h6||0), ch24:+(chg.h24||0),
+      liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
+      mcap:+a.market_cap_usd||+a.fdv_usd||null,
+      txns24: (a.transactions&&a.transactions.h24)? ((+a.transactions.h24.buys||0)+(+a.transactions.h24.sells||0)) : null,
+      created:a.pool_created_at||null,
+      src:"GT", dex: rel.dex&&rel.dex.data ? rel.dex.data.id : "", dsUrl:null
+    });
+  });
+}
+function parseDSPairs(pairs, chain){
+  var out=[], seen={};
+  (pairs||[]).forEach(function(p){
+    if(chain && p.chainId!==chain) return;
+    if(!chain && !/robinhood/i.test(p.chainId||"")) return;
+    var id=(p.pairAddress||"").toLowerCase();
+    if(!id||seen[id])return; seen[id]=1;
+    out.push({
+      pool:p.pairAddress, sym:(p.baseToken||{}).symbol||"?",
+      fullName:((p.baseToken||{}).symbol||"")+" / "+((p.quoteToken||{}).symbol||""),
+      tokenName:(p.baseToken||{}).name||"",
+      img:(p.info&&p.info.imageUrl)||null,
+      baseToken:(p.baseToken||{}).address||null,
+      price:+p.priceUsd||null,
+      m5:+(p.volume&&p.volume.m5||0), h1:+(p.volume&&p.volume.h1||0), h6:+(p.volume&&p.volume.h6||0), h24:+(p.volume&&p.volume.h24||0),
+      cm5:+(p.priceChange&&p.priceChange.m5||0), ch1:+(p.priceChange&&p.priceChange.h1||0), ch6:+(p.priceChange&&p.priceChange.h6||0), ch24:+(p.priceChange&&p.priceChange.h24||0),
+      txns24:(p.txns&&p.txns.h24)?((+p.txns.h24.buys||0)+(+p.txns.h24.sells||0)):null,
+      liq:+(p.liquidity&&p.liquidity.usd||0), fdv:+p.fdv||null,
+      mcap:+p.marketCap||+p.fdv||null,
+      created:p.pairCreatedAt? new Date(p.pairCreatedAt).toISOString() : null,
+      site:(p.info&&p.info.websites&&p.info.websites[0]&&p.info.websites[0].url)||null,
+      tw:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="twitter"}).map(function(so){return so.url})[0]||null,
+      tg:(p.info&&p.info.socials||[]).filter(function(so){return so.type==="telegram"}).map(function(so){return so.url})[0]||null,
+      src:"DS", dex:p.dexId||"", dsUrl:p.url||null
+    });
+  });
+  return out;
+}
+// PROXY-FIRST: one shared server-side cache feeds every user. Direct indexer
+// calls survive only as a fallback (local file testing / function cold-fail).
+var proxyDown=false;
+// The board endpoint returns the ENTIRE filtered/sorted token list in one shot,
+// already merged server-side — so the list paints instantly instead of
+// assembling itself over several polls.
+function boardRowToPool(r){
+  return {
+    pool:r.p, baseToken:r.a, sym:r.s, tokenName:r.n, fullName:r.n||r.s,
+    img:r.img||null, price:r.px, mcap:r.mc, liq:r.liq,
+    m5:r.m5, h1:r.h1, h6:r.h6, h24:r.h24,
+    cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
+    site:r.site, tw:r.tw, tg:r.tg, dec:r.d,
+    created:r.cr? new Date(r.cr).toISOString() : null,
+    holders:r.h, dec:r.d, src:"BOARD"
+  };
+}
+function applyBoardPayload(pay, fromCache){
+  if(!pay || !pay.rows || !pay.rows.length) return null;
+  if(pay.stats){
+    state.chain=Object.assign({},state.chain||{},pay.stats);
+    state.chainAuthoritative=true;
+  }
+  pay.rows.forEach(function(x){
+    if(!x.a) return;
+    if(x.h!=null) meta[x.a]=Object.assign({},meta[x.a],{h:x.h,hT:Date.now()});
+    if(x.site||x.tw||x.tg) meta[x.a]=Object.assign({},meta[x.a],{site:x.site,tw:x.tw,tg:x.tg,sT:Date.now()});
+  });
+  return pay.rows.map(boardRowToPool);
+}
+// Paint the last known board from local cache BEFORE any network call, so the
+// full list is on screen the instant the app opens. Live data overwrites it
+// moments later.
+function paintCachedBoard(){
+  try{
+    var raw=localStorage.getItem("hs_board");
+    if(!raw) return false;
+    var pay=JSON.parse(raw);
+    if(!pay || !pay.rows || !pay.rows.length) return false;
+    if(Date.now()-pay.ts > 30*60e3) return false;      // too stale to trust
+    var pools=applyBoardPayload(pay,true);
+    if(!pools) return false;
+    var uni=state.universe={};
+    pools.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase(); if(k){ p.seen=Date.now(); uni[k]=p; } });
+    state.pools=Object.keys(uni).map(function(k){return uni[k]});
+    state.lastUpdate=pay.ts;
+    renderChainBar(); renderBoard();
+    return true;
+  }catch(e){ return false; }
+}
+async function fetchBoard(){
+  try{
+    var r=await fetch(CFG.API+"/board");
+    if(!r.ok) return null;
+    var pay=await r.json();
+    var pools=applyBoardPayload(pay,false);
+    if(!pools) return null;
+    try{
+      // keep only what we need for a fast repaint next launch
+      localStorage.setItem("hs_board", JSON.stringify({ts:pay.ts,rows:pay.rows.slice(0,600),stats:pay.stats}));
+    }catch(e){}
+    return pools;
+  }catch(e){ return null; }
+}
+async function fetchMarket(){
+  if(!proxyDown){
+    try{
+      var r=await fetch(CFG.API+"/market");
+      if(r.ok){
+        var pay=await r.json();
+        var gtOut=[], seen={};
+        (pay.gtPages||[]).forEach(function(pg){ parseGTPage(pg, gtOut, seen); });
+        var dsOut=parseDSPairs(pay.dsPairs||[], null);
+        if(pay.ethUsd>0) state.ethUsd=pay.ethUsd;
+        if(pay.stats && !state.chainAuthoritative) state.chain=Object.assign({},pay.stats,state.chain||{});
+        return { gt:gtOut, ds:dsOut, viaProxy:true };
+      }
+      throw 0;
+    }catch(e){ proxyDown=true; setTimeout(function(){proxyDown=false},60000); }
+  }
+  // ---- direct fallback ----
+  var urls = [
+    "/networks/"+CFG.GT_NET+"/trending_pools?page=1&include=base_token",
+    "/networks/"+CFG.GT_NET+"/pools?page=1&sort=h24_volume_usd_desc&include=base_token",
+    "/networks/"+CFG.GT_NET+"/pools?page=2&sort=h24_volume_usd_desc&include=base_token"
+  ];
+  var gtOut2=[], seen2={};
+  for(var i=0;i<urls.length;i++){
+    try{ parseGTPage(await gt(urls[i]), gtOut2, seen2); }catch(e){}
+  }
+  var dsOut2=[];
+  try{
+    var chain=await probeDSChain();
+    if(chain){
+      var rr=await fetch(CFG.DS+"/latest/dex/search?q=WETH");
+      dsOut2=parseDSPairs(((await rr.json())||{}).pairs, chain);
+    }
+  }catch(e){}
+  return { gt:gtOut2, ds:dsOut2, viaProxy:false };
+}
+async function probeDSChain(){
+  if(state.dsChain) return state.dsChain;
+  for(var i=0;i<CFG.DS_CHAINS.length;i++){
+    try{
+      var r = await fetch(CFG.DS+"/latest/dex/search?q="+CFG.DS_CHAINS[i]);
+      var j = await r.json();
+      var hit = (j.pairs||[]).find(function(p){return p.chainId===CFG.DS_CHAINS[i]});
+      if(hit){ state.dsChain = CFG.DS_CHAINS[i]; return state.dsChain; }
+    }catch(e){}
+  }
+  return null;
+}
+function mergePools(gtP, dsP){
+  // GT primary; DS fills gaps + adds its chart URL. Key by base token, fall back to pool.
+  var map={};
+  gtP.forEach(function(p){ map[(p.baseToken||p.pool||"").toLowerCase()]=p; });
+  dsP.forEach(function(p){
+    var k=(p.baseToken||p.pool||"").toLowerCase();
+    if(map[k]){ map[k].dsUrl=p.dsUrl; map[k].src="GT+DS";
+      if(!map[k].price&&p.price)map[k].price=p.price;
+      if(!map[k].img&&p.img)map[k].img=p.img;
+      if(!map[k].mcap&&p.mcap)map[k].mcap=p.mcap;
+      if(!map[k].h6&&p.h6)map[k].h6=p.h6;
+      if(!map[k].ch6&&p.ch6)map[k].ch6=p.ch6;
+      if(map[k].txns24==null&&p.txns24!=null)map[k].txns24=p.txns24;
+      if(!map[k].site)map[k].site=p.site; if(!map[k].tw)map[k].tw=p.tw; if(!map[k].tg)map[k].tg=p.tg; }
+    else map[k]=p;
+  });
+  return Object.keys(map).map(function(k){return map[k]})
+    .filter(function(p){return (p.h24>0||p.h6>0||p.h1>0||p.m5>0) || p.liq>2000})
+    .filter(function(p){return p.liq>100})       // dust floor, low enough to keep real long-tail
+    .filter(function(p){return !isStable(p)})    // no stablecoins
+    .filter(function(p){return !isStock(p)})     // no tokenized stocks/ETFs
+    .filter(function(p){return !isEthLike(p)})    // no ETH/WETH/LSTs — that's the ammo, not the target
+    .filter(function(p){return !isRugged(p)});   // closed pools = rugged, gone for good
+}
+// A pool that closes (liquidity pulled / pair killed) gets reported by the
+// indexers with a "closed" placeholder symbol. That's a rug signature — flag it,
+// remember it, and never show it again.
+// Rug detection is STATELESS and identical everywhere. It used to persist a
+// blacklist to localStorage, which meant every device accumulated a different
+// set of hidden tokens — that's why counts diverged between phone and desktop.
+// Server decides what's on the board; the client only screens the obvious.
+try{ localStorage.removeItem("hs_rugged"); }catch(e){}   // migrate off the old blacklist
+function isRugged(p){
+  var sym=String(p.sym||"").trim().toLowerCase();
+  var nm=(String(p.tokenName||"")+" "+String(p.fullName||"")).toLowerCase();
+  return sym==="closed" || sym==="$closed" || sym==="unknown" || sym==="?" || sym===""
+      || /\bclosed\b/.test(nm) || /\brugged\b/.test(nm);
+}
+function isEthLike(p){
+  if(p.baseToken && p.baseToken.toLowerCase()===CFG.UNI.weth.toLowerCase()) return true;
+  return CFG.FILTERS.ethSyms.indexOf((p.sym||"").toUpperCase())>=0;
+}
+// ---- stock / stable filters ----
+function isStable(p){
+  var s=(p.sym||"").toUpperCase().replace(/^W/,"");
+  if(CFG.FILTERS.stableSyms.indexOf(s)>=0 || CFG.FILTERS.stableSyms.indexOf((p.sym||"").toUpperCase())>=0) return true;
+  // heuristic: USD-ish name pinned to $1 and barely moving
+  var nm=((p.tokenName||"")+" "+(p.sym||"")).toUpperCase();
+  if(nm.indexOf("USD")>=0 && p.price>0.97 && p.price<1.03 && Math.abs(p.ch24)<1.5) return true;
+  return false;
+}
+var CORP_RE=/\b(inc|inc\.|incorporated|corp|corp\.|corporation|company|co\.|ltd|ltd\.|limited|plc|llc|lp|n\.?v\.?|s\.?a\.?|a\.?g\.?|holdings?|group|partners|industries|international|enterprises|motors|pharmaceuticals?|biosciences?|therapeutics|laboratories|class [abc]|adr|ads|depositary|preferred|common stock|ordinary shares?)\b/i;
+var FUND_RE=/\b(etf|etn|fund|index|trust|reit|spdr|ishares|vanguard|invesco|proshares|direxion|wisdomtree|treasury|bond|futures|leveraged|inverse|2x|3x)\b/i;
+function isStock(p){
+  var nm=String(p.tokenName||p.fullName||"");
+  if(CORP_RE.test(nm)||FUND_RE.test(nm)) return true;
+  if(/tokenized|xstock|equity|equities|security token|\brwa\b/i.test(nm+" "+(p.sym||""))) return true;
+  return isStockLegacy(p);
+}
+function isStockLegacy(p){
+  if(p.dex && CFG.FILTERS.stockDexes.indexOf(String(p.dex).toLowerCase())>=0) return true;
+  var raw=(p.sym||""), up=raw.toUpperCase();
+  // xStocks-style: real ticker + trailing lowercase x (AAPLx, TSLAx)
+  var base = /x$/.test(raw) && raw.length>2 ? up.slice(0,-1) : up;
+  if(CFG.FILTERS.stockSyms.indexOf(base)>=0) return true;
+  var nm=(p.tokenName||"")+" "+p.fullName;
+  for(var i=0;i<CFG.FILTERS.namePatterns.length;i++) if(CFG.FILTERS.namePatterns[i].test(nm)) return true;
+  return false;
+}
+// ---- letter-avatar fallback for tokens with no logo ----
+var _avCache={};
+function letterAvatar(sym){
+  var ch=(sym||"?").replace(/^\$/,"").charAt(0).toUpperCase()||"?";
+  if(_avCache[ch]) return _avCache[ch];
+  var c=document.createElement("canvas"); c.width=c.height=64;
+  var g=c.getContext("2d");
+  g.fillStyle="#1B1F24"; g.beginPath(); g.arc(32,32,32,0,6.2832); g.fill();
+  g.strokeStyle="#00C805"; g.lineWidth=3; g.beginPath(); g.arc(32,32,30,0,6.2832); g.stroke();
+  g.fillStyle="#00C805"; g.font="700 30px 'Space Grotesk',sans-serif";
+  g.textAlign="center"; g.textBaseline="middle"; g.fillText(ch,32,34);
+  return (_avCache[ch]=c.toDataURL("image/png"));
+}
+// swap broken remote logos for letter avatars (capture-phase; CSP-safe)
+document.addEventListener("error",function(e){
+  var t=e.target;
+  if(t && t.classList && t.classList.contains("timg") && !t.dataset.fb){
+    t.dataset.fb="1"; t.src=letterAvatar(t.dataset.sym||"?");
+  }
+},true);
+var failStreak=0;
+async function refresh(){
+  if(document.hidden) return;   // don't burn quota for a tab nobody's watching
+  try{
+    var board = await fetchBoard();
+    var merged, viaBoard=false;
+    if(board && board.length >= 1){
+      state.boardWarming=false;
+      // The server already applied every filter. Re-filtering here (with data
+      // that can differ slightly per device) is exactly how two browsers end up
+      // showing different counts — so we take the server list verbatim.
+      merged = board;
+      viaBoard = true;
+      state.srcs=["BLOCKSCOUT","DEXSCREENER","GECKOTERMINAL"];
+    }else{
+      // Board empty = indexer still warming (or broken). Say so plainly rather
+      // than quietly showing a handful of tokens as if that's the whole chain.
+      state.boardWarming=true;
+      var mk = await fetchMarket();
+      merged = mergePools(mk.gt, mk.ds);
+      state.srcs=[]; if(mk.gt.length)state.srcs.push("GECKOTERMINAL"); if(mk.ds.length)state.srcs.push("DEXSCREENER");
+      if(mk.viaProxy) state.srcs.push("EDGE-CACHED");
+    }
+    // NOTE: new launches are crawled server-side into the same registry, so we
+    // deliberately do NOT fold this device's own new-pool fetch into the index.
+    // That fetch lands at different times on different devices and would make
+    // the board differ between phone and desktop.
+
+    if(merged.length){
+      // The server rotates through the registry, so ANY single response is a
+      // slice of the chain, not all of it. Replacing state.pools wholesale made
+      // rows blink in and out. Instead we keep a persistent universe: merge
+      // fresh data in, keep pools we've seen before, and only evict when a pool
+      // has been missing long enough to be genuinely gone.
+      var uni = state.universe || (state.universe = {});
+      var now = Date.now();
+      if(viaBoard){
+        // full, deterministic list from the server — no need to accumulate
+        uni = state.universe = {};
+      }
+      merged.forEach(function(p){
+        var k=(p.baseToken||p.pool||"").toLowerCase(); if(!k) return;
+        var prev = uni[k];
+        p.seen = now;
+        p.firstSeen = prev ? prev.firstSeen : now;
+        // don't let a partial record blank out fields we already had
+        if(prev){
+          ["img","mcap","site","tw","tg","tokenName","baseToken","created","dsUrl"].forEach(function(f){
+            if(p[f]==null || p[f]==="") p[f]=prev[f];
+          });
+        }
+        uni[k]=p;
+      });
+      if(!viaBoard){
+        // only the fallback path accumulates; the board path is already complete
+        Object.keys(uni).forEach(function(k){
+          var p=uni[k];
+          if(isRugged(p)){ delete uni[k]; return; }
+          if(now - p.seen > 20*60e3) delete uni[k];
+        });
+      }
+      state.pools = Object.keys(uni).map(function(k){return uni[k]});
+      state.lastUpdate=Date.now(); failStreak=0;
+    } else failStreak++;
+  }catch(e){ failStreak++; }
+  setLive();
+  renderChainBar();
+  renderBoard();
+}
+function fmtNum(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return (n/1e9).toFixed(2)+"B"; if(n>=1e6)return (n/1e6).toFixed(2)+"M"; if(n>=1e3)return (n/1e3).toFixed(1)+"K"; return String(Math.round(n)); }
+// Aggregate from whatever data we actually have in hand. The proxy's numbers
+// are used only when they're larger (deeper coverage) — the bar can never sit
+// empty just because a function hasn't warmed up.
+function localStats(){
+  var vol=0, liq=0, toks={}, seen={};
+  (state.pools||[]).forEach(function(p){
+    var k=(p.pool||"").toLowerCase(); if(!k||seen[k])return; seen[k]=1;
+    vol+=(+p.h24||0); liq+=(+p.liq||0);
+    if(p.baseToken) toks[p.baseToken.toLowerCase()]=1;
+  });
+  return { vol24:vol, liq:liq, tokenCount:Object.keys(toks).length, pools:Object.keys(seen).length };
+}
+// Chain stats come from ONE authoritative place (the /chainstats function:
+// Blockscout for real chain-wide txns, RPC for block height, server-computed
+// DEX totals). Local aggregation is only a cold-start placeholder, and a
+// thin poll can never drag the numbers down — that was the flip-flop.
+async function pullChainStats(){
+  try{
+    var r=await fetch(CFG.API+"/chainstats");
+    if(!r.ok) throw 0;
+    var c=await r.json();
+    if(c && (c.block||c.txns24||c.vol24)){ state.chain=c; state.chainAuthoritative=true; renderChainBar(); return; }
+  }catch(e){}
+  state.chainAuthoritative=false;
+}
+function renderChainBar(){
+  var c=state.chain||{}, l=localStats(), e;
+  var best=state.bestStats||(state.bestStats={});
+  var vol = c.vol24!=null? c.vol24 : l.vol24;
+  var liq = c.liq!=null? c.liq : l.liq;
+  if(!state.chainAuthoritative){
+    if(vol>(best.vol||0)) best.vol=vol; else vol=best.vol||vol;
+    if(liq>(best.liq||0)) best.liq=liq; else liq=best.liq||liq;
+  }
+  if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "…";
+  if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
+
+  // TOKENS CREATED — cumulative census, only ever climbs
+  var created = c.poolsIndexed!=null? c.poolsIndexed
+              : (c.tokensCreated!=null? c.tokensCreated : Math.max(best.tok||0, l.tokenCount||0));
+  if(created>(best.tok||0)) best.tok=created; else created=best.tok||created;
+  var el=$("#cbTokens");
+  if(el){
+    var prev=state.lastTokenCount;
+    if(created>0){
+      el.textContent = created.toLocaleString();
+      if(prev!=null && created>prev){
+        // subtle flash only — no toast. The count also rises as the indexer
+        // backfills, which isn't a launch and shouldn't interrupt the user.
+        el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump");
+      }
+      state.lastTokenCount=created;
+    } else el.textContent="…";
+  }
+  var sub=$("#cbTokensSub");
+  if(sub){
+    var bits=[];
+    if(c.tokensNewHour>0) bits.push("+"+c.tokensNewHour+" past hour");
+    else if(c.tokensNewDay>0) bits.push("+"+c.tokensNewDay+" past 24h");
+    if(c.tokensTradeable) bits.push(c.tokensTradeable.toLocaleString()+" tradeable now");
+    sub.textContent = bits.join(" · ");
+  }
+}
+function setLive(){
+  // Flapping came from treating any single failed poll as "down". The board is
+  // a server-maintained cache, so data minutes old is still perfectly usable.
+  // RETRYING now requires data to be genuinely stale AND several consecutive
+  // failures — a blip can no longer flip the badge.
+  var ageMs = state.lastUpdate? (Date.now()-state.lastUpdate) : Infinity;
+  var el=$("#liveDot"), txt=$("#liveTxt");
+  if(!el||!txt) return;
+  if(ageMs < 180000){                       // < 3 min old → LIVE
+    el.className="live";
+    txt.textContent = failStreak>=2 ? "LIVE·SYNC" : "LIVE";
+  }else if(ageMs < 600000 && failStreak < 6){
+    el.className="live";
+    txt.textContent="LIVE·DELAYED";
+  }else{
+    el.className="live err";
+    txt.textContent="RETRYING";
+  }
+  var sl=$("#srcTxt"); if(sl) sl.textContent = state.srcs.join(" + ")||"—";
+}
+
+// ---- 30D: lazy per-pool daily-OHLCV sums via GT, cached 6h ----
+async function ensure30d(){
+  if(state.d30Loading) return;
+  state.d30Loading=true;
+  var cache=load("hs_d30",{}); var now=Date.now();
+  var top = state.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,60);
+  var done=0;
+  for(var i=0;i<top.length;i++){
+    var p=top[i], key=(p.pool||"").toLowerCase();
+    if(cache[key] && now-cache[key].t < 6*3600e3){ state.d30[key]=cache[key].v; done++; continue; }
+    try{
+      var v=null, viaProxy=false;
+      try{
+        var pr=await fetch(CFG.API+"/ohlcv?pool="+p.pool);
+        if(pr.ok){ v=(await pr.json()).v; viaProxy=true; }
+      }catch(e0){}
+      if(v==null){
+        var j=await gt("/networks/"+CFG.GT_NET+"/pools/"+p.pool+"/ohlcv/day?limit=30");
+        var list=(((j.data||{}).attributes)||{}).ohlcv_list||[];
+        v=list.reduce(function(a,c){return a+(+c[5]||0)},0);
+      }
+      state.d30[key]=v; cache[key]={v:v,t:now}; done++;
+      var pe=$("#board .progress"); pe&&(pe.textContent="RANGING 30D VOLUME… "+done+"/"+top.length);
+      if(state.tf==="d30") renderBoard();
+      // proxy answers are shared-cached — barely throttle; direct GT stays slow
+      await new Promise(function(r){setTimeout(r, viaProxy?250:2100)});
+    }catch(e){ /* keep going */ }
+    if(state.tf!=="d30") break; // user left — stop burning quota
+  }
+  save("hs_d30",cache);
+  state.d30Loading=false;
+  if(state.tf==="d30") renderBoard();
+}
+
+// ================= TOKEN METADATA (holders + socials, cached) =================
+var meta = load("hs_meta", {});   // addr -> {h:holders, site, tw, tg, t:ts}
+function metaOf(p){ return meta[(p.baseToken||"").toLowerCase()] || null; }
+async function enrichHolders(rows){ return enrichMeta(rows); }
+async function enrichMeta(rows){
+  // one batched call for holders + socials, served from the shared edge cache
+  var now=Date.now();
+  var need = rows.filter(function(p){
+    if(!p.baseToken) return false;
+    var m=meta[p.baseToken.toLowerCase()];
+    var needH=!m || m.hT==null || now-m.hT>10*60e3 || m.h==null;
+    var needS=(!p.site&&!p.tw&&!p.tg) && (!m || (!m.site&&!m.tw&&!m.tg)) && (!m || m.sT==null || now-m.sT>24*3600e3);
+    return needH||needS;
+  }).map(function(p){return p.baseToken.toLowerCase()});
+  need=need.filter(function(a,i){return need.indexOf(a)===i});
+  for(var i=0;i<need.length;i+=10){
+    var batch=need.slice(i,i+10);
+    var got=null;
+    try{
+      var r=await fetch(CFG.API+"/tokenmeta?addrs="+batch.join(","));
+      if(r.ok) got=await r.json();
+    }catch(e){}
+    if(!got){
+      // fallback: direct Blockscout for holders only, small concurrency
+      got={};
+      await Promise.all(batch.slice(0,6).map(async function(a){
+        try{
+          var rr=await fetch(CFG.EXPLORER_API+"/tokens/"+a);
+          if(rr.ok){ var t=await rr.json(); var h=parseInt(t.holders_count!=null?t.holders_count:t.holders,10); got[a]={h:isNaN(h)?null:h}; }
+        }catch(e2){}
+      }));
+    }
+    Object.keys(got).forEach(function(a){
+      var v=got[a]||{};
+      meta[a]=Object.assign({},meta[a],{ h:v.h!=null?v.h:(meta[a]||{}).h, hT:now,
+        site:v.site||(meta[a]||{}).site||null, tw:v.tw||(meta[a]||{}).tw||null, tg:v.tg||(meta[a]||{}).tg||null,
+        sT:(v.site!==undefined)?now:(meta[a]||{}).sT });
+      var m=meta[a];
+      if(m.h!=null) document.querySelectorAll('[data-holders="'+a+'"]').forEach(function(el){ el.textContent="👥 "+m.h.toLocaleString(); });
+      if(m.site||m.tw||m.tg) document.querySelectorAll('[data-soc="'+a+'"]').forEach(function(el){ el.innerHTML=socialLinks({baseToken:a,site:m.site,tw:m.tw,tg:m.tg},12); });
+    });
+  }
+  save("hs_meta", meta);
+}
+async function enrichSocials(p){
+  // GT token info — one call, only when the modal opens
+  var k=(p.baseToken||"").toLowerCase(); var m=meta[k];
+  if(p.site||p.tw||p.tg) return p;
+  if(m && (m.site||m.tw||m.tg)){ p.site=m.site; p.tw=m.tw; p.tg=m.tg; return p; }
+  try{
+    var j=await gt("/networks/"+CFG.GT_NET+"/tokens/"+p.baseToken+"/info");
+    var a=((j.data||{}).attributes)||{};
+    p.site=(a.websites&&a.websites[0])||null;
+    p.tw=a.twitter_handle? "https://x.com/"+a.twitter_handle : null;
+    p.tg=a.telegram_handle? "https://t.me/"+a.telegram_handle : null;
+    meta[k]=Object.assign({},meta[k],{site:p.site,tw:p.tw,tg:p.tg,t:Date.now()});
+    save("hs_meta",meta);
+  }catch(e){}
+  return p;
+}
+function socialLinks(p, size){
+  var m=metaOf(p)||{};
+  var site=p.site||m.site, tw=p.tw||m.tw, tg=p.tg||m.tg;
+  var st='style="text-decoration:none;font-size:'+(size||12)+'px;margin-left:6px"';
+  var h="";
+  if(site) h+='<a '+st+' data-action="ext" href="'+esc(site)+'" target="_blank" rel="noopener" title="Website">🌐</a>';
+  if(tw)   h+='<a '+st+' data-action="ext" href="'+esc(tw)+'" target="_blank" rel="noopener" title="X">𝕏</a>';
+  if(tg)   h+='<a '+st+' data-action="ext" href="'+esc(tg)+'" target="_blank" rel="noopener" title="Telegram">✈️</a>';
+  return h;
+}
+
+// ================= BOARD =================
+function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
+var TF_LABEL={m5:"5M",h1:"1H",h6:"6H",h24:"24H",d30:"30D"};
+// Podium tiers across the trending 50: 1–10 gold, 11–25 silver, 26–50 bronze.
+function tierOf(i){ return i<10?"gold" : i<25?"silver" : i<50?"bronze" : ""; }
+var ttSig="";
+function renderTopTape(ranked){
+  var el=$("#ttIn"); if(!el) return;
+  var top=ranked.slice(0,10);
+  if(!top.length) return;
+  // only re-render when the lineup or prices actually changed — otherwise the
+  // CSS animation restarts every poll and the tape visibly jumps
+  var sig=top.map(function(p){return p.sym+":"+(p.price||0).toFixed(8)+":"+(chgFor(p)||0).toFixed(1)}).join("|");
+  if(sig===ttSig) return;
+  ttSig=sig;
+  var one=top.map(function(p,i){
+    var c=chgFor(p), up=c>=0;
+    return '<a class="tt" data-action="open" data-pool="'+esc(p.pool)+'" href="javascript:void(0)">'
+      +'<span class="n gold">'+String(i+1).padStart(2,"0")+'</span>'
+      +'<img alt="" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+      +'<b>$'+esc(p.sym)+'</b>'
+      +'<span class="p">$'+fmtP(p.price)+'</span>'
+      +'<span class="c '+(up?"up":"dn")+'">'+(up?"▲":"▼")+Math.abs(+c).toFixed(1)+'%</span>'
+      +'</a>';
+  }).join("");
+  el.innerHTML = one+one;   // duplicate track for the seamless -50% loop
+}
+function renderPager(total, pages){
+  var el=$("#pager"); if(!el)return;
+  if(total<=PAGE_SIZE){
+    el.innerHTML='<span class="pinfo">showing all '+total+' tracked token'+(total===1?"":"s")+'</span>';
+    return;
+  }
+  var start=state.page*PAGE_SIZE+1, end=Math.min(total,(state.page+1)*PAGE_SIZE);
+  var h='<button data-action="page" data-p="'+(state.page-1)+'"'+(state.page===0?" disabled":"")+'>← PREV</button>'
+   +'<span class="pinfo">'+start+'–'+end+' of '+total+' · page '+(state.page+1)+'/'+pages+'</span>'
+   +'<button data-action="page" data-p="'+(state.page+1)+'"'+(state.page>=pages-1?" disabled":"")+'>NEXT →</button>';
+  if(state.page<pages-1) h+='<button class="more" data-action="page" data-p="'+(state.page+1)+'">SHOW MORE</button>';
+  el.innerHTML=h;
+}
+function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:state.tf==="h6"?p.ch6:p.ch24 }
+var PAGE_SIZE=50, MAX_TOKENS=2500;   // 50 rows a page, up to 2500 tokens deep
+function renderBoard(){
+  var el=$("#board");
+  if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
+  // Deterministic sort: volume desc, then pool address — identical input always
+  // yields identical order, so rows never shuffle between refreshes.
+  // One row per token, always. Multiple pools for the same token (different
+  // fee tiers, or the same token seen by two indexers) collapse into the
+  // deepest-liquidity pool — that's the one we'd route a snipe through anyway.
+  var byTok={}, loose=[];
+  state.pools.forEach(function(p){
+    var k=(p.baseToken||"").toLowerCase();
+    if(!k){ loose.push(p); return; }
+    var cur=byTok[k];
+    if(!cur){ byTok[k]=p; return; }
+    var better = (p.liq||0)>(cur.liq||0) || ((p.liq||0)===(cur.liq||0) && (p.h24||0)>(cur.h24||0));
+    if(better){
+      // don't lose metadata the loser had
+      ["img","mcap","site","tw","tg","tokenName","created","holders"].forEach(function(f){
+        if(p[f]==null||p[f]==="") p[f]=cur[f];
+      });
+      byTok[k]=p;
+    }else{
+      ["img","mcap","site","tw","tg","tokenName","created","holders"].forEach(function(f){
+        if(cur[f]==null||cur[f]==="") cur[f]=p[f];
+      });
+    }
+  });
+  var deduped=Object.keys(byTok).map(function(k){return byTok[k]}).concat(loose);
+  var ranked=deduped.sort(function(a,b){
+    var d=volFor(b)-volFor(a);
+    if(d) return d;
+    var la=(b.liq||0)-(a.liq||0); if(la) return la;
+    return (a.baseToken||a.pool||"")<(b.baseToken||b.pool||"")?-1:1;
+  }).slice(0,MAX_TOKENS);
+  var pages=Math.max(1,Math.ceil(ranked.length/PAGE_SIZE));
+  if(state.page>=pages) state.page=pages-1;
+  if(state.page<0) state.page=0;
+  var start=state.page*PAGE_SIZE;
+  var rows=ranked.slice(start, start+PAGE_SIZE);
+  var h="";
+  if(state.tf==="d30"){
+    var have=rows.filter(function(p){return volFor(p)>0}).length;
+    if(have<5) h+='<div class="progress">RANGING 30D VOLUME… (sums 30 daily candles per pool — first pass takes ~1 min)</div>';
+  }
+  rows.forEach(function(p,idx){
+    var i=start+idx;
+    var c=chgFor(p), up=c>=0;
+    h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
+      +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
+      +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
+      +'<div class="n">MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
+      +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">VOL '+TF_LABEL[state.tf]+'</div></div>'
+      +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
+      +'</div>';
+  });
+  el.innerHTML=h;
+  renderPager(ranked.length, pages);
+  renderTopTape(ranked);
+  var pl=$("#pageLabel");
+  if(pl){
+    if(state.page===0){ pl.style.color="var(--gold)"; pl.textContent="🔥 TRENDING · TOP 50"; }
+    else { pl.style.color="var(--mute)"; pl.textContent="PAGE "+(state.page+1)+" · RANK "+(start+1)+"–"+Math.min(ranked.length,start+PAGE_SIZE); }
+  }
+  var tn=$("#trackNote");
+  if(tn){
+    var c=state.chain||{};
+    if(state.boardWarming){
+      tn.innerHTML='<span style="color:var(--gold)">⚙️ Chain indexer warming up — partial list.</span> '
+        +'Backfilling every pool from Robinhood Chain logs; coverage grows each minute.';
+      return;
+    }
+    tn.textContent = "Showing "+ranked.length.toLocaleString()+" tradeable tokens"
+      + (c.tokensCreated? " of "+c.tokensCreated.toLocaleString()+" created on Robinhood Chain" : "")
+      + " · Blockscout + DexScreener + GeckoTerminal"
+      + (c.poolsIndexed? " · "+c.poolsIndexed.toLocaleString()+" pools indexed from chain" : "")
+      + (c.poolsActive? " · "+c.poolsActive.toLocaleString()+" trading now" : "")
+      + (c.backfillDone===false? " · backfilling…" : " · full chain indexed ✓");
+  }
+  enrichHolders(rows);
+  var age=Math.round((Date.now()-state.lastUpdate)/1000);
+  $("#ageTxt").textContent = state.lastUpdate? (age<60? age+"s ago" : Math.round(age/60)+"m ago") : "…";
+}
+
+// ================= NEW LAUNCHES =================
+state.newPools=[]; state.newLoading=false; state.newTs=0;
+async function refreshNew(force){
+  if(state.newLoading) return;
+  if(!force && Date.now()-state.newTs<25000){ renderNew(); return; }
+  state.newLoading=true;
+  var nb=$("#newBoard"); if(nb && !state.newPools.length) nb.innerHTML='<div class="skel"></div>'.repeat(5);
+  try{
+    var got=[], seen={};
+    for(var page=1;page<=2;page++){
+      var j=await gt("/networks/"+CFG.GT_NET+"/new_pools?page="+page+"&include=base_token");
+      var inc={};
+      (j.included||[]).forEach(function(t){ if(t.type==="token") inc[t.id]={img:(t.attributes||{}).image_url||null,sym:(t.attributes||{}).symbol||null,name:(t.attributes||{}).name||null}; });
+      (j.data||[]).forEach(function(pp){
+        var a=pp.attributes||{}, id=(a.address||"").toLowerCase();
+        if(!id||seen[id])return; seen[id]=1;
+        var rel=pp.relationships||{}, btId=rel.base_token&&rel.base_token.data?rel.base_token.data.id:null;
+        var m=(btId&&inc[btId])||{};
+        var vol=a.volume_usd||{}, chg=a.price_change_percentage||{};
+        got.push({ pool:a.address, fullName:a.name||"",
+          sym:m.sym||(a.name||"?").split(" / ")[0].replace(/\s.*$/,""),
+          tokenName:m.name||"", img:(m.img&&m.img!=="missing.png")?m.img:null,
+          baseToken:btId?btId.split("_").pop():null,
+          price:+a.base_token_price_usd||null,
+          m5:+(vol.m5||0), h1:+(vol.h1||0), h6:+(vol.h6||0), h24:+(vol.h24||0),
+          cm5:+(chg.m5||0), ch1:+(chg.h1||0), ch6:+(chg.h6||0), ch24:+(chg.h24||0),
+          liq:+a.reserve_in_usd||0, fdv:+a.fdv_usd||null,
+          mcap:+a.market_cap_usd||+a.fdv_usd||null,
+          created:a.pool_created_at||null,
+          src:"GT", dex:rel.dex&&rel.dex.data?rel.dex.data.id:"", dsUrl:null });
+      });
+    }
+    var hourAgo=Date.now()-3600e3;
+    state.newPools=got
+      .filter(function(p){return p.created && new Date(p.created).getTime()>=hourAgo})
+      .filter(function(p){return !isStable(p)&&!isStock(p)&&!isEthLike(p)})
+      .sort(function(a,b){return new Date(b.created)-new Date(a.created)});
+    state.newTs=Date.now();
+  }catch(e){}
+  state.newLoading=false;
+  renderNew();
+}
+function ageStr(iso){
+  var m=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/60000));
+  return m<1?"just now":m+"m ago";
+}
+function renderNew(){
+  var el=$("#newBoard"); if(!el)return;
+  if(!state.newPools.length){
+    el.innerHTML='<div class="empty">'+(state.newLoading?"Scanning fresh pools…":"Nothing launched in the last hour that survives the filters. The chain naps too.")+'</div>';
+    return;
+  }
+  var h="";
+  state.newPools.slice(0,25).forEach(function(p,i){
+    var c=p.cm5||p.ch1, up=c>=0;
+    h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
+      +'<div class="rank">'+String(i+1).padStart(2,"0")+'</div>'
+      +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
+      +'<div class="n">🐣 '+ageStr(p.created)+' · MC '+fmtUsd(p.mcap)+' · LIQ '+fmtUsd(p.liq)+'</div></div>'
+      +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(p.h1)+'</div><div class="k">VOL 1H</div></div>'
+      +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
+      +'</div>';
+  });
+  el.innerHTML=h;
+  var na=$("#newAge"); if(na) na.textContent=state.newTs? Math.round((Date.now()-state.newTs)/1000)+"s ago":"";
+  enrichHolders(state.newPools.slice(0,25));
+}
+
+// ================= TOKEN MODAL + SNIPE =================
+var modal={ pool:null, mode:"wallet", slip:CFG.UNI.defaultSlippageBps, quote:null };
+state.extraPools=[];   // pools resolved on demand for portfolio tokens not on the boards
+async function openTokenByAddr(addr){
+  var k=(addr||"").toLowerCase();
+  var p=state.pools.find(function(x){return (x.baseToken||"").toLowerCase()===k})
+     || state.newPools.find(function(x){return (x.baseToken||"").toLowerCase()===k})
+     || state.extraPools.find(function(x){return (x.baseToken||"").toLowerCase()===k});
+  if(p){ openToken(p.pool); return; }
+  toast("Finding pool for token…");
+  try{
+    // GT: top pools for this token — take the deepest one
+    var j=await gt("/networks/"+CFG.GT_NET+"/tokens/"+addr+"/pools?page=1&include=base_token");
+    var out=[], seen={};
+    parseGTPage(j, out, seen);
+    var mine=out.filter(function(x){return (x.baseToken||"").toLowerCase()===k});
+    var best=(mine.length?mine:out).sort(function(a,b){return (b.liq||0)-(a.liq||0)})[0];
+    if(!best) throw 0;
+    state.extraPools.push(best);
+    openToken(best.pool);
+  }catch(e){
+    toast("No indexed pool found — opening Blockscout ↗", true);
+    window.open(CFG.CHAIN.blockExplorerUrls[0]+"/token/"+addr, "_blank", "noopener");
+  }
+}
+var uniVerified=null; // null=unknown, true/false after runtime check
+function openToken(poolAddr){
+  var key=(poolAddr||"").toLowerCase();
+  var p=state.pools.find(function(x){return (x.pool||"").toLowerCase()===key})
+     || state.newPools.find(function(x){return (x.pool||"").toLowerCase()===key})
+     || state.extraPools.find(function(x){return (x.pool||"").toLowerCase()===key});
+  if(!p) return;
+  modal.pool=p; modal.mode = state.wallet?"wallet":(state.burner?"burner":"wallet");
+  var gtEmbed="https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool+"?embed=1&info=0&swaps=0&light_chart=0";
+  var c=p.ch24, up=c>=0;
+  $("#modalRoot").innerHTML=
+  '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><div style="display:flex;gap:11px;align-items:center">'
+   +'<img class="timg lg" alt="" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
+   +'<div><h2>$'+esc(p.sym)+' <span style="font-size:12px;color:var(--mute)">'+esc(p.tokenName||p.fullName)+'</span></h2>'
+   +'<div class="px">$'+fmtP(p.price)+' · <span class="'+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'% 24H</span></div></div></div>'
+   +'<button class="x" data-action="close">✕</button></div>'
+   +'<iframe class="chart" src="'+gtEmbed+'" title="Live chart — GeckoTerminal" loading="lazy"></iframe>'
+   +'<div class="mstats">'
+     +'<div class="ms"><div class="k">MARKET CAP</div><div class="v">'+fmtUsd(p.mcap||p.fdv)+'</div></div>'
+     +'<div class="ms"><div class="k">HOLDERS</div><div class="v" id="mHolders">'+((metaOf(p)||{}).h!=null?metaOf(p).h.toLocaleString():"…")+'</div></div>'
+     +'<div class="ms"><div class="k">LIQ</div><div class="v">'+fmtUsd(p.liq)+'</div></div>'
+     +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
+     +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
+   +'</div>'
+   +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
+   +(p.baseToken?'<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;align-items:center">'
+     +'<span style="font-family:var(--mono);font-size:11px;color:var(--mute)">CA '+short(p.baseToken)+'</span>'
+     +'<button data-action="copy-ca" data-addr="'+esc(p.baseToken)+'" style="color:var(--green);border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:10px;padding:4px 9px;letter-spacing:.06em">📋 COPY CA</button>'
+     +'<a data-action="ext" href="'+CFG.CHAIN.blockExplorerUrls[0]+'/token/'+esc(p.baseToken)+'" target="_blank" rel="noopener" style="font-family:var(--mono);font-size:10px;color:var(--mute);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:4px 9px">SCAN ↗</a>'
+   +'</div>':'')
+   +'<div class="paytog">'
+     +'<button data-action="paymode" data-m="wallet" class="'+(modal.mode==="wallet"?"on":"")+'">🔗 Connected</button>'
+     +'<button data-action="paymode" data-m="burner" class="'+(modal.mode==="burner"?"on":"")+'">🏹 HoodSnipr wallet</button>'
+   +'</div>'
+   +'<input class="amt" id="snipeAmt" inputmode="decimal" placeholder="0.0" value="0.05" aria-label="ETH amount">'
+   +'<div class="qamt">'+["0.01","0.05","0.1","0.25","0.5"].map(function(v){return '<button data-action="qamt" data-v="'+v+'">'+v+'</button>'}).join("")+'</div>'
+   +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="slip" data-b="'+b+'" '+(b===modal.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
+   +'<div class="fees" id="feeBox"></div>'
+   +'<button class="fire" id="fireBtn" data-action="fire">🏹 FIRE SNIPE</button>'
+   +(p.dsUrl?'<a class="linkout" href="'+esc(p.dsUrl)+'" target="_blank" rel="noopener">open on DexScreener ↗</a>':'')
+   +'<a class="linkout" href="https://www.geckoterminal.com/'+CFG.GT_NET+'/pools/'+esc(p.pool)+'" target="_blank" rel="noopener">open on GeckoTerminal ↗</a>'
+   +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
+  +'</div></div>';
+  modal.quote=null;
+  updFees();
+  $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; updFees(); });
+  // lazy metadata: socials via GT info, holders via Blockscout
+  enrichSocials(p).then(function(){ var el=$("#mSocials"); if(el) el.innerHTML=socialLinks(p,16); });
+  if(p.baseToken) enrichHolders([p]).then(function(){
+    var m=metaOf(p), el=$("#mHolders");
+    if(el && m && m.h!=null) el.textContent=m.h.toLocaleString();
+  });
+}
+var quoteSeq=0;
+function updFees(){
+  var p=modal.pool; if(!p)return;
+  var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
+  var fee=amt*CFG.FEE_BPS/10000, net=amt-fee;
+  var estUsd=net*state.ethUsd, estTok=p.price? estUsd/p.price : null;
+  var q=modal.quote;
+  var received = q && q.amt===net
+    ? "≈ "+(+q.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" · UNI V3 "+(q.fee/10000)+"%"
+    : (estTok?("≈ "+estTok.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" (indexer est.)"):"—");
+  $("#feeBox").innerHTML=
+    '<div><span class="k">Snipe fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Net swapped</span><span class="up">'+net.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Est. received</span><span id="quoteLine">'+received+'</span></div>'
+   +'<div><span class="k">Max slippage</span><span>'+(modal.slip/100)+'%</span></div>'
+   +'<div><span class="k">Execution</span><span style="color:var(--gold)">UNISWAP V3 · ONCHAIN</span></div>'
+   +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
+  if(net>0 && p.baseToken) liveQuote(p, net);
+}
+// ---- Uniswap plumbing ----
+function rpc(){ return new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId); }
+async function verifyUni(provider){
+  if(uniVerified!==null) return uniVerified;
+  try{
+    var pr = provider || rpc();
+    var code = await pr.getCode(CFG.UNI.swapRouter02);
+    if(!code || code==="0x") throw 0;
+    var r = new ethers.Contract(CFG.UNI.swapRouter02,
+      ["function factory() view returns (address)","function WETH9() view returns (address)"], pr);
+    var f = await r.factory(), w = await r.WETH9();
+    uniVerified = f.toLowerCase()===CFG.UNI.v3Factory.toLowerCase()
+               && w.toLowerCase()===CFG.UNI.weth.toLowerCase();
+  }catch(e){ uniVerified=false; }
+  return uniVerified;
+}
+async function tokenDecimals(pr, addr){
+  try{ return Number(await new ethers.Contract(addr,["function decimals() view returns (uint8)"],pr).decimals()); }
+  catch(e){ return 18; }
+}
+async function bestQuote(pr, token, amountInWei){
+  // try fee tiers, keep the best amountOut
+  var q = new ethers.Contract(CFG.UNI.quoterV2,
+    ["function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut,uint160,uint32,uint256)"], pr);
+  var best=null;
+  for(var i=0;i<CFG.UNI.feeTiers.length;i++){
+    var fee=CFG.UNI.feeTiers[i];
+    try{
+      var res = await q.quoteExactInputSingle.staticCall({ tokenIn:CFG.UNI.weth, tokenOut:token, amountIn:amountInWei, fee:fee, sqrtPriceLimitX96:0 });
+      var out = res[0];
+      if(out>0n && (!best || out>best.out)) best={ out:out, fee:fee };
+    }catch(e){ /* no pool at this tier */ }
+  }
+  return best;
+}
+async function liveQuote(p, netEth){
+  var seq=++quoteSeq;
+  try{
+    var pr=rpc();
+    if(!(await verifyUni(pr))) return;
+    var wei=ethers.parseEther(netEth.toFixed(18));
+    var best=await bestQuote(pr, p.baseToken, wei);
+    if(seq!==quoteSeq || !best) return;
+    var dec=await tokenDecimals(pr, p.baseToken);
+    if(seq!==quoteSeq) return;
+    modal.quote={ amt:netEth, out:best.out, outFmt:ethers.formatUnits(best.out,dec), fee:best.fee, dec:dec };
+    var el=$("#quoteLine");
+    if(el) el.textContent="≈ "+(+modal.quote.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" · UNI V3 "+(best.fee/10000)+"%";
+  }catch(e){}
+}
+async function fire(){
+  var p=modal.pool; if(!p)return;
+  var amt=parseFloat($("#snipeAmt").value);
+  if(!amt||amt<=0){toast("Enter an amount",true);return}
+  if(!p.baseToken){toast("Token address unknown for this pool",true);return}
+  var btn=$("#fireBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> LOCKING ON…';
+  var done=function(){ var b=$("#fireBtn"); if(b){ b.disabled=false; b.textContent="🏹 FIRE SNIPE"; } };
+  try{
+    // ---- signer ----
+    var signer=null, provider=null;
+    if(modal.mode==="wallet"){
+      if(!state.wallet) await connect();
+      if(!state.wallet) throw new Error("No wallet connected");
+      await ensureChain();
+      // BrowserProvider caches the network it was created on — after a chain
+      // switch a stale provider estimates gas against the WRONG chain, which
+      // surfaces as "missing revert data". Always rebuild it post-switch.
+      state.provider = new ethers.BrowserProvider(window.ethereum);
+      provider = state.provider;
+      var net_ = await provider.getNetwork();
+      if(Number(net_.chainId)!==CFG.CHAIN.chainId)
+        throw new Error("Wallet is on the wrong network — switch to Robinhood Chain (4663)");
+      signer = await provider.getSigner();
+      var liveAddr = ethers.getAddress(await signer.getAddress());
+      if(liveAddr!==state.wallet){ state.wallet=liveAddr; save("hs_addr",liveAddr);
+        var wb=$("#walletBtn"); if(wb) wb.textContent=short(liveAddr); }
+      var wbal = await rpc().getBalance(liveAddr);
+      if(wbal < ethers.parseEther(String(amt)))
+        throw new Error("Not enough ETH on Robinhood Chain ("+(+ethers.formatEther(wbal)).toFixed(5)+" ETH) — bridge ETH to chain 4663 first");
+    }else{
+      if(!state.burner) throw new Error("Create your HoodSnipr wallet first (Wallets tab)");
+      provider = rpc();
+      signer = new ethers.Wallet(state.burner.pk, provider);
+      var bal = await provider.getBalance(signer.address);
+      if(bal < ethers.parseEther(String(amt))) throw new Error("Burner balance too low — send ETH on Robinhood Chain first");
+    }
+
+    // ---- runtime-verify the router before a single wei moves ----
+    btn.innerHTML='<span class="spin"></span> VERIFYING ROUTER…';
+    if(!(await verifyUni(rpc()))) throw new Error("Router failed onchain verification — trading disabled for safety");
+
+    var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
+    var netWei = ethers.parseEther(net.toFixed(18));
+
+    // ---- quote (route + minOut) ----
+    btn.innerHTML='<span class="spin"></span> QUOTING UNISWAP…';
+    var best = await bestQuote(rpc(), p.baseToken, netWei);
+    if(!best) throw new Error("No Uniswap v3 WETH pool found for $"+p.sym+" — it may still be on a launchpad bonding curve or v4-only");
+    var minOut = best.out - (best.out * BigInt(modal.slip) / 10000n);
+    var dec = (modal.quote && modal.quote.dec) || await tokenDecimals(rpc(), p.baseToken);
+
+    // ---- preflight: simulate the exact swap via eth_call from the user's
+    // address BEFORE asking for any signature. Opaque estimate failures
+    // become readable errors here, and no fee is taken on a doomed swap. ----
+    btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
+    var me = await signer.getAddress();
+    var routerIface = new ethers.Interface(
+      ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"]);
+    async function preflight(feeTier, minO){
+      var data = routerIface.encodeFunctionData("exactInputSingle", [{
+        tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:feeTier, recipient:me,
+        amountIn:netWei, amountOutMinimum:minO, sqrtPriceLimitX96:0 }]);
+      await rpc().call({ to: CFG.UNI.swapRouter02, data: data, value: netWei, from: me });
+    }
+    try{ await preflight(best.fee, minOut); }
+    catch(pfErr){
+      // retry once with zero minOut to distinguish slippage from a dead pool
+      var slippageIssue=false;
+      try{ await preflight(best.fee, 0n); slippageIssue=true; }catch(e2){}
+      if(slippageIssue) throw new Error("Price moved beyond your "+(modal.slip/100)+"% slippage — raise slippage or retry");
+      throw new Error("Swap simulation reverted for $"+p.sym+" — likely a transfer-tax/honeypot token or launchpad-gated pool. Not sniped, nothing charged.");
+    }
+
+    // ---- 1) platform fee — ALWAYS charged, frozen route ----
+    btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
+    var tx1 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
+    await tx1.wait();
+
+    // ---- 2) the swap: SwapRouter02.exactInputSingle, ETH in (router wraps) ----
+    btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…';
+    var router = new ethers.Contract(CFG.UNI.swapRouter02,
+      ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"],
+      signer);
+    var params = { tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:best.fee,
+      recipient: await signer.getAddress(), amountIn: netWei,
+      amountOutMinimum: minOut, sqrtPriceLimitX96: 0 };
+    var tx2;
+    try{
+      tx2 = await router.exactInputSingle(params, { value: netWei });
+    }catch(sendErr){
+      var sm=(sendErr&&(sendErr.shortMessage||sendErr.message))||"";
+      if(/missing revert data|estimate/i.test(sm)){
+        // preflight already proved the swap succeeds — the wallet's own gas
+        // estimator is the flaky part on this young chain. Send with a manual
+        // gas limit to skip its estimation.
+        tx2 = await router.exactInputSingle(params, { value: netWei, gasLimit: 800000n });
+      } else throw sendErr;
+    }
+    btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
+    var rcpt = await tx2.wait();
+    if(!rcpt || rcpt.status!==1) throw new Error("Swap reverted onchain");
+
+    // ---- actual received amount from the ERC-20 Transfer log to us ----
+    var got = null;
+    try{
+      var me=(await signer.getAddress()).toLowerCase();
+      var iface=new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
+      rcpt.logs.forEach(function(lg){
+        if((lg.address||"").toLowerCase()!==p.baseToken.toLowerCase()) return;
+        try{ var ev=iface.parseLog(lg);
+          if(ev && ev.args && String(ev.args[1]).toLowerCase()===me) got=ev.args[2];
+        }catch(e){}
+      });
+    }catch(e){}
+    var tokensOut = +(ethers.formatUnits(got!=null?got:best.out, dec));
+
+    recordTrade(p, amt, fee, modal.mode, tokensOut, rcpt.hash);
+    toast("Sniped "+tokensOut.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" 🎯");
+    closeModal();
+  }catch(e){
+    // NOTHING is recorded on failure — the board stays honest
+    var m=(e&&(e.shortMessage||e.reason||e.message))||"Snipe failed";
+    if(/user rejected|denied/i.test(m)) m="Signature rejected in wallet";
+    else if(/missing revert data/i.test(m)) m="Swap simulation failed — check you have ETH on Robinhood Chain (4663) and your wallet is on that network, then retry";
+    else if(/insufficient funds/i.test(m)) m="Not enough ETH on Robinhood Chain for amount + gas";
+    toast(m, true);
+  }
+  done();
+}
+function recordTrade(p, ethIn, fee, mode, tokensOut, txHash){
+  var t={ sym:p.sym, baseToken:p.baseToken, pool:p.pool, ethIn:ethIn, fee:fee,
+    usdIn: ethIn*state.ethUsd,           // cost basis frozen at trade time
+    entryPrice:p.price, ts:Date.now(), mode:mode,
+    tokens: tokensOut, tx: txHash||null };
+  state.trades.unshift(t); save("hs_trades", state.trades);
+  renderPnl(); syncLeaderboard(); loadPortfolio();
+}
+function closeModal(){ $("#modalRoot").innerHTML=""; modal.pool=null; }
+
+// ================= WALLETS =================
+async function connect(){
+  if(!window.ethereum){ toast("No EVM wallet found — install MetaMask/Rabby", true); return; }
+  try{
+    var accts = await window.ethereum.request({ method:"eth_requestAccounts" });
+    state.wallet = ethers.getAddress(accts[0]);
+    await ensureChain();
+    state.provider = new ethers.BrowserProvider(window.ethereum);
+    save("hs_connected", 1); save("hs_addr", state.wallet);
+    var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
+    renderWallets();
+    await loadRemoteProfile();   // an existing profile for this address wins
+    var isNew = !state.profile || (!state.profile.name && !state.profile.x);
+    if(!state.profile){ state.profile={ name:"", x:"", pfp:null }; save("hs_profile", state.profile); }
+    toast(isNew?"Signed up · profile created 🪪":"Welcome back"+(state.profile.name?", "+state.profile.name:"")+" 🏹");
+    if(isNew) openProfile();
+    syncLeaderboard();
+  }catch(e){ toast(e.message||"Connect failed", true); }
+}
+async function ensureChain(){
+  try{
+    await window.ethereum.request({ method:"wallet_switchEthereumChain", params:[{ chainId: CFG.CHAIN.chainIdHex }] });
+  }catch(err){
+    var code = err && (err.code || (err.data&&err.data.originalError&&err.data.originalError.code));
+    if(code===4902){
+      await window.ethereum.request({ method:"wallet_addEthereumChain", params:[{
+        chainId: CFG.CHAIN.chainIdHex, chainName: CFG.CHAIN.chainName,
+        rpcUrls: CFG.CHAIN.rpcUrls, nativeCurrency: CFG.CHAIN.nativeCurrency,
+        blockExplorerUrls: CFG.CHAIN.blockExplorerUrls }] });
+    } else if(code===4001){
+      throw new Error("Network switch rejected — approve Robinhood Chain in your wallet to snipe");
+    } else if(err) throw err;
+  }
+  // confirm the wallet actually landed on 4663
+  var cid = await window.ethereum.request({ method:"eth_chainId" });
+  if(parseInt(cid,16)!==CFG.CHAIN.chainId)
+    throw new Error("Wallet is on the wrong network — switch to Robinhood Chain (4663)");
+}
+function renderWallets(){
+  var cw=$("#cwBox");
+  if(state.wallet){
+    cw.innerHTML='<div class="addr">'+esc(state.wallet)+'</div>'
+      +'<p class="hint">Chain 4663 · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/address/'+esc(state.wallet)+'" target="_blank" rel="noopener" style="color:var(--green)">view on Blockscout ↗</a></p>';
+  }
+  var bw=$("#bwBox");
+  if(state.burner){
+    bw.innerHTML='<div class="addr">'+esc(state.burner.addr)+'</div>'
+     +'<p class="hint">Balance: <b id="bwBal" style="color:var(--green)">'+(state.burnerBal==null?"…":state.burnerBal+" ETH")+'</b> · send ETH <b>on Robinhood Chain</b> to arm it.</p>'
+     +'<div class="frow">'
+       +'<button class="obtn" data-action="bw-copy">Copy address</button>'
+       +'<button class="obtn" data-action="bw-refresh">Refresh balance</button>'
+       +'<button class="obtn" data-action="bw-export">Export key</button>'
+       +'<button class="dbtn" data-action="bw-burn">Destroy</button>'
+     +'</div>';
+    refreshBurnerBal();
+  }else{
+    bw.innerHTML='<div class="frow"><button class="sbtn" data-action="bw-create">Create burner</button>'
+      +'<button class="obtn" data-action="bw-import">Import key</button></div>';
+  }
+}
+async function refreshBurnerBal(){
+  if(!state.burner)return;
+  try{
+    var rp=new ethers.JsonRpcProvider(CFG.CHAIN.rpcUrls[0], CFG.CHAIN.chainId);
+    var b=await rp.getBalance(state.burner.addr);
+    state.burnerBal=(+ethers.formatEther(b)).toFixed(5);
+    var el=$("#bwBal"); if(el)el.textContent=state.burnerBal+" ETH";
+  }catch(e){}
+}
+function createBurner(pk){
+  var w = pk? new ethers.Wallet(pk) : ethers.Wallet.createRandom();
+  state.burner={ addr:w.address, pk:w.privateKey };
+  save("hs_burner", state.burner);
+  renderWallets();
+  toast("Burner ready — export the key NOW and store it safely");
+}
+
+// ================= PROFILE / PNL / SHARE =================
+function openProfile(){
+  $("#modalRoot").innerHTML=
+   '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><h2>🪪 Snipr profile</h2><button class="x" data-action="close">✕</button></div>'
+   +'<div id="profBox"></div>'
+   +'<h3 style="font-size:15px;margin:18px 0 6px">📜 My snipes & PnL</h3>'
+   +'<div id="pnlBox"></div>'
+   +'</div></div>';
+  renderProfile(); renderPnl();
+}
+function renderWMenu(open){
+  var m=$("#wmenu"); if(!m) return;
+  if(!state.wallet || !open){ m.innerHTML=""; return; }
+  var pr=state.profile||{};
+  m.innerHTML='<div class="wmenu">'
+    +'<div class="who">'+esc(pr.name||"Unnamed Snipr")+'<br>'+short(state.wallet)+'</div>'
+    +'<button data-action="wp-profile">🪪 My profile</button>'
+    +'<button data-action="wp-ranks">🏆 Leaderboard</button>'
+    +'<button class="danger" data-action="wp-disconnect">✕ Disconnect</button>'
+    +'</div>';
+}
+function disconnect(){
+  state.wallet=null; state.provider=null;
+  try{ localStorage.removeItem("hs_connected"); localStorage.removeItem("hs_addr"); }catch(e){}
+  var b=$("#walletBtn"); b.textContent="Connect wallet"; b.className="wbtn"; b.setAttribute("data-action","connect");
+  renderWMenu(false); renderWallets();
+  toast("Disconnected");
+}
+function renderProfile(){
+  var box=$("#profBox"); if(!box)return; var pr=state.profile||{};
+  box.innerHTML=
+   '<div style="display:flex;gap:14px;align-items:center">'
+    +'<img class="pfp" alt="pfp" src="'+(pr.pfp||"./favicon.svg")+'">'
+    +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16px">'+esc(pr.name||"Unnamed Snipr")+'</div>'
+    +'<div style="font-family:var(--mono);font-size:11px;color:var(--mute)">'+(state.wallet?short(state.wallet):"connect a wallet to claim rank")+(pr.x?' · @'+esc(pr.x):'')+'</div></div>'
+   +'</div>'
+   +'<div class="frow" style="margin-top:14px">'
+    +'<input class="finput" id="prName" placeholder="Display name" maxlength="24" value="'+esc(pr.name||"")+'">'
+    +'<input class="finput" id="prX" placeholder="X handle (no @)" maxlength="15" value="'+esc(pr.x||"")+'">'
+   +'</div>'
+   +'<div class="frow">'
+    +'<label class="obtn">Upload PFP<input type="file" id="prPfp" accept="image/*" style="display:none"></label>'
+    +'<button class="sbtn" data-action="prof-save">'+(state.wallet?"Sign & save profile":"Save locally")+'</button>'
+   +'</div>'
+   +'<p class="hint">Saving with a connected wallet signs a message proving you own the address — that claims your name + PFP on the leaderboard. X is handle-only for now (no OAuth; nothing ever posts without you).</p>';
+  var f=$("#prPfp"); if(f)f.addEventListener("change",function(){
+    var file=f.files[0]; if(!file)return;
+    var rd=new FileReader();
+    rd.onload=function(){
+      var img=new Image();
+      img.onload=function(){
+        var c=document.createElement("canvas"); c.width=c.height=128;
+        c.getContext("2d").drawImage(img,0,0,128,128);
+        state.profile=Object.assign({},state.profile,{pfp:c.toDataURL("image/jpeg",.85)});
+        save("hs_profile",state.profile); renderProfile();
+      };
+      img.src=rd.result;
+    };
+    rd.readAsDataURL(file);
+  });
+}
+async function saveProfile(){
+  var pr=Object.assign({},state.profile,{ name:($("#prName").value||"").trim(), x:($("#prX").value||"").replace(/^@/,"").trim() });
+  state.profile=pr; save("hs_profile",pr);
+  if(state.wallet && window.ethereum){
+    try{
+      state.provider = state.provider || new ethers.BrowserProvider(window.ethereum);
+      var signer=await state.provider.getSigner();
+      var msg="HoodSnipr profile claim\naddr:"+state.wallet+"\nname:"+pr.name+"\nx:"+pr.x+"\nts:"+Date.now();
+      var sig=await signer.signMessage(msg);
+      var r=await fetch(CFG.API+"/profile",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({addr:state.wallet,msg:msg,sig:sig,name:pr.name,x:pr.x,pfp:pr.pfp||null})});
+      if(!r.ok) throw 0;
+      toast("Profile claimed ✍️");
+    }catch(e){ toast("Saved locally (leaderboard backend offline)", true); }
+  }else toast("Saved locally");
+  renderProfile(); renderWMenu(false); syncLeaderboard();
+}
+function pnlOf(t){
+  if(t.side==="sell") return {usd:0,pct:0,now:0};
+  var p=state.pools.find(function(x){return x.baseToken&&t.baseToken&&x.baseToken.toLowerCase()===t.baseToken.toLowerCase()});
+  var now=p?p.price:t.entryPrice;
+  if(!t.tokens||!now) return {usd:0,pct:0,now:now||0};
+  var cost=t.ethIn*state.ethUsd, cur=t.tokens*now;
+  return {usd:cur-cost, pct:cost?((cur-cost)/cost*100):0, now:now};
+}
+function renderPnl(){
+  var box=$("#pnlBox"); if(!box)return;
+  if(!state.trades.length){ box.innerHTML='<div class="empty">No snipes recorded yet.</div>'; return; }
+  var tot=0;
+  var h=state.trades.map(function(t,i){
+    if(t.side==="sell"){
+      return '<div class="lrow"><div class="nm">🏹 $'+esc(t.sym)+' <span style="color:var(--red);font-size:11px">LOOSED</span><div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.tokensSold.toLocaleString(undefined,{maximumFractionDigits:2})+' sold → '+(t.ethOut||0).toFixed(5)+' ETH · '+(t.mode==="burner"?"burner":"wallet")+(t.tx?' · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/tx/'+esc(t.tx)+'" target="_blank" rel="noopener" style="color:var(--green)">tx ↗</a>':'')+'</div></div>'
+        +'<div class="pnl up">+'+(t.ethOut||0).toFixed(4)+' ETH</div></div>';
+    }
+    var r=pnlOf(t); tot+=r.usd; var up=r.usd>=0;
+    return '<div class="lrow"><div class="nm">🎯 $'+esc(t.sym)+'<div class="h">'+new Date(t.ts).toLocaleString()+' · '+t.ethIn+' ETH · '+(t.mode==="burner"?"burner":"wallet")+(t.tx?' · <a href="'+CFG.CHAIN.blockExplorerUrls[0]+'/tx/'+esc(t.tx)+'" target="_blank" rel="noopener" style="color:var(--green)">tx ↗</a>':'')+'</div></div>'
+      +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+r.usd.toFixed(2)+' <span style="font-size:11px">('+(up?"+":"")+r.pct.toFixed(1)+'%)</span></div>'
+      +'<button class="obtn" style="padding:6px 10px;font-size:11px" data-action="share" data-i="'+i+'">Share</button></div>';
+  }).join("");
+  var lp=tradePnl(); var shown = lp.pnl!=null ? lp.pnl : tot;
+  var up=shown>=0;
+  box.innerHTML='<div style="font-family:var(--mono);font-size:13px;margin-bottom:8px">TOTAL PNL: <b class="'+(up?"up":"dn")+'">'+(up?"+":"−")+"$"+Math.abs(shown).toFixed(2)+'</b></div>'+h
+   +'<div class="frow"><button class="sbtn" data-action="share" data-i="-1">📤 Share total PnL to X</button></div>';
+}
+// ---- branded PnL share card (client-side canvas, 1200×630) ----
+function drawScope(g,cx,cy,r,sw,color){
+  g.strokeStyle=color; g.fillStyle=color; g.lineWidth=sw; g.lineCap="butt";
+  g.beginPath(); g.arc(cx,cy,r,0,6.2832); g.stroke();
+  g.beginPath(); g.arc(cx,cy,r*4/15,0,6.2832); g.fill();
+  var ext=r*20/15, tin=r*10/15;
+  [[cx,cy-ext,cx,cy-tin],[cx,cy+tin,cx,cy+ext],[cx-ext,cy,cx-tin,cy],[cx+tin,cy,cx+ext,cy]].forEach(function(l){
+    g.beginPath(); g.moveTo(l[0],l[1]); g.lineTo(l[2],l[3]); g.stroke();
+  });
+}
+function shareCard(i){
+  var c=$("#shareCanvas"), g=c.getContext("2d");
+  var pr=state.profile||{};
+  var title, big, sub, up;
+  if(i<0){
+    var tot=state.trades.reduce(function(a,t){return a+pnlOf(t).usd},0);
+    up=tot>=0; title="TOTAL PNL"; big=(up?"+":"−")+"$"+Math.abs(tot).toFixed(2);
+    sub=state.trades.length+" snipes on Robinhood Chain";
+  }else{
+    var t=state.trades[i], r=pnlOf(t); up=r.usd>=0;
+    title="$"+t.sym+" SNIPE"; big=(up?"+":"−")+"$"+Math.abs(r.usd).toFixed(2);
+    sub=(up?"+":"")+r.pct.toFixed(1)+"% · entry $"+fmtP(t.entryPrice)+" → $"+fmtP(r.now);
+  }
+  g.clearRect(0,0,1200,630);
+  g.fillStyle="#0C0E10"; g.fillRect(0,0,1200,630);
+  g.save(); g.globalAlpha=.12; g.strokeStyle="#00C805"; g.setLineDash([8,26]); g.lineWidth=2;
+  g.beginPath(); g.arc(600,300,430,0,6.2832); g.stroke();
+  g.setLineDash([40,30]); g.beginPath(); g.arc(600,300,330,0,6.2832); g.stroke(); g.restore();
+  drawScope(g,140,120,52,10,"#00C805");
+  g.textAlign="left";
+  g.fillStyle="#F0F4F1"; g.font="700 44px 'Space Grotesk',sans-serif"; g.fillText("Hood",212,136);
+  var w=g.measureText("Hood").width;
+  g.fillStyle="#00C805"; g.fillText("Snipr",212+w,136);
+  g.font="500 20px 'DM Mono',monospace"; g.fillStyle="#7C8683";
+  g.fillText("ROBINHOOD CHAIN",212,164);
+  g.textAlign="center";
+  g.fillStyle="#7C8683"; g.font="500 26px 'DM Mono',monospace"; g.fillText(title,600,268);
+  g.fillStyle=up?"#00C805":"#FF5000"; g.font="700 118px 'Space Grotesk',sans-serif"; g.fillText(big,600,388);
+  g.fillStyle="#F0F4F1"; g.font="500 26px 'DM Mono',monospace"; g.fillText(sub,600,438);
+  g.font="700 28px 'Space Grotesk',sans-serif"; g.fillStyle="#F0F4F1";
+  g.fillText((pr.name||"Snipr")+(pr.x?"  ·  @"+pr.x:""),600,540);
+  g.font="500 18px 'DM Mono',monospace"; g.fillStyle="#7C8683";
+  g.fillText("EVERY TRENDING TOKEN. ONE ARROW AWAY.",600,575);
+  g.textAlign="left";
+  c.toBlob(function(blob){
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement("a"); a.href=url; a.download="hoodsnipr-pnl.png"; a.click();
+    setTimeout(function(){URL.revokeObjectURL(url)},4000);
+    var text=encodeURIComponent("My PnL on HoodSnipr — sniping trending tokens on Robinhood Chain 🏹🎯");
+    window.open("https://twitter.com/intent/tweet?text="+text,"_blank","noopener");
+    toast("Card downloaded — attach it to the post 📤");
+  },"image/png");
+}
+
+// ================= LEADERBOARD =================
+async function syncLeaderboard(){
+  if(!state.wallet) return;
+  var tot = tradePnl().pnl || 0;
+  try{
+    await fetch(CFG.API+"/leaderboard",{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({addr:state.wallet,pnl:+tot.toFixed(2),trades:state.trades.length})});
+  }catch(e){}
+}
+async function renderRanks(){
+  var box=$("#ranksBox");
+  try{
+    var r=await fetch(CFG.API+"/leaderboard"); if(!r.ok)throw 0;
+    var j=await r.json(); var list=j.list||[];
+    if(!list.length){ box.innerHTML='<div class="empty">No ranked sniprs yet — record a snipe with a connected wallet to claim #01.</div>'; return; }
+    box.innerHTML=list.map(function(u,i){
+      var up=u.pnl>=0;
+      return '<div class="lrow"><span class="rank'+(i<3?" gold":"")+'">'+String(i+1).padStart(2,"0")+'</span>'
+        +'<img src="'+(u.pfp?esc(u.pfp):"./favicon.svg")+'" alt="">'
+        +'<div class="nm">'+esc(u.name||short(u.addr))+'<div class="h">'+short(u.addr)+(u.x?' · @'+esc(u.x):'')+' · '+(+u.trades||0)+' snipes</div></div>'
+        +'<div class="pnl '+(up?"up":"dn")+'">'+(up?"+":"")+"$"+(+u.pnl).toFixed(2)+'</div></div>';
+    }).join("");
+  }catch(e){
+    box.innerHTML='<div class="empty">Leaderboard backend offline — deploy the Netlify functions (see V02-NOTES.md in the repo).</div>';
+  }
+}
+
+// ================= PORTFOLIO =================
+var port = { holdings:[], totalUsd:0, ethBal:{}, loading:false, pnlUsd:null };
+
+async function fetchEthUsd(){
+  try{
+    var j = await gt("/simple/networks/"+CFG.GT_NET+"/token_price/"+CFG.UNI.weth);
+    var m = (((j.data||{}).attributes)||{}).token_prices||{};
+    var v = +m[CFG.UNI.weth.toLowerCase()];
+    if(v>0) state.ethUsd = v;
+  }catch(e){}
+}
+async function fetchPrices(addrs){
+  // GT simple price, batched up to 30 addresses per call
+  var out={};
+  for(var i=0;i<addrs.length;i+=30){
+    try{
+      var batch=addrs.slice(i,i+30);
+      var j=await gt("/simple/networks/"+CFG.GT_NET+"/token_price/"+batch.join(","));
+      var m=(((j.data||{}).attributes)||{}).token_prices||{};
+      Object.keys(m).forEach(function(k){ out[k.toLowerCase()]=+m[k]; });
+    }catch(e){}
+  }
+  return out;
+}
+async function discoverTokens(addr){
+  // Blockscout DISCOVERS which tokens an address has touched; balances are
+  // then read from RPC directly, because the indexer lags the chain and a
+  // just-loosed token would otherwise show its stale pre-sell amount.
+  var found={};
+  try{
+    var r=await fetch(CFG.EXPLORER_API+"/addresses/"+addr+"/token-balances");
+    if(r.ok){
+      var j=await r.json();
+      (j||[]).forEach(function(it){
+        var t=it.token||{};
+        if((t.type||"")!=="ERC-20") return;
+        var a=(t.address||t.address_hash||"").toLowerCase();
+        if(a) found[a]={ sym:t.symbol||"?", name:t.name||"", img:t.icon_url||null, dec:+(t.decimals||18) };
+      });
+    }
+  }catch(e){}
+  // union with everything the app itself knows about — covers indexer misses
+  state.trades.forEach(function(t){ if(t.baseToken){ var k=t.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:t.sym,name:"",img:null,dec:null}; } });
+  state.pools.forEach(function(p){ if(p.baseToken){ var k=p.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:p.sym,name:p.tokenName||"",img:p.img,dec:null}; else if(!found[k].img) found[k].img=p.img; } });
+  return found;
+}
+var decCache = load("hs_dec", {});
+async function rpcBalances(addr, tokens, tag){
+  var pr=rpc(), keys=Object.keys(tokens), rows=[];
+  await Promise.all(keys.map(async function(k){
+    try{
+      var c=new ethers.Contract(k,["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)"],pr);
+      var b=await c.balanceOf(addr);
+      if(b<=0n) return;
+      var d=tokens[k].dec;
+      if(d==null){
+        if(decCache[k]!=null) d=decCache[k];
+        else { d=Number(await c.decimals().catch(function(){return 18})); decCache[k]=d; }
+      }
+      rows.push({ wallet:tag, addr:k, sym:tokens[k].sym||"?", name:tokens[k].name||"",
+        img:tokens[k].img||null, dec:d, bal:+ethers.formatUnits(b,d) });
+    }catch(e){}
+  }));
+  save("hs_dec", decCache);
+  return rows;
+}
+async function loadPortfolio(){
+  if(port.loading) return;
+  port.loading=true;
+  var rbtn=document.querySelector('[data-action="port-refresh"]');
+  if(rbtn){ rbtn.textContent="↻ Refreshing…"; rbtn.disabled=true; }
+  var hb=$("#holdBox"); if(hb && !port.holdings.length) hb.innerHTML='<div class="skel"></div>'.repeat(3);
+  try{
+    await fetchEthUsd();
+    var pr=rpc(), rows=[];
+    if(state.wallet){
+      var toksC=await discoverTokens(state.wallet);
+      var got=await Promise.all([ rpcBalances(state.wallet,toksC,"connected"), pr.getBalance(state.wallet) ]);
+      rows=rows.concat(got[0]); port.ethBal.connected=+ethers.formatEther(got[1]);
+    } else { delete port.ethBal.connected; }
+    if(state.burner){
+      var toksB=await discoverTokens(state.burner.addr);
+      var gotB=await Promise.all([ rpcBalances(state.burner.addr,toksB,"burner"), pr.getBalance(state.burner.addr) ]);
+      rows=rows.concat(gotB[0]); port.ethBal.burner=+ethers.formatEther(gotB[1]);
+    } else { delete port.ethBal.burner; }
+    // price: board first, then GT batch for the rest
+    var boardPx={}, boardImg={};
+    state.pools.forEach(function(p){ if(p.baseToken){ boardPx[p.baseToken.toLowerCase()]=p.price; boardImg[p.baseToken.toLowerCase()]=p.img; } });
+    var missing=rows.filter(function(h){return boardPx[h.addr]==null}).map(function(h){return h.addr});
+    var extra = missing.length? await fetchPrices(missing) : {};
+    rows.forEach(function(h){
+      h.price = boardPx[h.addr]!=null? boardPx[h.addr] : (extra[h.addr]||null);
+      if(!h.img) h.img=boardImg[h.addr]||null;
+      h.valUsd = h.price!=null? h.bal*h.price : null;
+    });
+    rows.sort(function(a,b){return (b.valUsd||0)-(a.valUsd||0)});
+    port.holdings=rows;
+    port.priceMap={}; rows.forEach(function(h){ if(h.price!=null) port.priceMap[h.addr]=h.price; });
+    Object.keys(boardPx).forEach(function(k){ if(boardPx[k]!=null) port.priceMap[k]=boardPx[k]; });
+    var ethUsdTotal=((port.ethBal.connected||0)+(port.ethBal.burner||0))*state.ethUsd;
+    port.totalUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0) + ethUsdTotal;
+    port.pnlUsd = tradePnl().pnl;
+    snapshotPv();
+  }catch(e){}
+  finally{
+    port.loading=false;
+    if(rbtn){ rbtn.textContent="↻ Refresh holdings"; rbtn.disabled=false; }
+  }
+  renderPortfolio();
+}
+// ---- ledger-based PnL: only HoodSnipr trades, positions net of sells ----
+function tradePnl(){
+  var pos={}, usdIn=0, ethIn=0, usdOut=0;
+  state.trades.forEach(function(t){
+    var k=(t.baseToken||"").toLowerCase(); if(!k) return;
+    if(t.side==="sell"){
+      usdOut += (t.usdOut!=null? t.usdOut : (t.ethOut||0)*state.ethUsd);
+      pos[k]=(pos[k]||0)-(t.tokensSold||0);
+    }else{
+      usdIn += (t.usdIn!=null? t.usdIn : t.ethIn*state.ethUsd);
+      ethIn += t.ethIn;
+      pos[k]=(pos[k]||0)+(t.tokens||0);
+    }
+  });
+  var open=0;
+  Object.keys(pos).forEach(function(k){
+    var q=Math.max(0,pos[k]);
+    var px=(port.priceMap&&port.priceMap[k])!=null? port.priceMap[k] : null;
+    if(q>0 && px!=null) open+=q*px;
+  });
+  return { pnl: state.trades.length? (open+usdOut-usdIn) : null, usdIn:usdIn, ethIn:ethIn, usdOut:usdOut, openUsd:open };
+}
+function snapshotPv(){
+  var series=load("hs_pv",[]);
+  var last=series[series.length-1], now=Date.now();
+  if(!last || now-last.t>5*60e3 || Math.abs(port.totalUsd-last.v)>Math.max(1,last.v*0.01)){
+    series.push({t:now,v:+port.totalUsd.toFixed(2)});
+    if(series.length>400) series=series.slice(-400);
+    save("hs_pv",series);
+  }
+}
+function renderPvChart(){
+  var el=$("#pvChart"); if(!el)return;
+  var se=load("hs_pv",[]);
+  if(se.length<2){ el.innerHTML='<div class="empty" style="padding:24px">Value history builds as you use the portfolio — check back soon.</div>'; return; }
+  var W=600,H=150,P=8;
+  var vs=se.map(function(p){return p.v}), mn=Math.min.apply(0,vs), mx=Math.max.apply(0,vs);
+  if(mx-mn<1e-9){mx=mn+1}
+  var t0=se[0].t, t1=se[se.length-1].t||t0+1;
+  function X(t){return P+(t-t0)/(t1-t0||1)*(W-2*P)} function Y(v){return H-P-(v-mn)/(mx-mn)*(H-2*P)}
+  var d=se.map(function(p,i){return (i?"L":"M")+X(p.t).toFixed(1)+","+Y(p.v).toFixed(1)}).join(" ");
+  var up=se[se.length-1].v>=se[0].v, col=up?"#00C805":"#FF5000";
+  el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
+   +'<path d="'+d+' L'+X(t1).toFixed(1)+','+(H-P)+' L'+X(t0).toFixed(1)+','+(H-P)+' Z" fill="'+col+'" opacity="0.08"/>'
+   +'<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2"/>'
+   +'<text x="'+P+'" y="12" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mx.toFixed(2)+'</text>'
+   +'<text x="'+P+'" y="'+(H-2)+'" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mn.toFixed(2)+'</text>'
+   +'</svg>';
+}
+function renderPortfolio(){
+  var st=$("#pStats"); if(!st)return;
+  var L=tradePnl();
+  var pnl=L.pnl, up=(pnl||0)>=0;
+  port.pnlUsd=pnl;
+  st.innerHTML=
+   '<div class="pst"><div class="k">TOTAL VALUE</div><div class="v">$'+port.totalUsd.toFixed(2)+'</div><div class="s">tokens + ETH, both wallets</div></div>'
+  +'<div class="pst"><div class="k">LIFETIME INVESTED</div><div class="v">'+L.ethIn.toFixed(4)+' ETH</div><div class="s">$'+L.usdIn.toFixed(2)+' at time of each snipe</div></div>'
+  +'<div class="pst"><div class="k">TOTAL PNL</div><div class="v '+(up?"up":"dn")+'">'+(pnl==null?"—":((up?"+":"−")+"$"+Math.abs(pnl).toFixed(2)))+'</div><div class="s">open positions + realized − invested</div></div>';
+  renderPvChart();
+  var hb=$("#holdBox"); if(!hb)return;
+  if(!state.wallet && !state.burner){ hb.innerHTML='<div class="empty">Connect a wallet or arm your burner, then refresh.</div>'; return; }
+  var h="";
+  ["connected","burner"].forEach(function(tag){
+    var eth=port.ethBal[tag];
+    var rows=port.holdings.filter(function(x){return x.wallet===tag});
+    if(eth==null && !rows.length) return;
+    h+='<div class="hgroup">'+(tag==="connected"?"🔗 CONNECTED — "+short(state.wallet||""):"🏹 HOODSNIPR BURNER — "+short(state.burner?state.burner.addr:""))+'</div>';
+    if(eth!=null) h+='<div class="lrow"><img class="timg" src="./favicon.svg" alt=""><div class="nm">ETH<div class="h">native · gas + ammo</div></div><div class="pnl">'+eth.toFixed(5)+'<span style="font-size:11px;color:var(--mute)"> ≈ $'+(eth*state.ethUsd).toFixed(2)+'</span></div></div>';
+    rows.forEach(function(x,i){
+      var gi=port.holdings.indexOf(x);
+      h+='<div class="lrow" data-action="port-open" data-addr="'+esc(x.addr)+'" style="cursor:pointer">'
+        +'<img class="timg" alt="" data-sym="'+esc(x.sym)+'" src="'+(x.img?esc(x.img):letterAvatar(x.sym))+'">'
+        +'<div class="nm">$'+esc(x.sym)+'<div class="h">'+x.bal.toLocaleString(undefined,{maximumFractionDigits:4})+(x.price?' · $'+fmtP(x.price):'')+' · tap for chart</div></div>'
+        +'<div class="pnl">'+(x.valUsd!=null?"$"+x.valUsd.toFixed(2):"—")+'</div>'
+        +'<button class="loose" data-action="loose" data-h="'+gi+'">LOOSE</button></div>';
+    });
+  });
+  hb.innerHTML=h || '<div class="empty">No holdings found yet — fire a snipe first.</div>';
+}
+
+// ================= LOOSE (sell via Uniswap v3, 0.25% fee on proceeds) =================
+var looseM={ h:null, slip:CFG.UNI.defaultSlippageBps, quote:null };
+function openLoose(idx){
+  var x=port.holdings[idx]; if(!x)return;
+  looseM.h=x; looseM.quote=null;
+  $("#modalRoot").innerHTML=
+  '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><div style="display:flex;gap:11px;align-items:center">'
+   +'<img class="timg lg" alt="" src="'+(x.img?esc(x.img):letterAvatar(x.sym))+'">'
+   +'<div><h2>Loose $'+esc(x.sym)+'</h2><div class="px">holding '+x.bal.toLocaleString(undefined,{maximumFractionDigits:4})+' · '+(x.wallet==="connected"?"connected wallet":"burner")+'</div></div></div>'
+   +'<button class="x" data-action="close">✕</button></div>'
+   +'<input class="amt" id="looseAmt" inputmode="decimal" placeholder="0.0" value="'+(x.bal*0.5).toPrecision(6)+'" aria-label="Token amount to sell">'
+   +'<div class="qamt">'+[25,50,75,100].map(function(pc){return '<button data-action="lpct" data-p="'+pc+'">'+pc+'%</button>'}).join("")+'</div>'
+   +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="lslip" data-b="'+b+'" '+(b===looseM.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
+   +'<div class="fees" id="looseFees"></div>'
+   +'<button class="fire" id="looseBtn" data-action="loose-fire" style="background:var(--red)">🏹 LOOSE IT</button>'
+   +'<p class="warn">Sells token → ETH on Uniswap v3. 0.25% fee is taken from the ETH received. Approval may add one extra signature. Total-loss risk.</p>'
+  +'</div></div>';
+  updLooseFees();
+  $("#looseAmt").addEventListener("input", function(){ looseM.quote=null; updLooseFees(); });
+}
+var looseSeq=0;
+function updLooseFees(){
+  var x=looseM.h; if(!x)return;
+  var amt=parseFloat(($("#looseAmt")||{}).value)||0;
+  var q=looseM.quote;
+  var est = q && q.amt===amt ? (+q.outEth).toFixed(6)+" ETH · UNI V3 "+(q.fee/10000)+"%" : (x.price? "≈ "+((amt*x.price)/state.ethUsd).toFixed(6)+" ETH (indexer est.)" : "—");
+  var outEth = q && q.amt===amt ? +q.outEth : (x.price? (amt*x.price)/state.ethUsd : 0);
+  var fee=outEth*CFG.FEE_BPS/10000;
+  $("#looseFees").innerHTML=
+    '<div><span class="k">Est. proceeds</span><span class="up" id="looseQuoteLine">'+est+'</span></div>'
+   +'<div><span class="k">Loose fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">You keep</span><span class="up">'+(outEth-fee).toFixed(6)+' ETH</span></div>'
+   +'<div><span class="k">Max slippage</span><span>'+(looseM.slip/100)+'%</span></div>'
+   +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
+  if(amt>0) liveLooseQuote(x, amt);
+}
+async function bestQuoteOut(pr, token, amountInUnits){
+  var q = new ethers.Contract(CFG.UNI.quoterV2,
+    ["function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut,uint160,uint32,uint256)"], pr);
+  var best=null;
+  for(var i=0;i<CFG.UNI.feeTiers.length;i++){
+    var f=CFG.UNI.feeTiers[i];
+    try{ var res=await q.quoteExactInputSingle.staticCall({tokenIn:token,tokenOut:CFG.UNI.weth,amountIn:amountInUnits,fee:f,sqrtPriceLimitX96:0});
+      if(res[0]>0n && (!best||res[0]>best.out)) best={out:res[0],fee:f};
+    }catch(e){}
+  }
+  return best;
+}
+async function liveLooseQuote(x, amt){
+  var seq=++looseSeq;
+  try{
+    var pr=rpc(); if(!(await verifyUni(pr))) return;
+    var units=ethers.parseUnits(amt.toFixed(Math.min(18,x.dec)), x.dec);
+    var best=await bestQuoteOut(pr, x.addr, units);
+    if(seq!==looseSeq||!best) return;
+    looseM.quote={ amt:amt, out:best.out, outEth:ethers.formatEther(best.out), fee:best.fee, units:units };
+    var el=$("#looseQuoteLine");
+    if(el) el.textContent=(+looseM.quote.outEth).toFixed(6)+" ETH · UNI V3 "+(best.fee/10000)+"%";
+    updLooseFeesStatic();
+  }catch(e){}
+}
+function updLooseFeesStatic(){
+  var q=looseM.quote; if(!q)return;
+  var fee=+q.outEth*CFG.FEE_BPS/10000;
+  var box=$("#looseFees"); if(!box)return;
+  var rows=box.querySelectorAll("div");
+  if(rows[1]) rows[1].lastChild.textContent=fee.toFixed(6)+" ETH";
+  if(rows[2]) rows[2].lastChild.textContent=(+q.outEth-fee).toFixed(6)+" ETH";
+}
+async function fireLoose(){
+  var x=looseM.h; if(!x)return;
+  var amt=parseFloat($("#looseAmt").value);
+  if(!amt||amt<=0){toast("Enter an amount",true);return}
+  if(amt>x.bal*1.0000001){toast("More than you hold",true);return}
+  var btn=$("#looseBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> NOCKING…';
+  var done=function(){var b=$("#looseBtn"); if(b){b.disabled=false;b.textContent="🏹 LOOSE IT";}};
+  try{
+    var signer=null, provider=null;
+    if(x.wallet==="connected"){
+      if(!state.wallet) throw new Error("Connect the wallet that holds this token");
+      await ensureChain();
+      state.provider=new ethers.BrowserProvider(window.ethereum);
+      signer=await state.provider.getSigner();
+      var liveA=ethers.getAddress(await signer.getAddress());
+      if(liveA!==state.wallet){ state.wallet=liveA; save("hs_addr",liveA); }
+    }else{
+      if(!state.burner) throw new Error("Burner not found");
+      signer=new ethers.Wallet(state.burner.pk, rpc());
+    }
+    if(!(await verifyUni(rpc()))) throw new Error("Router failed onchain verification — trading disabled for safety");
+    var me=await signer.getAddress();
+    var units=ethers.parseUnits(amt.toFixed(Math.min(18,x.dec)), x.dec);
+
+    btn.innerHTML='<span class="spin"></span> QUOTING…';
+    var best=await bestQuoteOut(rpc(), x.addr, units);
+    if(!best) throw new Error("No Uniswap v3 WETH pool for $"+x.sym);
+    var minOut = best.out - (best.out*BigInt(looseM.slip)/10000n);
+
+    // ---- approval if needed (one extra signature, once per token) ----
+    var erc=new ethers.Contract(x.addr,
+      ["function allowance(address,address) view returns (uint256)","function approve(address,uint256) returns (bool)"], signer);
+    var allow=await erc.allowance(me, CFG.UNI.swapRouter02);
+    if(allow<units){
+      btn.innerHTML='<span class="spin"></span> APPROVE — SIGN IN WALLET…';
+      var atx=await erc.approve(CFG.UNI.swapRouter02, ethers.MaxUint256);
+      await atx.wait();
+    }
+
+    // ---- swap: token→WETH to router, unwrap to user, in one multicall ----
+    btn.innerHTML='<span class="spin"></span> LOOSING — SIGN IN WALLET…';
+    var iface=new ethers.Interface([
+      "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256)",
+      "function unwrapWETH9(uint256 amountMinimum,address recipient) payable",
+      "function multicall(bytes[] data) payable returns (bytes[])"
+    ]);
+    var callSwap=iface.encodeFunctionData("exactInputSingle",[{
+      tokenIn:x.addr, tokenOut:CFG.UNI.weth, fee:best.fee,
+      recipient:CFG.UNI.swapRouter02, amountIn:units, amountOutMinimum:minOut, sqrtPriceLimitX96:0 }]);
+    var callUnwrap=iface.encodeFunctionData("unwrapWETH9",[minOut, me]);
+    var router=new ethers.Contract(CFG.UNI.swapRouter02, ["function multicall(bytes[] data) payable returns (bytes[])"], signer);
+    var tx;
+    try{ tx=await router.multicall([callSwap, callUnwrap]); }
+    catch(sendErr){
+      var sm=(sendErr&&(sendErr.shortMessage||sendErr.message))||"";
+      if(/missing revert data|estimate/i.test(sm)) tx=await router.multicall([callSwap, callUnwrap], { gasLimit: 900000n });
+      else throw sendErr;
+    }
+    btn.innerHTML='<span class="spin"></span> CONFIRMING…';
+    var rcpt=await tx.wait();
+    if(!rcpt||rcpt.status!==1) throw new Error("Loose reverted onchain");
+
+    // actual ETH out = WETH Withdrawal event from the unwrap
+    var got=null;
+    try{
+      var wIface=new ethers.Interface(["event Withdrawal(address indexed src,uint256 wad)"]);
+      rcpt.logs.forEach(function(lg){
+        if((lg.address||"").toLowerCase()!==CFG.UNI.weth.toLowerCase())return;
+        try{ var ev=wIface.parseLog(lg); if(ev) got=ev.args[1]; }catch(e){}
+      });
+    }catch(e){}
+    var outWei = got!=null? got : best.out;
+    var outEth = +ethers.formatEther(outWei);
+
+    // ---- fee leg: 0.25% of proceeds → frozen fee wallet ----
+    var feeWei = outWei*BigInt(CFG.FEE_BPS)/10000n;
+    btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
+    var ftx=await signer.sendTransaction({ to: CFG.FEE_WALLET, value: feeWei });
+    await ftx.wait();
+
+    state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:outEth,
+      usdOut: outEth*state.ethUsd,        // proceeds frozen at trade time
+      fee:+ethers.formatEther(feeWei), tokensSold:amt, ts:Date.now(),
+      mode:x.wallet==="connected"?"wallet":"burner", tx:rcpt.hash });
+    save("hs_trades", state.trades);
+    // optimistic: shrink the holding instantly, RPC truth follows right behind
+    x.bal=Math.max(0,x.bal-amt); if(x.price!=null)x.valUsd=x.bal*x.price;
+    renderPortfolio();
+    toast("Loosed "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" $"+x.sym+" → "+(outEth-+ethers.formatEther(feeWei)).toFixed(5)+" ETH 🏹");
+    closeModal(); renderPnl(); loadPortfolio(); syncLeaderboard();
+    setTimeout(loadPortfolio, 8000); // second pass once indexer-priced data settles
+  }catch(e){
+    var m=(e&&(e.shortMessage||e.reason||e.message))||"Loose failed";
+    if(/user rejected|denied/i.test(m)) m="Signature rejected in wallet";
+    toast(m,true);
+  }
+  done();
+}
+
+// ================= EVENTS (delegated — CSP-safe, no inline handlers) =================
+document.addEventListener("click", function(e){
+  if(!e.target.closest(".wwrap")) renderWMenu(false);
+  var el=e.target.closest("[data-action]"); if(!el) return;
+  var a=el.getAttribute("data-action");
+  if(a==="ext") return; // social links: let the browser navigate, don't open the modal
+  if(a==="connect") connect();
+  else if(a==="wmenu"){ e.stopPropagation(); renderWMenu(!$("#wmenu").firstChild); }
+  else if(a==="wp-profile"){ renderWMenu(false); openProfile(); }
+  else if(a==="wp-ranks"){ renderWMenu(false); $$(".tab").forEach(function(t){t.classList.toggle("on",t.getAttribute("data-tab")==="ranks")}); ["board","wallet","ranks"].forEach(function(k){$("#v-"+k).style.display=k==="ranks"?"":"none"}); renderRanks(); }
+  else if(a==="wp-disconnect") disconnect();
+  else if(a==="open"){ e.stopPropagation(); openToken(el.getAttribute("data-pool")); }
+  else if(a==="close") closeModal();
+  else if(a==="closebg"){ if(e.target===el) closeModal(); }
+  else if(a==="paymode"){ modal.mode=el.getAttribute("data-m"); $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)}); updFees(); }
+  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; updFees(); }
+  else if(a==="slip"){ modal.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="slip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===modal.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updFees(); }
+  else if(a==="fire") fire();
+  else if(a==="bw-create"){ if(confirm("Create a burner wallet? Keys live ONLY in this browser — you must export and back up the key yourself.")) createBurner(); }
+  else if(a==="bw-import"){ var pk=prompt("Paste private key (0x…) — it stays in this browser:"); if(pk){ try{createBurner(pk.trim())}catch(err){toast("Invalid key",true)} } }
+  else if(a==="bw-copy"){ navigator.clipboard.writeText(state.burner.addr).then(function(){toast("Address copied")}); }
+  else if(a==="bw-refresh") refreshBurnerBal();
+  else if(a==="bw-export"){ if(confirm("Reveal private key? Anyone who sees it controls the funds.")) prompt("Your burner private key — store it safely:", state.burner.pk); }
+  else if(a==="bw-burn"){ if(confirm("Destroy this burner from the browser? If the key isn't exported and it holds funds, THEY ARE GONE FOREVER.") && confirm("Final confirm: key exported or wallet empty?")){ state.burner=null; state.burnerBal=null; localStorage.removeItem("hs_burner"); renderWallets(); toast("Burner destroyed"); } }
+  else if(a==="prof-save") saveProfile();
+  else if(a==="page"){
+      state.page=parseInt(el.getAttribute("data-p"),10)||0;
+      renderBoard();
+      var b=$("#board"); if(b) b.scrollIntoView({behavior:"smooth",block:"start"});
+    }
+  else if(a==="port-refresh") loadPortfolio();
+  else if(a==="port-open"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
+  else if(a==="copy-ca"){ navigator.clipboard.writeText(el.getAttribute("data-addr")).then(function(){ toast("Contract address copied 📋"); }).catch(function(){ prompt("Contract address:", el.getAttribute("data-addr")); }); }
+  else if(a==="loose"){ e.stopPropagation(); openLoose(parseInt(el.getAttribute("data-h"),10)); }
+  else if(a==="loose-fire") fireLoose();
+  else if(a==="lpct"){ var xx=looseM.h; if(xx){ $("#looseAmt").value=(xx.bal*parseInt(el.getAttribute("data-p"),10)/100).toPrecision(6); looseM.quote=null; updLooseFees(); } }
+  else if(a==="lslip"){ looseM.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="lslip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===looseM.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updLooseFees(); }
+  else if(a==="share") shareCard(parseInt(el.getAttribute("data-i"),10));
+});
+$("#tabs").addEventListener("click",function(e){
+  var b=e.target.closest(".tab"); if(!b)return;
+  $$(".tab").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
+  var v=b.getAttribute("data-tab");
+  ["board","new","port","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
+  if(v==="ranks") renderRanks();
+  if(v==="wallet") renderWallets();
+  if(v==="port"){ renderPortfolio(); loadPortfolio(); }
+  if(v==="new") refreshNew(false);
+});
+$("#tfpills").addEventListener("click",function(e){
+  var b=e.target.closest(".tf"); if(!b)return;
+  $$(".tf").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
+  state.tf=b.getAttribute("data-tf");
+  save("hs_tf", state.tf);
+  state.page=0;
+  renderBoard();
+  if(state.tf==="d30") ensure30d();
+});
+
+async function loadRemoteProfile(){
+  if(!state.wallet) return;
+  try{
+    var r=await fetch(CFG.API+"/profile?addr="+state.wallet);
+    if(!r.ok) return;
+    var p=await r.json();
+    if(p && (p.name||p.x||p.pfp)){
+      // remote wins for identity fields; keep any local pfp if remote has none
+      state.profile=Object.assign({}, state.profile||{}, {
+        name:p.name||((state.profile||{}).name||""),
+        x:p.x||((state.profile||{}).x||""),
+        pfp:p.pfp||((state.profile||{}).pfp||null)
+      });
+      save("hs_profile", state.profile);
+      renderWMenu(false); renderProfile();
+    }
+  }catch(e){}
+}
+function autoReconnect(){
+  // Session restore is PURELY LOCAL: no eth_accounts, no provider creation,
+  // no request of any kind at boot. Mobile in-app wallets (MetaMask mobile,
+  // Coinbase Wallet) pop their connect sheet on eth_accounts even though the
+  // spec says it's silent — so on first launch and on reconnect alike, the
+  // wallet is not touched until the user actually does something.
+  var addr = load("hs_addr", null);
+  if(!load("hs_connected", null) || !addr) return;   // never connected → do nothing
+  try{ state.wallet = ethers.getAddress(addr); }catch(e){ return; }
+  var b=$("#walletBtn"); b.textContent=short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
+  renderWallets(); syncLeaderboard(); loadRemoteProfile();
+  // provider + signatures happen lazily at the first snipe/loose/profile-save
+}
+
+// keep provider honest if the user flips chain/account in the wallet UI
+if(window.ethereum && window.ethereum.on){
+  window.ethereum.on("chainChanged", function(){ if(state.wallet) state.provider = new ethers.BrowserProvider(window.ethereum); });
+  window.ethereum.on("accountsChanged", function(accs){
+    if(!accs || !accs.length){ disconnect(); return; }
+    state.wallet = ethers.getAddress(accs[0]);
+    save("hs_addr", state.wallet);
+    var b=$("#walletBtn"); if(b && b.classList.contains("on")) b.textContent=short(state.wallet);
+    renderWallets();
+  });
+}
+
+// ================= BOOT =================
+state.burner = load("hs_burner", null);
+// One-time ledger migration: drop every trade without a confirmed tx hash.
+// (Prototype/link-out-era records never swapped onchain and were poisoning
+// lifetime-invested + PnL.) Only real receipts count from here on.
+(function(){
+  var before=state.trades.length;
+  state.trades = state.trades.filter(function(t){ return !!t.tx; });
+  if(state.trades.length!==before) save("hs_trades", state.trades);
+})();
+// paint the restored timeframe onto the pills before first render
+(function(){
+  $$(".tf").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-tf")===state.tf); });
+  if(state.tf==="d30") setTimeout(ensure30d, 800);   // 30D needs its ranger primed
+})();
+
+autoReconnect();
+document.addEventListener("visibilitychange", function(){ if(!document.hidden) refresh(); });
+paintCachedBoard();      // instant full list from last session
+fetchEthUsd(); refresh();
+setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
+// token census polls fast so new launches show up almost the moment they land
+pullChainStats(); setInterval(function(){ if(!document.hidden) pullChainStats(); }, 10000);
+// portfolio stays fresh on its own while the tab is open — no button mashing needed
+setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
+setInterval(function(){
+  if(document.hidden) return;
+  var vn=$("#v-new");
+  refreshNew(vn && vn.style.display!=="none");   // forced when visible, cached otherwise
+}, 45000);
+refreshNew(false);   // prime the launch feed at boot so early movers show immediately
+setInterval(function(){ if(state.lastUpdate){var a=Math.round((Date.now()-state.lastUpdate)/1000);$("#ageTxt").textContent=a<60?a+"s ago":Math.round(a/60)+"m ago";} },5000);
+renderWallets();
+})();
+</script>
+</body>
+</html>

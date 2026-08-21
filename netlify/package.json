@@ -1,0 +1,10 @@
+{
+  "name": "hoodsnipr",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Live trending-token sniping terminal for Robinhood Chain",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "ethers": "^6.13.4"
+  }
+}
