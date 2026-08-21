@@ -547,9 +547,12 @@ export async function bootstrapV4(poolIds, budgetMs = 9000) {
   if (!ids.length) {
     // pull ids straight from the board if the caller didn't supply any
     const board = await store.get("board2", { type: "json" }).catch(() => null);
+    // Pick the BUSIEST v4 pools — the first 20 rows may not have traded in the
+    // window we scan, which is exactly why this came back empty.
     ids = ((board && board.rows) || [])
       .filter(r => /^0x[0-9a-f]{64}$/i.test(String(r.p || "")))
-      .slice(0, 20).map(r => String(r.p).toLowerCase());
+      .sort((a, b) => (b.h24 || 0) - (a.h24 || 0))
+      .slice(0, 25).map(r => String(r.p).toLowerCase());
   }
   if (!ids.length) return { ok: false, error: "no v4 pool ids available to bootstrap from" };
 
@@ -637,6 +640,75 @@ export async function bootstrapV4(poolIds, budgetMs = 9000) {
   return { ok: !!rec.router, ...rec };
 }
 
+// ---------------------------------------------------------------------------
+// LEARN HOOKS — the shortcut that makes everything else fast.
+//
+// We've been hunting the Initialize log for each specific pool, which is slow
+// and often misses. But we don't actually need it: local derivation can rebuild
+// any PoolKey IF it knows the hook address, and a chain's launchpad reuses the
+// SAME hook contract across every pool it deploys.
+//
+// So instead of per-pool lookups, scan recent Initialize events from the known
+// PoolManager, collect the distinct hook addresses, and hand those to the
+// client. After that, pools resolve locally in milliseconds with no RPC at all.
+export async function learnHooks(budgetMs = 10000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
+    || { keys: {}, manager: null, hooks: [] };
+  const manager = st.manager || KNOWN_MANAGER;
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: "rpc: " + e.message }; }
+
+  const hooks = new Set(st.hooks || []);
+  const topics = new Set(st.topics || []);
+  let win = 15000, from = head, found = 0, scanned = 0, tries = 0;
+
+  while (Date.now() - t0 < budgetMs - 1500 && tries < 14 && from > head - 1200000) {
+    tries++;
+    const lo = Math.max(0, from - win);
+    try {
+      // address filter + the manager is the only emitter we care about
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16), address: manager
+      }]);
+      scanned += (from - lo);
+      for (const lg of (logs || [])) {
+        // Initialize is the 4-topic event (id, currency0, currency1 indexed)
+        if (!lg.topics || lg.topics.length !== 4) continue;
+        const k = decodeInit(lg);
+        if (!k) continue;
+        topics.add(lg.topics[0]);
+        if (k.hooks) hooks.add(k.hooks);
+        const ZERO = "0x0000000000000000000000000000000000000000";
+        for (const side of [k.c0, k.c1]) {
+          if (!side || side === ZERO) continue;
+          const list = st.keys[side] || (st.keys[side] = []);
+          if (!list.some(x => x.id === k.id)) { list.push(k); found++; }
+        }
+      }
+      if (hooks.size >= 6) break;      // enough to cover the launchpads
+      from = lo;
+      win = Math.min(120000, Math.floor(win * 1.8));
+    } catch (e) {
+      win = Math.max(400, Math.floor(win / 3));
+      if (win <= 400) from = Math.max(0, from - 400);
+    }
+  }
+
+  st.manager = manager;
+  st.hooks = [...hooks];
+  st.topics = [...topics];
+  st.hooksLearnedAt = Date.now();
+  await store.setJSON("v4pools", st).catch(() => {});
+  return {
+    ok: true, manager, hooks: st.hooks, initTopics: st.topics,
+    poolsIndexed: found, blocksScanned: scanned
+  };
+}
+
 export default async (req) => {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -680,10 +752,21 @@ export default async (req) => {
     return json(200, await discoverRouter());
   }
 
+  // ?learn=1 — scan recent Initialize events for hook addresses
+  if (url.searchParams.get("learn") === "1") {
+    return json(200, await learnHooks(14000));
+  }
+
   // ?hooks=1 — hook contracts we've seen, so the client can include them
   // as derivation candidates
   if (url.searchParams.get("hooks") === "1") {
-    const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+    let st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+    // no hooks known yet -> learn them now; this is what unlocks fast local
+    // derivation for every pool afterwards
+    if (!st.hooks || !st.hooks.length) {
+      await learnHooks(9000).catch(() => {});
+      st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || st;
+    }
     let boot = await store.get("v4boot", { type: "json" }).catch(() => null);
     if (!boot || !boot.routerVerified || boot.v !== 2) {
       boot = await bootstrapV4([]).catch(() => null);
