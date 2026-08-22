@@ -920,6 +920,74 @@ export async function keysForToken(token) {
   return { ok: found.length > 0, keys: found, manager, error: found.length ? null : "no v4 pool for this token" };
 }
 
+// ---------------------------------------------------------------------------
+// READ A REAL SWAP.
+//
+// These pools all use per-pool CREATE2-mined hooks, and a hook can require a
+// specific caller or specific hookData — so a generic UniversalRouter call may
+// legitimately revert even with a correct PoolKey. Rather than keep guessing
+// the interface, look at how swaps ACTUALLY happen: find a recent Swap log,
+// fetch its transaction, and report the contract and selector real traders use.
+export async function howSwap(budgetMs = 7000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+  const manager = st.manager || KNOWN_MANAGER;
+  if (!manager) return { ok: false, error: "PoolManager unknown" };
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: e.message }; }
+
+  let logs = [];
+  let win = 2000, from = head;
+  while (Date.now() - t0 < budgetMs - 2500 && !logs.length && from > head - 60000) {
+    const lo = Math.max(0, from - win);
+    try {
+      logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16),
+        address: manager, topics: [V4_SWAP_TOPIC]
+      }]) || [];
+    } catch (e) { win = Math.max(200, Math.floor(win / 3)); }
+    if (!logs.length) { from = lo; win = Math.min(20000, win * 2); }
+  }
+  if (!logs.length) return { ok: false, error: "no recent v4 swaps found" };
+
+  // sample a few distinct transactions
+  const seen = new Set(), out = [];
+  for (const lg of logs.slice(-12).reverse()) {
+    const h = lg.transactionHash;
+    if (!h || seen.has(h)) continue;
+    seen.add(h);
+    if (Date.now() - t0 > budgetMs - 800) break;
+    try {
+      const tx = await rpc("eth_getTransactionByHash", [h]);
+      if (!tx) continue;
+      out.push({
+        hash: h,
+        to: String(tx.to || "").toLowerCase(),      // the contract traders call
+        selector: String(tx.input || "").slice(0, 10),
+        value: tx.value,
+        inputLen: (String(tx.input || "").length - 2) / 2,
+        poolId: lg.topics && lg.topics[1],
+        swapSender: lg.topics && lg.topics[2] ? "0x" + lg.topics[2].slice(26) : null
+      });
+      if (out.length >= 4) break;
+    } catch (e) {}
+  }
+  // rank the entry points by frequency
+  const byTo = {};
+  for (const o of out) {
+    const k = o.to + "|" + o.selector;
+    byTo[k] = (byTo[k] || 0) + 1;
+  }
+  return {
+    ok: out.length > 0, manager, samples: out,
+    entryPoints: Object.entries(byTo).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => ({ to: k.split("|")[0], selector: k.split("|")[1], count: n }))
+  };
+}
+
 async function handle(req) {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -967,6 +1035,11 @@ async function handle(req) {
   if (url.searchParams.get("reset") === "1") {
     for (const k of ["v4pools", "v4boot", "v4router", "v4probe"]) await store.delete(k).catch(() => {});
     return json(200, { ok: true, cleared: true });
+  }
+
+  // ?howswap=1 — how do real traders swap on this chain?
+  if (url.searchParams.get("howswap") === "1") {
+    return json(200, await howSwap(7000));
   }
 
   // ?keys=<token> — direct, exact PoolKey lookup for a token
