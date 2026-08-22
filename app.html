@@ -1752,7 +1752,73 @@ async function unwrapWeth(signer, amountWei, onStep){
   await tx.wait();
 }
 
-var quoteSeq=0;var quoteSeq=0;
+// Wallet balance helpers. These were collateral damage when I rewrote the v4
+// quoting block — the call sites survived, so opening ANY token modal threw a
+// ReferenceError and nothing rendered. Restored here.
+function fmtBal(v){
+  if(v==null) return " …";
+  return " "+(+v).toFixed(4)+" ETH";
+}
+async function loadModalBalances(){
+  modal.bal = modal.bal || {};
+  var pr=rpc(), jobs=[];
+  if(state.wallet) jobs.push(pr.getBalance(state.wallet).then(function(b){ modal.bal.wallet=+ethers.formatEther(b); }).catch(function(){}));
+  if(state.burner) jobs.push(pr.getBalance(state.burner.addr).then(function(b){ modal.bal.burner=+ethers.formatEther(b); }).catch(function(){}));
+  await Promise.all(jobs);
+  var w=$("#balWallet"); if(w) w.textContent=fmtBal(modal.bal.wallet);
+  var b2=$("#balBurner"); if(b2) b2.textContent=fmtBal(modal.bal.burner);
+  renderSpendLine();
+}
+function activeBalance(){
+  if(!modal.bal) return null;
+  return modal.mode==="burner" ? modal.bal.burner : modal.bal.wallet;
+}
+function renderSpendLine(){
+  var el=$("#spendLine"); if(!el) return;
+  var bal=activeBalance();
+  var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
+  var label=modal.mode==="burner" ? "HoodSnipr wallet" : "Connected wallet";
+  if(bal==null){ el.innerHTML='<span>'+label+' balance…</span>'; return; }
+  var short_ = amt>0 && amt>bal;
+  el.innerHTML='<span>'+label+': <b class="'+(short_?"low":"")+'">'+bal.toFixed(5)+' ETH</b>'
+    +(short_?' — not enough for '+amt+' ETH':'')+'</span>'
+    +'<button class="max" data-action="maxamt">MAX</button>';
+}
+
+var quoteSeq=0;// Wallet balance helpers. These were collateral damage when I rewrote the v4
+// quoting block — the call sites survived, so opening ANY token modal threw a
+// ReferenceError and nothing rendered. Restored here.
+function fmtBal(v){
+  if(v==null) return " …";
+  return " "+(+v).toFixed(4)+" ETH";
+}
+async function loadModalBalances(){
+  modal.bal = modal.bal || {};
+  var pr=rpc(), jobs=[];
+  if(state.wallet) jobs.push(pr.getBalance(state.wallet).then(function(b){ modal.bal.wallet=+ethers.formatEther(b); }).catch(function(){}));
+  if(state.burner) jobs.push(pr.getBalance(state.burner.addr).then(function(b){ modal.bal.burner=+ethers.formatEther(b); }).catch(function(){}));
+  await Promise.all(jobs);
+  var w=$("#balWallet"); if(w) w.textContent=fmtBal(modal.bal.wallet);
+  var b2=$("#balBurner"); if(b2) b2.textContent=fmtBal(modal.bal.burner);
+  renderSpendLine();
+}
+function activeBalance(){
+  if(!modal.bal) return null;
+  return modal.mode==="burner" ? modal.bal.burner : modal.bal.wallet;
+}
+function renderSpendLine(){
+  var el=$("#spendLine"); if(!el) return;
+  var bal=activeBalance();
+  var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
+  var label=modal.mode==="burner" ? "HoodSnipr wallet" : "Connected wallet";
+  if(bal==null){ el.innerHTML='<span>'+label+' balance…</span>'; return; }
+  var short_ = amt>0 && amt>bal;
+  el.innerHTML='<span>'+label+': <b class="'+(short_?"low":"")+'">'+bal.toFixed(5)+' ETH</b>'
+    +(short_?' — not enough for '+amt+' ETH':'')+'</span>'
+    +'<button class="max" data-action="maxamt">MAX</button>';
+}
+
+var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
   var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
