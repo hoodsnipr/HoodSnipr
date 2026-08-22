@@ -1219,12 +1219,14 @@ function openToken(poolAddr){
 function venueToggleHtml(p){
   var v=versionsOf(p);
   if(v.length<2) return "";   // no toggle unless there's a genuine choice
+  var v4Dead = state.v4Checked && !state.v4RouterVerified;
   return '<div class="qamt" style="margin-top:8px">'
     +v.map(function(x){
       var on = x===modal.venue;
+      var dead = (x==="v4" && v4Dead);
       return '<button data-action="venue" data-v="'+esc(x)+'" '
-        +(on?'style="border-color:var(--green);color:var(--green)"':'')+'>'
-        +x.toUpperCase()+(x==="v4"?' ⚡':'')+'</button>';
+        +(on?'style="border-color:var(--green);color:var(--green)"':(dead?'style="opacity:.45"':''))+'>'
+        +x.toUpperCase()+(x==="v4"?(dead?' ⚠':' ⚡'):'')+'</button>';
     }).join("")
     +'</div>';
 }
@@ -1706,8 +1708,9 @@ async function ensureV4Router(){
       }
       // never proceed on an unverified router — test candidates ourselves
       if(!state.v4RouterVerified) return resolveVerifiedRouter();
+      state.v4Checked=true;
       return state.v4Router||CFG.UNI.universalRouter;
-    }).catch(function(){ return resolveVerifiedRouter(); });
+    }).catch(function(){ state.v4Checked=true; return resolveVerifiedRouter(); });
   }
   return v4BootPromise;
 }
@@ -2073,6 +2076,17 @@ async function fire(){
       btn.innerHTML='<span class="spin"></span> LOCATING V4 ROUTER…';
       await ensureV4Router();
       if(!state.v4RouterVerified) await resolveVerifiedRouter();
+
+      // If nothing on this chain is a UniversalRouter bound to the PoolManager,
+      // there is no generic v4 route. Say so before taking a fee, and point at
+      // v3 when the token has one.
+      if(!state.v4RouterVerified || state.v4Router===CFG.UNI.universalRouter){
+        var v3Alt = versionsOf(p).indexOf("v3")>=0;
+        throw new Error("Uniswap v4 on Robinhood Chain has no shared router — its pools are traded through per-token launchpad contracts."
+          + (v3Alt ? " Switch to V3 above to snipe $"+p.sym+" here now."
+                   : " HoodSnipr can't route $"+p.sym+" yet; launchpad support is in progress.")
+          + " Nothing was charged.");
+      }
       var urv = await verifyUniversalRouter(rpc());
       if(urv===false)
         throw new Error("No contract exists at the UniversalRouter address on this chain — refusing to send ETH there.");
@@ -3153,6 +3167,9 @@ async function fireLoose(){
 
       await ensureV4Router();
       if(!state.v4RouterVerified) await resolveVerifiedRouter();
+      if(!state.v4RouterVerified || v4Router()===CFG.UNI.universalRouter)
+        throw new Error("$"+x.sym+" only trades on Uniswap v4, and this chain has no shared v4 router — "
+          + "its pools go through per-token launchpad contracts. Selling there isn't supported yet. Nothing was charged.");
 
       // prefer a hookless pool, else whatever exists
       var plainK=vk.filter(function(k){ return (k.hooks||CFG.UNI.V4.NATIVE)===CFG.UNI.V4.NATIVE; });
