@@ -219,6 +219,8 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvchart{height:150px}
 .pvchart svg{width:100%;height:100%;display:block}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.wdraw{color:var(--gold);border:1.5px solid var(--gold);font-weight:700;font-size:11px;padding:7px 11px;border-radius:99px;transition:all .15s;flex:0 0 auto;min-height:38px;white-space:nowrap}
+.wdraw:hover{background:var(--gold);color:#000}
 .loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
 .loose:hover{background:var(--red);color:#000}
 .toast{position:fixed;bottom:calc(20px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
@@ -2153,6 +2155,7 @@ function renderWallets(){
   if(state.burner){
     bw.innerHTML='<div class="addr">'+esc(state.burner.addr)+'</div>'
      +'<p class="hint">Balance: <b id="bwBal" style="color:var(--green)">'+(state.burnerBal==null?"…":state.burnerBal+" ETH")+'</b> · send ETH <b>on Robinhood Chain</b> to arm it.</p>'
+     +'<div class="frow" style="margin-top:10px"><button class="obtn" data-action="withdraw">↗ Withdraw ETH</button></div>'
      +'<p class="hint" style="margin-top:6px">'+(burnerDestination() && burnerDestination()!==state.burner.addr
         ? '📦 Snipes deliver to <b style="color:var(--green)">'+short(burnerDestination())+'</b> — tokens never sit in the burner.'
         : '<span style="color:var(--gold)">⚠ No delivery wallet set.</span> Connect a wallet and snipes will deliver there instead of staying in the burner.')+'</p>'
@@ -2757,7 +2760,17 @@ function renderPortfolio(){
     var rows=port.holdings.filter(function(x){return x.wallet===tag});
     if(eth==null && !rows.length) return;
     h+='<div class="hgroup">'+(tag==="connected"?"🔗 CONNECTED — "+short(state.wallet||""):"🏹 HOODSNIPR BURNER — "+short(state.burner?state.burner.addr:""))+'</div>';
-    if(eth!=null) h+='<div class="lrow"><img class="timg" src="./favicon.svg" alt=""><div class="nm">ETH<div class="h">native · gas + ammo</div></div><div class="pnl">'+eth.toFixed(5)+'<span style="font-size:11px;color:var(--mute)"> ≈ $'+(eth*state.ethUsd).toFixed(2)+'</span></div></div>';
+    if(eth!=null){
+      var isBurner = tag==="burner";
+      h+='<div class="lrow"><img class="timg" src="./favicon.svg" alt="">'
+        +'<div class="nm">ETH<div class="h">native · gas + ammo'
+        +(isBurner && burnerDestination() && burnerDestination()!==state.burner.addr
+           ? ' · withdraws to '+short(burnerDestination()) : '')
+        +'</div></div>'
+        +'<div class="pnl">'+eth.toFixed(5)+'<span style="font-size:11px;color:var(--mute)"> ≈ $'+(eth*state.ethUsd).toFixed(2)+'</span></div>'
+        +(isBurner && eth>0 ? '<button class="wdraw" data-action="withdraw">WITHDRAW</button>' : '')
+        +'</div>';
+    }
     rows.forEach(function(x,i){
       var gi=port.holdings.indexOf(x);
       h+='<div class="lrow" data-action="port-open" data-addr="'+esc(x.addr)+'" style="cursor:pointer">'
@@ -2768,6 +2781,82 @@ function renderPortfolio(){
     });
   });
   hb.innerHTML=h || '<div class="empty">No holdings found yet — fire a snipe first.</div>';
+}
+
+// ================= WITHDRAW (burner ETH -> funding wallet) =================
+// Sending ETH costs gas, so a naive "send the whole balance" always fails. We
+// reserve a real gas estimate from current fee data and send the remainder.
+async function burnerGasReserve(pr){
+  try{
+    var fd=await pr.getFeeData();
+    var price = fd.maxFeePerGas || fd.gasPrice || 1000000000n;
+    return 21000n * price * 3n / 2n;      // 21k transfer + 50% headroom
+  }catch(e){ return 21000n * 2000000000n; }
+}
+async function openWithdraw(){
+  if(!state.burner){ toast("No HoodSnipr wallet", true); return; }
+  var dest=burnerDestination();
+  if(!dest || dest.toLowerCase()===state.burner.addr.toLowerCase()){
+    toast("Connect the wallet you funded this burner from first", true);
+    return;
+  }
+  var pr=rpc();
+  var bal=0n, reserve=0n;
+  try{
+    bal=await pr.getBalance(state.burner.addr);
+    reserve=await burnerGasReserve(pr);
+  }catch(e){ toast("Couldn't read burner balance", true); return; }
+
+  var maxOut = bal>reserve ? bal-reserve : 0n;
+  var maxEth = +ethers.formatEther(maxOut);
+  withdrawM={ bal:bal, reserve:reserve, dest:dest, max:maxEth };
+
+  $("#modalRoot").innerHTML=
+  '<div class="modal-bg" data-action="closebg"><div class="modal">'
+   +'<div class="mhead"><div><h2>Withdraw ETH</h2>'
+   +'<div class="px">HoodSnipr wallet '+short(state.burner.addr)+'</div></div>'
+   +'<button class="x" data-action="close">✕</button></div>'
+   +'<div class="fees" style="margin-top:12px">'
+     +'<div><span class="k">Burner balance</span><span>'+(+ethers.formatEther(bal)).toFixed(6)+' ETH</span></div>'
+     +'<div><span class="k">Reserved for gas</span><span>'+(+ethers.formatEther(reserve)).toFixed(6)+' ETH</span></div>'
+     +'<div><span class="k">Withdrawable</span><span class="up">'+maxEth.toFixed(6)+' ETH</span></div>'
+     +'<div><span class="k">Sends to</span><span class="k">'+short(dest)+' 🔒</span></div>'
+   +'</div>'
+   +'<input class="amt" id="wdAmt" inputmode="decimal" placeholder="0.0" value="'+(maxEth>0?maxEth.toFixed(6):"0")+'" aria-label="Amount of ETH to withdraw">'
+   +'<div class="qamt">'+[25,50,75,100].map(function(pc){return '<button data-action="wdpct" data-p="'+pc+'">'+pc+'%</button>'}).join("")+'</div>'
+   +'<button class="fire" id="wdBtn" data-action="wd-fire">↗ WITHDRAW TO '+short(dest)+'</button>'
+   +'<p class="warn">Goes to the wallet that funded this burner. No HoodSnipr fee on withdrawals — you only pay network gas.</p>'
+  +'</div></div>';
+}
+var withdrawM={};
+async function fireWithdraw(){
+  if(!state.burner || !withdrawM.dest) return;
+  var amt=parseFloat($("#wdAmt").value);
+  if(!amt||amt<=0){ toast("Enter an amount", true); return; }
+  if(amt>withdrawM.max+1e-12){ toast("More than the withdrawable balance", true); return; }
+  var btn=$("#wdBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> SENDING…';
+  try{
+    var pr=rpc();
+    var signer=new ethers.Wallet(state.burner.pk, pr);
+    var value=ethers.parseEther(amt.toFixed(18));
+    // guard against fees moving between quote and send
+    var bal=await pr.getBalance(state.burner.addr);
+    var reserve=await burnerGasReserve(pr);
+    if(value+reserve>bal) value = bal>reserve ? bal-reserve : 0n;
+    if(value<=0n) throw new Error("Balance too low to cover gas");
+    var tx=await signer.sendTransaction({ to:withdrawM.dest, value:value });
+    btn.innerHTML='<span class="spin"></span> CONFIRMING…';
+    var rc=await tx.wait();
+    if(!rc || rc.status!==1) throw new Error("Withdrawal reverted");
+    toast("Sent "+(+ethers.formatEther(value)).toFixed(6)+" ETH to "+short(withdrawM.dest)+" ↗");
+    closeModal();
+    refreshBurnerBal(); loadPortfolio();
+  }catch(e){
+    var m=(e&&(e.shortMessage||e.message))||"Withdrawal failed";
+    if(/insufficient funds/i.test(m)) m="Not enough ETH left to cover gas";
+    toast(m, true);
+    var b=$("#wdBtn"); if(b){ b.disabled=false; b.textContent="↗ WITHDRAW"; }
+  }
 }
 
 // ================= LOOSE (sell via Uniswap v3, 0.25% fee on proceeds) =================
@@ -3011,6 +3100,12 @@ document.addEventListener("click", function(e){
   else if(a==="copy-ca"){ navigator.clipboard.writeText(el.getAttribute("data-addr")).then(function(){ toast("Contract address copied 📋"); }).catch(function(){ prompt("Contract address:", el.getAttribute("data-addr")); }); }
   else if(a==="loose"){ e.stopPropagation(); openLoose(parseInt(el.getAttribute("data-h"),10)); }
   else if(a==="loose-fire") fireLoose();
+  else if(a==="withdraw"){ e.stopPropagation(); openWithdraw(); }
+  else if(a==="wd-fire") fireWithdraw();
+  else if(a==="wdpct"){
+      var p2=parseInt(el.getAttribute("data-p"),10);
+      $("#wdAmt").value=((withdrawM.max||0)*p2/100).toFixed(6);
+    }
   else if(a==="lpct"){ var xx=looseM.h; if(xx){ $("#looseAmt").value=(xx.bal*parseInt(el.getAttribute("data-p"),10)/100).toPrecision(6); looseM.quote=null; updLooseFees(); } }
   else if(a==="lslip"){ looseM.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="lslip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===looseM.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updLooseFees(); }
   else if(a==="share") shareCard(parseInt(el.getAttribute("data-i"),10));
