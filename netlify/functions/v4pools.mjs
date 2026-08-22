@@ -10,6 +10,7 @@
 // log emitter) without having to hardcode a deployment we can't verify.
 import { store as _store } from "./_store.mjs";
 import { rpc, getLogs, addrFromTopic, words, decodeStr } from "./_rpc.mjs";
+import { findAdapter, adapterSummary } from "./_launchpads.mjs";
 
 // v4 changed the Initialize signature during development, and a chain may run
 // any of them. Matching only one means the scanner finds NOTHING and reports
@@ -917,7 +918,15 @@ export async function keysForToken(token) {
     for (const k of found) if (k.hooks && !st.hooks.includes(k.hooks)) st.hooks.push(k.hooks);
     await store.setJSON("v4pools", st).catch(() => {});
   }
-  return { ok: found.length > 0, keys: found, manager, error: found.length ? null : "no v4 pool for this token" };
+  const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+  const routable = found.filter(k => (k.hooks || ZERO_ADDR) === ZERO_ADDR);
+  return {
+    ok: found.length > 0, keys: found, manager,
+    // hookless pools can be routed generically; hooked ones are launchpad-gated
+    routableKeys: routable,
+    launchpadGated: found.length > 0 && routable.length === 0,
+    error: found.length ? null : "no v4 pool for this token"
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -988,6 +997,111 @@ export async function howSwap(budgetMs = 7000) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// LAUNCHPAD FAMILY DISCOVERY.
+//
+// Individual swaps each hit a different per-token contract, but those contracts
+// come from a factory — same launchpad, same bytecode, same selectors. Grouping
+// a large sample by (selector + bytecode hash) reveals how many launchpads are
+// actually in play and which ones dominate, so we can integrate the popular
+// ones first and add the long tail later.
+export async function launchpadFamilies(budgetMs = 8000, sampleTx = 30) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+  const manager = st.manager || KNOWN_MANAGER;
+  if (!manager) return { ok: false, error: "PoolManager unknown" };
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: e.message }; }
+
+  // gather recent swap logs
+  let logs = [], win = 3000, from = head;
+  while (Date.now() - t0 < budgetMs * 0.35 && logs.length < 120 && from > head - 120000) {
+    const lo = Math.max(0, from - win);
+    try {
+      const batch = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16),
+        address: manager, topics: [V4_SWAP_TOPIC]
+      }]) || [];
+      logs = logs.concat(batch);
+    } catch (e) { win = Math.max(300, Math.floor(win / 3)); }
+    from = lo; win = Math.min(30000, win * 2);
+  }
+  if (!logs.length) return { ok: false, error: "no swaps sampled" };
+
+  // resolve transactions -> entry contract + selector
+  const seenTx = new Set(), entries = [];
+  for (const lg of logs.reverse()) {
+    if (Date.now() - t0 > budgetMs * 0.8) break;
+    if (entries.length >= sampleTx) break;
+    const h = lg.transactionHash;
+    if (!h || seenTx.has(h)) continue;
+    seenTx.add(h);
+    try {
+      const tx = await rpc("eth_getTransactionByHash", [h]);
+      if (!tx || !tx.to) continue;
+      entries.push({
+        to: String(tx.to).toLowerCase(),
+        selector: String(tx.input || "").slice(0, 10),
+        input: String(tx.input || ""),
+        value: tx.value,
+        hash: h
+      });
+    } catch (e) {}
+  }
+
+  // group by selector; fetch bytecode hashes for a couple of members each
+  const fam = {};
+  for (const e of entries) {
+    const f = fam[e.selector] || (fam[e.selector] = {
+      selector: e.selector, count: 0, contracts: new Set(), samples: [], valueNonZero: 0
+    });
+    f.count++;
+    f.contracts.add(e.to);
+    if (e.value && e.value !== "0x0") f.valueNonZero++;
+    if (f.samples.length < 3) f.samples.push({ to: e.to, hash: e.hash, input: e.input.slice(0, 700), inputLen: (e.input.length - 2) / 2, value: e.value });
+  }
+
+  const out = [];
+  for (const sel of Object.keys(fam)) {
+    const f = fam[sel];
+    const contracts = [...f.contracts];
+    let codeHash = null, codeSize = null;
+    if (Date.now() - t0 < budgetMs - 500 && contracts[0]) {
+      try {
+        const code = await rpc("eth_getCode", [contracts[0], "latest"]);
+        if (code && code !== "0x") {
+          codeSize = (code.length - 2) / 2;
+          // cheap fingerprint — enough to tell families apart
+          codeHash = code.slice(0, 34) + "…" + code.slice(-32);
+        }
+      } catch (e) {}
+    }
+    out.push({
+      selector: f.selector, swaps: f.count,
+      distinctContracts: contracts.length,
+      ethAttached: f.valueNonZero + "/" + f.count,
+      codeSize, codeFingerprint: codeHash,
+      exampleContracts: contracts.slice(0, 3),
+      samples: f.samples
+    });
+  }
+  out.sort((a, b) => b.swaps - a.swaps);
+
+  const totalSwaps = out.reduce((a, x) => a + x.swaps, 0);
+  return {
+    ok: true, manager,
+    txSampled: entries.length, families: out.length,
+    coverage: out.map(f => ({
+      selector: f.selector, swaps: f.swaps,
+      sharePct: Math.round((f.swaps / totalSwaps) * 100)
+    })),
+    detail: out
+  };
+}
+
 async function handle(req) {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -1035,6 +1149,32 @@ async function handle(req) {
   if (url.searchParams.get("reset") === "1") {
     for (const k of ["v4pools", "v4boot", "v4router", "v4probe"]) await store.delete(k).catch(() => {});
     return json(200, { ok: true, cleared: true });
+  }
+
+  // ?adapter=<hook>&token=<addr> — is this launchpad integrated yet?
+  const ad = url.searchParams.get("adapter");
+  if (ad) {
+    const tok = String(url.searchParams.get("token") || "").toLowerCase();
+    let selector = null, codeHash = null, codeSize = null;
+    try {
+      const code = await rpc("eth_getCode", [ad, "latest"]);
+      if (code && code !== "0x") {
+        codeSize = (code.length - 2) / 2;
+        codeHash = code.slice(0, 34) + "…" + code.slice(-32);
+      }
+    } catch (e) {}
+    const lp = findAdapter({ selector, codeHash });
+    return json(200, {
+      hook: ad, token: tok, codeSize, codeFingerprint: codeHash,
+      supported: !!lp, id: lp?.id || null, name: lp?.name || null,
+      integrated: adapterSummary()
+    });
+  }
+
+  // ?families=1 — which launchpads dominate, and what do their calls look like?
+  if (url.searchParams.get("families") === "1") {
+    const n = Number(url.searchParams.get("n") || 30);
+    return json(200, await launchpadFamilies(8000, Math.min(60, n)));
   }
 
   // ?howswap=1 — how do real traders swap on this chain?
