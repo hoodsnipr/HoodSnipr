@@ -89,7 +89,62 @@ export function trendScore(t, tf) {
   return Math.sqrt(vol) * accelFactor(t, tf) * buyFactor(t, tf) * depthFactor(t.liq);
 }
 
-export function buildBoard(tokens) {
+// ---------------------------------------------------------------------------
+// HOLDER COUNTS (Blockscout) — used to catch wash-traded scams.
+//
+// A token doing six figures of 24h volume across fewer than 100 holders is
+// almost always wash trading: the same few wallets cycling volume to climb the
+// board. Real distribution lags real volume, never the reverse.
+const BS_API = "https://robinhoodchain.blockscout.com/api/v2";
+
+export async function fetchHolders(store, addrs, { calls = 40, deadline = 0 } = {}) {
+  const cache = (await store.get("holders", { type: "json" }).catch(() => null)) || { d: {}, cursor: 0 };
+  const now = Date.now();
+  const stale = addrs.filter(a => {
+    const rec = cache.d[a];
+    return !rec || (now - rec.t) > 30 * 60e3;     // refresh every 30 min
+  });
+  let done = 0;
+  for (const a of stale) {
+    if (done >= calls) break;
+    if (deadline && Date.now() > deadline) break;
+    try {
+      const r = await fetch(`${BS_API}/tokens/${a}`, { headers: { accept: "application/json" } });
+      if (r.ok) {
+        const j = await r.json();
+        const raw = j.holders_count != null ? j.holders_count : j.holders;
+        const n = parseInt(String(raw).replace(/[^0-9]/g, ""), 10);
+        cache.d[a] = { h: isNaN(n) ? null : n, t: now };
+      } else {
+        cache.d[a] = { h: null, t: now };
+      }
+    } catch (e) { cache.d[a] = { h: null, t: now }; }
+    done++;
+  }
+  // keep the blob bounded
+  const keys = Object.keys(cache.d);
+  if (keys.length > 4000) {
+    const trimmed = {};
+    for (const k of keys.slice(-3000)) trimmed[k] = cache.d[k];
+    cache.d = trimmed;
+  }
+  await store.setJSON("holders", cache).catch(() => {});
+  return cache.d;
+}
+
+// Wash-trading signature: heavy volume, almost no holders.
+export const MIN_HOLDERS = 100;
+export const HIGH_VOL_USD = 50000;
+export function washSuspect(row) {
+  const h = row.h;
+  if (h == null) return false;                 // unknown holders — don't punish
+  if (h >= MIN_HOLDERS) return false;
+  const vol = Math.max(row.h24 || 0, row.h6 || 0);
+  if (vol < HIGH_VOL_USD) return false;        // low volume + few holders = just new
+  return true;
+}
+
+export function buildBoard(tokens, holders) {
   const byTicker = {};
   for (const addr of Object.keys(tokens)) {
     const t = tokens[addr];
@@ -109,7 +164,9 @@ export function buildBoard(tokens) {
     if (better) byTicker[k] = t;
   }
 
+  const H = holders || {};
   const rows = Object.values(byTicker).map(t => ({
+    h: (H[t.a] && H[t.a].h != null) ? H[t.a].h : null,
     ts5: trendScore(t, "m5"), ts1: trendScore(t, "h1"),
     ts6: trendScore(t, "h6"), ts24: trendScore(t, "h24"),
     txns: t.txns || null,
@@ -120,6 +177,7 @@ export function buildBoard(tokens) {
     site: t.site || null, tw: t.tw || null, tg: t.tg || null,
     cr: t.cr || null, ver: t.ver || "v3", dex: t.dex || "", src: t.src || ""
   }));
+  for (const r of rows) r.wash = washSuspect(r);
   rows.sort((x, y) => (y.ts24 || 0) - (x.ts24 || 0) || (y.h24 || 0) - (x.h24 || 0));
   return rows;
 }
@@ -151,7 +209,16 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
   known.page = page;
   await store.setJSON("universe", known).catch(() => {});
 
-  const rows = buildBoard(known.t);
+  // Prioritise holder lookups for the high-volume tokens — those are the ones
+  // where the wash-trading test actually matters.
+  const hot = Object.keys(known.t)
+    .sort((a, b) => (known.t[b].h24 || 0) - (known.t[a].h24 || 0))
+    .slice(0, 150);
+  const holders = await fetchHolders(store, hot, {
+    calls: deep ? 60 : 30, deadline: Date.now() + Math.min(5000, timeLeft() - 1500)
+  }).catch(() => ({}));
+
+  const rows = buildBoard(known.t, holders);
   let vol24 = 0, liq = 0;
   for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
 
@@ -161,6 +228,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       tokensTradeable: rows.length,
       universeTokens: Object.keys(known.t).length,
       vol24, liq,
+      washFiltered: rows.filter(r => r.wash).length,
       feedPage: page,
       errors: errors.slice(0, 3)
     }
