@@ -289,6 +289,10 @@ canvas.share{display:none}
       <h3>💼 Holdings</h3>
       <div id="holdBox"><div class="empty">Connect a wallet or arm your burner, then refresh.</div></div>
       <div class="frow"><button class="obtn" data-action="port-refresh">↻ Refresh holdings</button></div>
+    </div>
+    <div class="card">
+      <h3>🎯 Sniping activity</h3>
+      <div id="actBox"><div class="empty">No snipes yet.</div></div>
       <p class="hint">Holdings pulled live from Blockscout for both wallets, priced via the trending indexers. LOOSE sells through Uniswap v3 with the same 0.25% fee, taken from the ETH you receive.</p>
     </div>
   </div>
@@ -368,6 +372,8 @@ var CFG = {
     V4: {
       CMD_SWAP: 0x10,                    // Commands.V4_SWAP
       CMD_WRAP_ETH: 0x0b,                // Commands.WRAP_ETH (for WETH-paired pools)
+      ACT_TAKE: 0x0e,                    // Actions.TAKE — lets us name the recipient
+      OPEN_DELTA: 0,                     // amount 0 = take the whole balance owed
       ACT_SWAP_IN_SINGLE: 0x06,          // Actions.SWAP_EXACT_IN_SINGLE
       ACT_SETTLE_ALL: 0x0c,
       ACT_TAKE_ALL: 0x0f,
@@ -1399,7 +1405,7 @@ function pickV4Key(keys, token){
   }
   return null;
 }
-function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap){
+function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap, sender){
   var V4=CFG.UNI.V4, NATIVE=V4.NATIVE;
   var zeroForOne = key.c0===NATIVE;           // ETH is currency0 -> swapping 0 for 1
   var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
@@ -1412,10 +1418,22 @@ function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap){
   var currencyIn  = zeroForOne? key.c0 : key.c1;
   var currencyOut = zeroForOne? key.c1 : key.c0;
   var settle=coder.encode(["address","uint128"],[currencyIn, amountInWei]);
-  var take  =coder.encode(["address","uint128"],[currencyOut, minOutWei]);
 
-  var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
-    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+  // TAKE_ALL always credits the caller. Delivering a burner snipe to the
+  // funding wallet needs TAKE, which names an explicit recipient. Slippage is
+  // still enforced by amountOutMinimum inside the swap itself.
+  var toSelf = !recipient || !sender ||
+    String(recipient).toLowerCase()===String(sender).toLowerCase();
+  var take, actions;
+  if(toSelf){
+    take=coder.encode(["address","uint128"],[currencyOut, minOutWei]);
+    actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+  }else{
+    take=coder.encode(["address","address","uint256"],[currencyOut, recipient, V4.OPEN_DELTA]);
+    actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE]);
+  }
   var input0=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settle,take]]);
 
   if(wrap){
@@ -1545,12 +1563,12 @@ function armForce(reason){
   toast("Simulation failed — press again to override", true);
 }
 
-async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut){
+async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut, recipient){
   var pr=rpc(), iface=new ethers.Interface(UROUTER_ABI);
   var deadline=BigInt(Math.floor(Date.now()/1000)+900);
   var calls=0;
   function build(minOut){
-    var enc=encodeV4Swap(key, token, amountInWei, minOut, me, wrap);
+    var enc=encodeV4Swap(key, token, amountInWei, minOut, recipient||me, wrap, me);
     return iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
   }
   async function works(minOut){
@@ -1859,7 +1877,7 @@ async function fire(){
             seed4=ethers.parseUnits(expTok.toFixed(Math.min(18,sdec)), sdec);
         }
       }catch(e){}
-      var q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
+      var q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
       if(!q4.ok){
         // couldn't even swap for 1 wei of output — try the other pairing before
         // declaring failure, since a token often has both native and WETH pools
@@ -1867,7 +1885,7 @@ async function fire(){
         var altPick=alt.length? pickV4Key(alt, p.baseToken) : null;
         if(altPick){
           key=altPick.key; needWrap=altPick.wrap;
-          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
+          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
         }
       }
       if(!q4.ok){
@@ -1877,7 +1895,7 @@ async function fire(){
         for(var ci=0; ci<cands.length && !q4.ok; ci++){
           var prevR=state.v4Router;
           state.v4Router=cands[ci];
-          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4);
+          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
           if(!q4.ok) state.v4Router=prevR; else state.v4RouterVerified=true;
         }
       }
@@ -1894,7 +1912,8 @@ async function fire(){
       var minOut4 = q4.out - (q4.out*BigInt(modal.slip)/10000n);
       if(minOut4 < 1n) minOut4 = 1n;
 
-      var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, me, needWrap);
+      var v4Recip = (modal.mode==="burner") ? (burnerDestination() || me) : me;
+      var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, v4Recip, needWrap, me);
       var deadline=BigInt(Math.floor(Date.now()/1000)+900);
 
       // fee first, then the v4 swap
@@ -1920,16 +1939,18 @@ async function fire(){
       var got4=null;
       try{
         var if4=new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
+        var dest4=String(v4Recip).toLowerCase();
         rc4.logs.forEach(function(lg){
           if((lg.address||"").toLowerCase()!==p.baseToken.toLowerCase()) return;
           try{ var ev=if4.parseLog(lg);
-            if(ev && String(ev.args[1]).toLowerCase()===me.toLowerCase()) got4=ev.args[2];
+            if(ev && String(ev.args[1]).toLowerCase()===dest4) got4=ev.args[2];
           }catch(e){}
         });
       }catch(e){}
       var out4=+(ethers.formatUnits(got4!=null?got4:q4.out, dec4));
 
-      recordTrade(p, amt, fee, modal.mode, out4, rc4.hash);
+      recordTrade(p, amt, fee, modal.mode, out4, rc4.hash,
+        { ver:"v4", deliveredTo: v4Recip });
       toast("Sniped "+out4.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" via V4 ⚡");
       closeModal();
       done();
@@ -1982,8 +2003,10 @@ async function fire(){
     var router = new ethers.Contract(CFG.UNI.swapRouter02,
       ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"],
       signer);
+    // Burner snipes deliver to the funding wallet, not the burner.
+    var recip = (modal.mode==="burner") ? (burnerDestination() || me) : me;
     var params = { tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:best.fee,
-      recipient: await signer.getAddress(), amountIn: netWei,
+      recipient: recip, amountIn: netWei,
       amountOutMinimum: minOut, sqrtPriceLimitX96: 0 };
     var tx2;
     try{
@@ -2004,18 +2027,19 @@ async function fire(){
     // ---- actual received amount from the ERC-20 Transfer log to us ----
     var got = null;
     try{
-      var me=(await signer.getAddress()).toLowerCase();
+      var dest=String(recip).toLowerCase();
       var iface=new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
       rcpt.logs.forEach(function(lg){
         if((lg.address||"").toLowerCase()!==p.baseToken.toLowerCase()) return;
         try{ var ev=iface.parseLog(lg);
-          if(ev && ev.args && String(ev.args[1]).toLowerCase()===me) got=ev.args[2];
+          if(ev && ev.args && String(ev.args[1]).toLowerCase()===dest) got=ev.args[2];
         }catch(e){}
       });
     }catch(e){}
     var tokensOut = +(ethers.formatUnits(got!=null?got:best.out, dec));
 
-    recordTrade(p, amt, fee, modal.mode, tokensOut, rcpt.hash);
+    recordTrade(p, amt, fee, modal.mode, tokensOut, rcpt.hash,
+      { ver:"v3", deliveredTo: recip });
     toast("Sniped "+tokensOut.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" 🎯");
     closeModal();
   }catch(e){
@@ -2028,11 +2052,13 @@ async function fire(){
   }
   done();
 }
-function recordTrade(p, ethIn, fee, mode, tokensOut, txHash){
+function recordTrade(p, ethIn, fee, mode, tokensOut, txHash, extra){
   var t={ sym:p.sym, baseToken:p.baseToken, pool:p.pool, ethIn:ethIn, fee:fee,
     usdIn: ethIn*state.ethUsd,           // cost basis frozen at trade time
     entryPrice:p.price, ts:Date.now(), mode:mode,
+    dec: p.dec||null,
     tokens: tokensOut, tx: txHash||null };
+  if(extra) for(var kk in extra) t[kk]=extra[kk];
   state.trades.unshift(t); save("hs_trades", state.trades);
   renderPnl(); syncLeaderboard(); loadPortfolio();
 }
@@ -2047,6 +2073,7 @@ async function connect(){
     await ensureChain();
     state.provider = new ethers.BrowserProvider(window.ethereum);
     save("hs_connected", 1); save("hs_addr", state.wallet);
+    adoptBurnerFunder();
     var b=$("#walletBtn"); b.textContent = short(state.wallet); b.className="wbtn on"; b.setAttribute("data-action","wmenu");
     renderWallets();
     await loadRemoteProfile();   // an existing profile for this address wins
@@ -2086,6 +2113,9 @@ function renderWallets(){
   if(state.burner){
     bw.innerHTML='<div class="addr">'+esc(state.burner.addr)+'</div>'
      +'<p class="hint">Balance: <b id="bwBal" style="color:var(--green)">'+(state.burnerBal==null?"…":state.burnerBal+" ETH")+'</b> · send ETH <b>on Robinhood Chain</b> to arm it.</p>'
+     +'<p class="hint" style="margin-top:6px">'+(burnerDestination() && burnerDestination()!==state.burner.addr
+        ? '📦 Snipes deliver to <b style="color:var(--green)">'+short(burnerDestination())+'</b> — tokens never sit in the burner.'
+        : '<span style="color:var(--gold)">⚠ No delivery wallet set.</span> Connect a wallet and snipes will deliver there instead of staying in the burner.')+'</p>'
      +'<div class="frow">'
        +'<button class="obtn" data-action="bw-copy">Copy address</button>'
        +'<button class="obtn" data-action="bw-refresh">Refresh balance</button>'
@@ -2109,10 +2139,29 @@ async function refreshBurnerBal(){
 }
 function createBurner(pk){
   var w = pk? new ethers.Wallet(pk) : ethers.Wallet.createRandom();
-  state.burner={ addr:w.address, pk:w.privateKey };
+  // Bind the burner to the wallet that owns it. Per the Quivr Paper, tokens
+  // sniped through the burner are delivered to the funding wallet — so the
+  // burner never becomes a place value gets stranded.
+  state.burner={ addr:w.address, pk:w.privateKey, funder: state.wallet || null, created: Date.now() };
   save("hs_burner", state.burner);
   renderWallets();
-  toast("Burner ready — export the key NOW and store it safely");
+  toast(state.wallet
+    ? "Burner ready — snipes will deliver to "+short(state.wallet)
+    : "Burner ready — connect a wallet to set the delivery address");
+}
+// Where burner snipes should deliver. Falls back to the burner itself if no
+// funding wallet is known, so tokens are never sent to a zero address.
+function burnerDestination(){
+  var f = state.burner && state.burner.funder;
+  if(f){ try{ return ethers.getAddress(f); }catch(e){} }
+  return state.wallet || (state.burner && state.burner.addr) || null;
+}
+// If a burner was made before a wallet was connected, adopt the first connect.
+function adoptBurnerFunder(){
+  if(state.burner && !state.burner.funder && state.wallet){
+    state.burner.funder = state.wallet;
+    save("hs_burner", state.burner);
+  }
 }
 
 // ================= PROFILE / PNL / SHARE =================
@@ -2399,8 +2448,13 @@ async function discoverTokens(addr){
       });
     }
   }catch(e){}
-  // union with everything the app itself knows about — covers indexer misses
-  state.trades.forEach(function(t){ if(t.baseToken){ var k=t.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:t.sym,name:"",img:null,dec:null}; } });
+  // Always include every token we've ever sniped, even if the explorer hasn't
+  // indexed it — otherwise a fresh snipe is invisible in the portfolio.
+  state.trades.forEach(function(t){
+    if(!t.baseToken) return;
+    var k=t.baseToken.toLowerCase();
+    if(!found[k]) found[k]={sym:t.sym,name:"",img:null,dec:t.dec||null};
+  });
   state.pools.forEach(function(p){ if(p.baseToken){ var k=p.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:p.sym,name:p.tokenName||"",img:p.img,dec:null}; else if(!found[k].img) found[k].img=p.img; } });
   return found;
 }
@@ -2470,25 +2524,57 @@ async function loadPortfolio(){
 }
 // ---- ledger-based PnL: only HoodSnipr trades, positions net of sells ----
 function tradePnl(){
-  var pos={}, usdIn=0, ethIn=0, usdOut=0;
+  // Positions and cost basis are tracked per token. The previous version added
+  // a token's COST to usdIn but contributed 0 value when no price was found —
+  // so every unpriced snipe dragged PnL down by exactly the amount spent.
+  // Now an unpriceable position drops out of BOTH sides of the equation.
+  var pos={}, cost={}, usdOut=0, ethIn=0, usdInAll=0;
   state.trades.forEach(function(t){
     var k=(t.baseToken||"").toLowerCase(); if(!k) return;
     if(t.side==="sell"){
-      usdOut += (t.usdOut!=null? t.usdOut : (t.ethOut||0)*state.ethUsd);
+      var out=(t.usdOut!=null? t.usdOut : (t.ethOut||0)*state.ethUsd);
+      usdOut+=out;
       pos[k]=(pos[k]||0)-(t.tokensSold||0);
     }else{
-      usdIn += (t.usdIn!=null? t.usdIn : t.ethIn*state.ethUsd);
-      ethIn += t.ethIn;
+      var inUsd=(t.usdIn!=null? t.usdIn : t.ethIn*state.ethUsd);
+      usdInAll+=inUsd; ethIn+=t.ethIn;
+      cost[k]=(cost[k]||0)+inUsd;
       pos[k]=(pos[k]||0)+(t.tokens||0);
     }
   });
-  var open=0;
+
+  var open=0, costCounted=0, unpriced=0;
   Object.keys(pos).forEach(function(k){
     var q=Math.max(0,pos[k]);
-    var px=(port.priceMap&&port.priceMap[k])!=null? port.priceMap[k] : null;
-    if(q>0 && px!=null) open+=q*px;
+    var px=priceForToken(k);
+    if(q>0 && px!=null){
+      open+=q*px;
+      costCounted+=(cost[k]||0);
+    }else if(q>0){
+      unpriced++;                       // excluded from both sides
+    }else{
+      costCounted+=(cost[k]||0);        // fully sold — realized, so cost counts
+    }
   });
-  return { pnl: state.trades.length? (open+usdOut-usdIn) : null, usdIn:usdIn, ethIn:ethIn, usdOut:usdOut, openUsd:open };
+
+  var pnl = state.trades.length? (open + usdOut - costCounted) : null;
+  return { pnl:pnl, usdIn:usdInAll, costCounted:costCounted, ethIn:ethIn,
+           usdOut:usdOut, openUsd:open, unpriced:unpriced };
+}
+// Best available price for a token: live holdings -> board -> last trade entry.
+function priceForToken(addr){
+  var k=String(addr||"").toLowerCase();
+  if(port.priceMap && port.priceMap[k]!=null) return port.priceMap[k];
+  var row=(state.pools||[]).find(function(p){return (p.baseToken||"").toLowerCase()===k});
+  if(row && row.price>0) return row.price;
+  var h=(port.holdings||[]).find(function(x){return x.addr===k});
+  if(h && h.price>0) return h.price;
+  // fall back to the price we paid, so an unlisted token shows flat, not -100%
+  var last=null;
+  (state.trades||[]).forEach(function(t){
+    if((t.baseToken||"").toLowerCase()===k && t.side!=="sell" && t.entryPrice>0) last=t.entryPrice;
+  });
+  return last;
 }
 function snapshotPv(){
   var series=load("hs_pv",[]);
@@ -2517,6 +2603,29 @@ function renderPvChart(){
    +'<text x="'+P+'" y="'+(H-2)+'" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mn.toFixed(2)+'</text>'
    +'</svg>';
 }
+// Every snipe and loose, newest first, with links to the transaction.
+function renderActivity(){
+  var box=$("#actBox"); if(!box) return;
+  var t=(state.trades||[]).slice(0,60);
+  if(!t.length){ box.innerHTML='<div class="empty">No snipes yet.</div>'; return; }
+  var explorer=CFG.CHAIN.blockExplorerUrls[0];
+  box.innerHTML=t.map(function(x){
+    var sell=x.side==="sell";
+    var when=new Date(x.ts).toLocaleString();
+    var venue=(x.ver||"").toUpperCase();
+    var where=x.mode==="burner"?"burner":"wallet";
+    var amt=sell
+      ? (x.tokensSold||0).toLocaleString(undefined,{maximumFractionDigits:2})+" $"+esc(x.sym)+" → "+(x.ethOut||0).toFixed(5)+" ETH"
+      : (x.ethIn||0)+" ETH → "+(x.tokens||0).toLocaleString(undefined,{maximumFractionDigits:2})+" $"+esc(x.sym);
+    return '<div class="lrow">'
+      +'<div class="nm">'+(sell?'🏹 <span style="color:var(--red)">LOOSE</span>':'🎯 <span style="color:var(--green)">SNIPE</span>')
+      +' '+amt
+      +'<div class="h">'+when+' · '+where+(venue?' · '+venue:'')
+      +(x.deliveredTo?' · to '+short(x.deliveredTo):'')
+      +(x.tx?' · <a href="'+explorer+'/tx/'+esc(x.tx)+'" target="_blank" rel="noopener" data-action="ext" style="color:var(--green)">tx ↗</a>':'')
+      +'</div></div></div>';
+  }).join("");
+}
 function renderPortfolio(){
   var st=$("#pStats"); if(!st)return;
   var L=tradePnl();
@@ -2527,6 +2636,7 @@ function renderPortfolio(){
   +'<div class="pst"><div class="k">LIFETIME INVESTED</div><div class="v">'+L.ethIn.toFixed(4)+' ETH</div><div class="s">$'+L.usdIn.toFixed(2)+' at time of each snipe</div></div>'
   +'<div class="pst"><div class="k">TOTAL PNL</div><div class="v '+(up?"up":"dn")+'">'+(pnl==null?"—":((up?"+":"−")+"$"+Math.abs(pnl).toFixed(2)))+'</div><div class="s">open positions + realized − invested</div></div>';
   renderPvChart();
+  renderActivity();
   var hb=$("#holdBox"); if(!hb)return;
   if(!state.wallet && !state.burner){ hb.innerHTML='<div class="empty">Connect a wallet or arm your burner, then refresh.</div>'; return; }
   var h="";
