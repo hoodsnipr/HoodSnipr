@@ -1491,6 +1491,20 @@ function encodeV4Sell(key, token, amountInUnits, minOutWei, recipient){
   return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input0] };
 }
 
+// Can the router actually pull this token yet? Both allowances must be in
+// place — the ERC-20 -> Permit2 approval AND the Permit2 -> router allowance.
+async function v4CanPull(signer, token, amountUnits){
+  try{
+    var owner=await signer.getAddress(), p2=CFG.UNI.V4.PERMIT2, router=v4Router();
+    var erc=new ethers.Contract(token,["function allowance(address,address) view returns (uint256)"], rpc());
+    var a1=await erc.allowance(owner, p2);
+    if(a1 < amountUnits) return false;
+    var perm=new ethers.Contract(p2, PERMIT2_ABI, rpc());
+    var cur=await perm.allowance(owner, token, router);
+    return cur[0] >= amountUnits && Number(cur[1]) > Math.floor(Date.now()/1000)+60;
+  }catch(e){ return false; }
+}
+
 // Two allowances are needed to sell through v4: the token must approve Permit2,
 // and Permit2 must approve the router. Both are one-time per token.
 async function ensurePermit2(signer, token, amountUnits, onStep){
@@ -3060,6 +3074,16 @@ async function fireLoose(){
           if(ethOutEst>0) seedWei=ethers.parseEther(ethOutEst.toFixed(18));
         }
       }catch(e){}
+      // ORDERING BUG THIS FIXES: the simulation ran BEFORE Permit2 approvals
+      // existed, so the router couldn't pull the token, SETTLE_ALL reverted, and
+      // a perfectly good pool was reported as "hook-gated or too thin".
+      // Approvals must be in place before the simulation means anything.
+      var canPull = await v4CanPull(signer, x.addr, units);
+      if(!canPull){
+        btn.innerHTML='<span class="spin"></span> APPROVING TOKEN…';
+        await ensurePermit2(signer, x.addr, units, function(msg){ btn.innerHTML='<span class="spin"></span> '+msg; });
+      }
+
       var lo4=0n, hi4=0n;
       if(seedWei>0n){
         var loTry=seedWei*80n/100n, hiTry=seedWei*125n/100n;
@@ -3070,16 +3094,21 @@ async function fireLoose(){
       }else{
         if(await sellWorks(1n)){ lo4=1n; hi4=ethers.parseEther("1"); }
       }
-      if(lo4<=0n)
-        throw new Error("$"+x.sym+"'s v4 pool won't route this sale — it may be hook-gated or too thin. Nothing was charged.");
+      if(lo4<=0n){
+        // Distinguish a real pool problem from a missing allowance so the
+        // message actually tells the user something true.
+        var stillBlocked = !(await v4CanPull(signer, x.addr, units));
+        throw new Error(stillBlocked
+          ? "Couldn't get approval to move $"+x.sym+" — approve the token and try again. Nothing was charged."
+          : "$"+x.sym+"'s v4 pool rejected this sale. Its hook may block third-party routers, or liquidity is too thin for "
+            +amt.toLocaleString(undefined,{maximumFractionDigits:2})+" tokens. Try a smaller amount. Nothing was charged.");
+      }
       for(var q=0;q<6 && hi4>lo4+1n;q++){
         var mid4=lo4+(hi4-lo4)/2n;
         if(await sellWorks(mid4)) lo4=mid4; else hi4=mid4;
       }
       var minOut4s = lo4 - (lo4*BigInt(looseM.slip)/10000n);
       if(minOut4s<1n) minOut4s=1n;
-
-      await ensurePermit2(signer, x.addr, units, function(msg){ btn.innerHTML='<span class="spin"></span> '+msg; });
 
       btn.innerHTML='<span class="spin"></span> LOOSING V4 — SIGN IN WALLET…';
       var ur4=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
