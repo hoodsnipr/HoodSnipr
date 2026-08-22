@@ -500,6 +500,7 @@ function boardRowToPool(r){
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
     ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
+    holders:r.h!=null?r.h:null, wash:!!r.wash,
     created:r.cr? new Date(r.cr).toISOString() : null,
     holders:r.h, dec:r.d, src:"BOARD"
   };
@@ -906,6 +907,16 @@ function buyPressure(p){
   var col = pct>=60?"var(--green)" : pct<=40?"var(--red)" : "var(--mute)";
   return '<span style="color:'+col+'">'+pct+'% buys</span> · ';
 }
+// Holder count, tinted amber when thin relative to volume — the same signal
+// the 24H/30D filter uses, surfaced so users can judge for themselves.
+function holdersCell(p){
+  var k=esc((p.baseToken||"").toLowerCase());
+  var h = p.holders!=null? p.holders : ((metaOf(p)||{}).h);
+  if(h==null) return '<span data-holders="'+k+'">👥 …</span>';
+  var thin = h<100 && Math.max(p.h24||0,p.h6||0)>=50000;
+  var col = thin? ' style="color:var(--gold)"' : '';
+  return '<span data-holders="'+k+'"'+col+'>👥 '+h.toLocaleString()+(thin?' ⚠':'')+'</span>';
+}
 function venueBadge(p){
   var v=versionsOf(p);
   if(!v.length) return "";
@@ -960,7 +971,13 @@ function renderBoard(){
   // so the client renders the server's list verbatim.
   // Rank strictly by the SELECTED timeframe's volume — that's what makes the
   // 5M / 1H / 6H / 24H tabs meaningfully different and comparable to any screener.
+  // Wash-trading filter, deliberately scoped to 24H and 30D.
+  // Heavy volume across <100 holders is a wash-trading signature. But on the
+  // 5M/1H/6H views a real new launch legitimately has few holders, and hiding
+  // those would defeat the point of a sniper — so those views stay unfiltered.
+  var washTf = (state.tf==="h24" || state.tf==="d30");
   var ranked=state.pools.slice().filter(function(p){
+    if(washTf && p.wash) return false;
     if(state.tf==="d30") return true;
     return volFor(p)>0 || (p.liq||0)>=1000;   // hide dead rows from timeframe views
   }).sort(function(a,b){
@@ -990,7 +1007,7 @@ function renderBoard(){
       +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
       +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · <span data-holders="'+esc((p.baseToken||"").toLowerCase())+'">'+((metaOf(p)||{}).h!=null?"👥 "+metaOf(p).h.toLocaleString():"👥 …")+'</span></div></div>'
+      +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -1010,8 +1027,10 @@ function renderBoard(){
     if(state.boardWarming){
       tn.innerHTML='<span style="color:var(--gold)">⚙️ Loading trending tokens…</span>';
     }else{
+      var hidden = washTf ? state.pools.filter(function(x){return x.wash}).length : 0;
       tn.textContent = "Showing "+ranked.length.toLocaleString()+" trending tokens on Robinhood Chain"
         + " · ranked by "+TF_LABEL[state.tf]+" volume"
+        + (hidden? " · "+hidden+" wash-trade suspect"+(hidden>1?"s":"")+" hidden" : "")
         + " · DexScreener + GeckoTerminal";
     }
   }
