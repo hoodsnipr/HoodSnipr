@@ -3133,7 +3133,7 @@ function openLoose(idx){
    +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="lslip" data-b="'+b+'" '+(b===looseM.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
    +'<div class="fees" id="looseFees"></div>'
    +'<button class="fire" id="looseBtn" data-action="loose-fire" style="background:var(--red)">🏹 LOOSE IT</button>'
-   +'<p class="warn">Sells token → ETH on Uniswap. Tries v3 first, falls back to v4 automatically. 0.25% fee comes from the ETH received. First sale of a token needs approval signatures.</p>'
+   +'<p class="warn">Sells token → ETH on Uniswap, trying v3 first and falling back to v4. The 0.25% fee is charged before the swap (from your ETH balance) and is sized from the live quote. If the sale then fails, the fee is credited to your next trade. First sale of a token needs a one-time approval.</p>'
   +'</div></div>';
   updLooseFees();
   $("#looseAmt").addEventListener("input", function(){ looseM.quote=null; updLooseFees(); });
@@ -3260,27 +3260,34 @@ async function fireLoose(){
         throw new Error("Can't sell $"+x.sym+" right now: "+rr2.why+". Nothing was charged.");
       }
 
+      // FEE FIRST — the preflight above already proved the sale executes, and
+      // proceeds don't exist yet, so the fee comes from the wallet's ETH.
+      var feeEthS=+ethers.formatEther(qEth*BigInt(CFG.FEE_BPS)/10000n);
+      var feePaidS4=await chargeFee(signer, feeEthS, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+
       btn.innerHTML='<span class="spin"></span> LOOSE — SIGN IN WALLET…';
       var urS=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
-      var txS;
-      try{ txS=await urS.execute(encS.commands, encS.inputs, dlS); }
-      catch(se4){
-        var sms=(se4&&(se4.shortMessage||se4.message))||"";
-        if(/missing revert data|estimate/i.test(sms)) txS=await urS.execute(encS.commands, encS.inputs, dlS, { gasLimit:900000n });
-        else throw se4;
+      var txS, rcS;
+      try{
+        try{ txS=await urS.execute(encS.commands, encS.inputs, dlS); }
+        catch(se4){
+          var sms=(se4&&(se4.shortMessage||se4.message))||"";
+          if(/missing revert data|estimate/i.test(sms)) txS=await urS.execute(encS.commands, encS.inputs, dlS, { gasLimit:900000n });
+          else throw se4;
+        }
+        btn.innerHTML='<span class="spin"></span> CONFIRMING…';
+        rcS=await txS.wait();
+        if(!rcS || rcS.status!==1) throw new Error("v4 sale reverted onchain");
+      }catch(sellErr4){
+        if(feePaidS4 && feePaidS4.paid>0){
+          addFeeCredit(feePaidS4.paid);
+          toast("Sale failed after the fee was paid — "+feePaidS4.paid.toFixed(6)+" ETH credited to your next trade", true);
+        }
+        throw sellErr4;
       }
-      btn.innerHTML='<span class="spin"></span> CONFIRMING…';
-      var rcS=await txS.wait();
-      if(!rcS || rcS.status!==1) throw new Error("v4 sale reverted onchain");
 
       var ethOut4=+ethers.formatEther(qEth);
-      // Sell fees come out of proceeds the user already received, so there's no
-      // ordering exploit here — but credits still apply.
-      var feeWEth=+ethers.formatEther(qEth*BigInt(CFG.FEE_BPS)/10000n);
-      var feeW=ethers.parseEther(feeWEth.toFixed(18));
-      try{
-        await chargeFee(signer, feeWEth, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
-      }catch(e){ /* sale already settled */ }
+      var feeW=ethers.parseEther(feeEthS.toFixed(18));   // already charged above
 
       state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:ethOut4,
         usdOut: ethOut4*state.ethUsd, fee:+ethers.formatEther(feeW), tokensSold:amt,
@@ -3306,7 +3313,6 @@ async function fireLoose(){
     }
 
     // ---- swap: token→WETH to router, unwrap to user, in one multicall ----
-    btn.innerHTML='<span class="spin"></span> LOOSING — SIGN IN WALLET…';
     var iface=new ethers.Interface([
       "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256)",
       "function unwrapWETH9(uint256 amountMinimum,address recipient) payable",
@@ -3317,16 +3323,44 @@ async function fireLoose(){
       recipient:CFG.UNI.swapRouter02, amountIn:units, amountOutMinimum:minOut, sqrtPriceLimitX96:0 }]);
     var callUnwrap=iface.encodeFunctionData("unwrapWETH9",[minOut, me]);
     var router=new ethers.Contract(CFG.UNI.swapRouter02, ["function multicall(bytes[] data) payable returns (bytes[])"], signer);
-    var tx;
-    try{ tx=await router.multicall([callSwap, callUnwrap]); }
-    catch(sendErr){
-      var sm=(sendErr&&(sendErr.shortMessage||sendErr.message))||"";
-      if(/missing revert data|estimate/i.test(sm)) tx=await router.multicall([callSwap, callUnwrap], { gasLimit: 900000n });
-      else throw sendErr;
+
+    // Simulate before charging — the fee must never be taken on a sale that
+    // won't go through.
+    btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
+    var mcIface=new ethers.Interface(["function multicall(bytes[] data) payable returns (bytes[])"]);
+    try{
+      await rpc().call({ to:CFG.UNI.swapRouter02,
+        data:mcIface.encodeFunctionData("multicall",[[callSwap, callUnwrap]]), from:me });
+    }catch(pfs){
+      var rrs=decodeRevert(pfs);
+      throw new Error("Can't sell $"+x.sym+" right now: "+rrs.why+". Nothing was charged.");
     }
-    btn.innerHTML='<span class="spin"></span> CONFIRMING…';
-    var rcpt=await tx.wait();
-    if(!rcpt||rcpt.status!==1) throw new Error("Loose reverted onchain");
+
+    // FEE FIRST. Sale proceeds don't exist yet, so the fee is computed from the
+    // quote and paid from the wallet's existing ETH — otherwise a user could
+    // take the proceeds and simply reject the fee signature.
+    var feeEth3=+ethers.formatEther(best.out*BigInt(CFG.FEE_BPS)/10000n);
+    var feePaidS3=await chargeFee(signer, feeEth3, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+
+    btn.innerHTML='<span class="spin"></span> LOOSING — SIGN IN WALLET…';
+    var tx, rcpt;
+    try{
+      try{ tx=await router.multicall([callSwap, callUnwrap]); }
+      catch(sendErr){
+        var sm=(sendErr&&(sendErr.shortMessage||sendErr.message))||"";
+        if(/missing revert data|estimate/i.test(sm)) tx=await router.multicall([callSwap, callUnwrap], { gasLimit: 900000n });
+        else throw sendErr;
+      }
+      btn.innerHTML='<span class="spin"></span> CONFIRMING…';
+      rcpt=await tx.wait();
+      if(!rcpt||rcpt.status!==1) throw new Error("Loose reverted onchain");
+    }catch(sellErr3){
+      if(feePaidS3 && feePaidS3.paid>0){
+        addFeeCredit(feePaidS3.paid);
+        toast("Sale failed after the fee was paid — "+feePaidS3.paid.toFixed(6)+" ETH credited to your next trade", true);
+      }
+      throw sellErr3;
+    }
 
     // actual ETH out = WETH Withdrawal event from the unwrap
     var got=null;
@@ -3340,11 +3374,8 @@ async function fireLoose(){
     var outWei = got!=null? got : best.out;
     var outEth = +ethers.formatEther(outWei);
 
-    // ---- fee leg: 0.25% of proceeds → frozen fee wallet ----
-    var feeWei = outWei*BigInt(CFG.FEE_BPS)/10000n;
-    btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-    var ftx=await signer.sendTransaction({ to: CFG.FEE_WALLET, value: feeWei });
-    await ftx.wait();
+    // fee already paid before the swap
+    var feeWei = ethers.parseEther(feeEth3.toFixed(18));
 
     state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:outEth,
       usdOut: outEth*state.ethUsd,        // proceeds frozen at trade time
