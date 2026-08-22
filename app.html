@@ -3288,15 +3288,37 @@ document.addEventListener("click", function(e){
   else if(a==="lslip"){ looseM.slip=parseInt(el.getAttribute("data-b"),10); $$('[data-action="lslip"]').forEach(function(b){var on=parseInt(b.getAttribute("data-b"),10)===looseM.slip; b.style.borderColor=on?"var(--green)":""; b.style.color=on?"var(--green)":"";}); updLooseFees(); }
   else if(a==="share") shareCard(parseInt(el.getAttribute("data-i"),10));
 });
-$("#tabs").addEventListener("click",function(e){
-  var b=e.target.closest(".tab"); if(!b)return;
-  $$(".tab").forEach(function(t){t.classList.remove("on")}); b.classList.add("on");
-  var v=b.getAttribute("data-tab");
-  ["board","new","port","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
+var TABS=["board","new","port","wallet","ranks"];
+// The active tab survives a refresh. Reloading mid-task and being thrown back
+// to Trending loses your place — especially on Portfolio, where people sit.
+function showTab(v, opts){
+  if(TABS.indexOf(v)<0) v="board";
+  $$(".tab").forEach(function(t){ t.classList.toggle("on", t.getAttribute("data-tab")===v); });
+  TABS.forEach(function(k){
+    var el=$("#v-"+k); if(el) el.style.display = (k===v?"":"none");
+  });
+  state.tab=v;
+  save("hs_tab", v);
+  // keep the URL in step so a hard refresh, a bookmark, and Back all agree
+  try{
+    if(!opts || !opts.fromHash){
+      var want="#"+v;
+      if(window.location.hash!==want) window.history.replaceState(null,"",want);
+    }
+  }catch(e){}
   if(v==="ranks") renderRanks();
   if(v==="wallet") renderWallets();
   if(v==="port"){ paintCachedHoldings(); renderPortfolio(); loadPortfolio(); }
   if(v==="new") refreshNew(false);
+}
+$("#tabs").addEventListener("click",function(e){
+  var b=e.target.closest(".tab"); if(!b)return;
+  showTab(b.getAttribute("data-tab"));
+});
+// a pasted #port link, or the browser Back button, should both work
+window.addEventListener("hashchange", function(){
+  var h=""; try{ h=(window.location.hash||"").replace("#",""); }catch(e){}
+  if(h && h!==state.tab) showTab(h, {fromHash:true});
 });
 $("#tfpills").addEventListener("click",function(e){
   var b=e.target.closest(".tf"); if(!b)return;
@@ -3363,6 +3385,18 @@ state.burner = load("hs_burner", null);
   state.trades = state.trades.filter(function(t){ return !!t.tx; });
   if(state.trades.length!==before) save("hs_trades", state.trades);
 })();
+// Restore the tab the user was last on. A hash in the URL takes precedence so
+// shared links land where they point.
+(function(){
+  var fromHash="";
+  try{ fromHash=(window.location.hash||"").replace("#",""); }catch(e){}
+  var saved=load("hs_tab", null);
+  var want = (TABS.indexOf(fromHash)>=0) ? fromHash
+           : (TABS.indexOf(saved)>=0 ? saved : "board");
+  if(want!=="board") showTab(want, {fromHash:true});
+  else state.tab="board";
+})();
+
 // paint the restored timeframe onto the pills before first render
 (function(){
   $$(".tf").forEach(function(b){ b.classList.toggle("on", b.getAttribute("data-tf")===state.tf); });
