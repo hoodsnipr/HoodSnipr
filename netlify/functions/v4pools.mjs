@@ -620,6 +620,9 @@ export async function bootstrapV4(poolIds, budgetMs = 7000) {
   }
 
   // Capability test beats popularity: probe each candidate for execute().
+  // Binding to our PoolManager beats capability — a mainnet-address router can
+  // answer execute() while pointing at a different manager, and then every v4
+  // command reverts with no data.
   let chosen = null;
   for (const c of candidates) {
     const pr = await probeRouter(c.addr).catch(() => null);
@@ -628,7 +631,17 @@ export async function bootstrapV4(poolIds, budgetMs = 7000) {
       c.revertData = pr.revertData || null;
       c.probeMsg = pr.message || null;
     }
-    if (pr && pr.implementsExecute && !chosen) chosen = c.addr;
+    if (pr && pr.implementsExecute) {
+      for (const sel of ["0xdc4c90d3", "0xe34e7283"]) {
+        const res = await callSel(c.addr, sel);
+        if (res.ok && typeof res.result === "string" && res.result.length >= 66) {
+          c.poolManager = "0x" + res.result.slice(-40);
+          c.bound = c.poolManager.toLowerCase() === String(manager).toLowerCase();
+          break;
+        }
+      }
+      if (c.bound && !chosen) chosen = c.addr;
+    }
   }
   // Nothing among the swap senders implements execute()? Then the router is a
   // contract that CALLS one of them. Probe the wider candidate set too.
@@ -1102,6 +1115,78 @@ export async function launchpadFamilies(budgetMs = 8000, sampleTx = 30) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// IS THERE A UNIVERSALROUTER ON THIS CHAIN AT ALL?
+//
+// v4's Swap event indexes `sender` — the contract that called PoolManager.swap.
+// If a UniversalRouter were routing v4 here it would necessarily appear as a
+// sender. So: collect every distinct sender over a decent sample and test each
+// one for (a) execute(bytes,bytes[],uint256) and (b) an immutable poolManager
+// pointing at THIS manager. If none qualifies, generic v4 routing simply isn't
+// available on this chain and we should stop pretending otherwise.
+export async function findUniversalRouter(budgetMs = 8000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+  const manager = (st.manager || KNOWN_MANAGER || "").toLowerCase();
+  if (!manager) return { ok: false, error: "PoolManager unknown" };
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: e.message }; }
+
+  const senders = {};
+  let win = 4000, from = head, tries = 0;
+  while (Date.now() - t0 < budgetMs * 0.5 && tries < 10 && from > head - 200000) {
+    tries++;
+    const lo = Math.max(0, from - win);
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x" + lo.toString(16), toBlock: "0x" + from.toString(16),
+        address: manager, topics: [V4_SWAP_TOPIC]
+      }]) || [];
+      for (const lg of logs) {
+        if (!lg.topics || lg.topics.length < 3) continue;
+        const a = addrFromTopic(lg.topics[2]);
+        if (a && !/^0x0+$/.test(a)) senders[a] = (senders[a] || 0) + 1;
+      }
+    } catch (e) { win = Math.max(300, Math.floor(win / 3)); }
+    from = lo; win = Math.min(40000, win * 2);
+  }
+
+  const ranked = Object.entries(senders).sort((a, b) => b[1] - a[1]);
+  const results = [];
+  for (const [addr, count] of ranked.slice(0, 12)) {
+    if (Date.now() - t0 > budgetMs - 800) break;
+    const r = { addr, swaps: count, implementsExecute: false, poolManager: null, bound: false };
+    const pr = await probeRouter(addr).catch(() => null);
+    r.implementsExecute = !!(pr && pr.implementsExecute);
+    for (const sel of ["0xdc4c90d3", "0xe34e7283"]) {     // poolManager() / V4_POOL_MANAGER()
+      const res = await callSel(addr, sel);
+      if (res.ok && typeof res.result === "string" && res.result.length >= 66) {
+        r.poolManager = "0x" + res.result.slice(-40);
+        r.bound = r.poolManager.toLowerCase() === manager;
+        break;
+      }
+    }
+    results.push(r);
+  }
+
+  const winner = results.find(r => r.bound && r.implementsExecute)
+              || results.find(r => r.bound)
+              || null;
+
+  return {
+    ok: true, manager,
+    universalRouter: winner ? winner.addr : null,
+    verdict: winner
+      ? "found a router bound to this PoolManager"
+      : "NO UniversalRouter found — every contract calling the PoolManager is a per-token launchpad router, so generic v4 routing is unavailable on this chain",
+    sendersChecked: results.length,
+    senders: results
+  };
+}
+
 async function handle(req) {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -1129,6 +1214,11 @@ async function handle(req) {
   // ?testrouter=<addr> — does this contract implement execute()?
   const tr = url.searchParams.get("testrouter");
   if (tr) return json(200, await probeRouter(tr));
+
+  // ?findur=1 — is a real UniversalRouter present and bound to our PoolManager?
+  if (url.searchParams.get("findur") === "1") {
+    return json(200, await findUniversalRouter(8000));
+  }
 
   // ?boot=1 — one-shot: PoolManager + router
   if (url.searchParams.get("boot") === "1") {
