@@ -1893,6 +1893,37 @@ function renderSpendLine(){
     +'<button class="max" data-action="maxamt">MAX</button>';
 }
 
+// FEE ORDER
+// The fee must precede the swap, or a user can simply reject the fee signature
+// after receiving their tokens. The risk that creates — paying a fee for a swap
+// that then fails — is handled two ways:
+//   1. the exact swap is SIMULATED first, so we only charge when it will succeed
+//   2. if it fails anyway, the fee is banked as a credit and applied to the
+//      user's next snipe, so nobody pays twice for one trade
+function feeCredit(){ return +(load("hs_feecredit", 0) || 0); }
+function addFeeCredit(eth){
+  var c=feeCredit()+(+eth||0);
+  save("hs_feecredit", +c.toFixed(18));
+  return c;
+}
+function useFeeCredit(feeEth){
+  var c=feeCredit();
+  if(c<=0) return { pay:feeEth, used:0 };
+  var used=Math.min(c, feeEth);
+  save("hs_feecredit", +(c-used).toFixed(18));
+  return { pay:+(feeEth-used).toFixed(18), used:used };
+}
+// Charge the fee, returning what was actually sent. Applies any banked credit.
+async function chargeFee(signer, feeEth, setBtn){
+  var f=useFeeCredit(feeEth);
+  if(f.used>0) toast("Applied "+f.used.toFixed(6)+" ETH fee credit from a failed trade");
+  if(f.pay<=0) return { paid:0, credited:f.used };
+  if(setBtn) setBtn("FEE — SIGN IN WALLET…");
+  var tx=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(f.pay.toFixed(18)) });
+  await tx.wait();
+  return { paid:f.pay, credited:f.used };
+}
+
 var quoteSeq=0;// Wallet balance helpers. These were collateral damage when I rewrote the v4
 // quoting block — the call sites survived, so opening ANY token modal threw a
 // ReferenceError and nothing rendered. Restored here.
@@ -1926,6 +1957,37 @@ function renderSpendLine(){
     +'<button class="max" data-action="maxamt">MAX</button>';
 }
 
+// FEE ORDER
+// The fee must precede the swap, or a user can simply reject the fee signature
+// after receiving their tokens. The risk that creates — paying a fee for a swap
+// that then fails — is handled two ways:
+//   1. the exact swap is SIMULATED first, so we only charge when it will succeed
+//   2. if it fails anyway, the fee is banked as a credit and applied to the
+//      user's next snipe, so nobody pays twice for one trade
+function feeCredit(){ return +(load("hs_feecredit", 0) || 0); }
+function addFeeCredit(eth){
+  var c=feeCredit()+(+eth||0);
+  save("hs_feecredit", +c.toFixed(18));
+  return c;
+}
+function useFeeCredit(feeEth){
+  var c=feeCredit();
+  if(c<=0) return { pay:feeEth, used:0 };
+  var used=Math.min(c, feeEth);
+  save("hs_feecredit", +(c-used).toFixed(18));
+  return { pay:+(feeEth-used).toFixed(18), used:used };
+}
+// Charge the fee, returning what was actually sent. Applies any banked credit.
+async function chargeFee(signer, feeEth, setBtn){
+  var f=useFeeCredit(feeEth);
+  if(f.used>0) toast("Applied "+f.used.toFixed(6)+" ETH fee credit from a failed trade");
+  if(f.pay<=0) return { paid:0, credited:f.used };
+  if(setBtn) setBtn("FEE — SIGN IN WALLET…");
+  var tx=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(f.pay.toFixed(18)) });
+  await tx.wait();
+  return { paid:f.pay, credited:f.used };
+}
+
 var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
@@ -1949,6 +2011,7 @@ function updFees(){
    +'<div><span class="k">Max slippage</span><span>'+(modal.slip/100)+'%</span></div>'
    +'<div><span class="k">Execution</span><span style="color:var(--gold)">'
      +(modal.venue==="v4" ? "UNISWAP V4 · UNIVERSAL ROUTER" : "UNISWAP V3 · ONCHAIN")+'</span></div>'
+   +(feeCredit()>0?'<div><span class="k">Fee credit</span><span class="up">−'+Math.min(feeCredit(),fee).toFixed(6)+' ETH</span></div>':'')
    +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>'
    +'<div><span class="k">Route</span><span style="color:var(--gold)">'+(q&&q.fee?"UNISWAP V3":"V3, ELSE V4 ⚡")+'</span></div>';
   renderSpendLine();
@@ -2128,7 +2191,8 @@ async function fire(){
       var dl4=BigInt(Math.floor(Date.now()/1000)+300);
       var urIface4=new ethers.Interface(UROUTER_ABI);
 
-      // Simulate the real call first — no fee is taken on a doomed swap.
+      // Simulate the exact call BEFORE charging anything. This is what makes it
+      // safe to take the fee first — we only charge when the swap will land.
       btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
       try{
         await rpc().call({ to:v4Router(),
@@ -2139,20 +2203,32 @@ async function fire(){
         if(!modal.force){ armForce("v4 simulation failed: "+rr4.why+"."); return; }
       }
 
-      // ONE signature: wrap (if needed) + swap, atomically.
+      // FEE FIRST — the swap can't be taken without it.
+      var feePaid4=await chargeFee(signer, fee, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+
       btn.innerHTML='<span class="spin"></span> SNIPE — SIGN IN WALLET…';
       var ur4=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
-      var tx4;
-      try{ tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { value:enc4.value }); }
-      catch(se){
-        var sm4=(se&&(se.shortMessage||se.message))||"";
-        if(/missing revert data|estimate/i.test(sm4))
-          tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { value:enc4.value, gasLimit:900000n });
-        else throw se;
+      var tx4, rc4;
+      try{
+        try{ tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { value:enc4.value }); }
+        catch(se){
+          var sm4=(se&&(se.shortMessage||se.message))||"";
+          if(/missing revert data|estimate/i.test(sm4))
+            tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { value:enc4.value, gasLimit:900000n });
+          else throw se;
+        }
+        btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
+        rc4=await tx4.wait();
+        if(!rc4 || rc4.status!==1) throw new Error("v4 swap reverted onchain");
+      }catch(swapErr){
+        // The fee is already paid. Bank it so the next snipe is free rather
+        // than charging twice for one trade.
+        if(feePaid4 && feePaid4.paid>0){
+          addFeeCredit(feePaid4.paid);
+          toast("Swap failed after the fee was paid — "+feePaid4.paid.toFixed(6)+" ETH credited to your next snipe", true);
+        }
+        throw swapErr;
       }
-      btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
-      var rc4=await tx4.wait();
-      if(!rc4 || rc4.status!==1) throw new Error("v4 swap reverted onchain");
 
       var dec4=await tokenDecimals(rpc(), p.baseToken);
       var got4=null;
@@ -2167,13 +2243,7 @@ async function fire(){
       }catch(e){}
       var out4=+(ethers.formatUnits(got4!=null?got4:qOut, dec4));
 
-      // FEE LAST. Charging it up front meant failed swaps still cost money.
       var v4Recip=(modal.mode==="burner")?(burnerDestination()||me):me;
-      try{
-        btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-        var ftx4=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(fee.toFixed(18)) });
-        await ftx4.wait();
-      }catch(e){ /* the snipe already succeeded; never unwind it over the fee */ }
 
       recordTrade(p, amt, fee, modal.mode, out4, rc4.hash, { ver:"v4", deliveredTo:v4Recip });
       toast("Sniped "+out4.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" via V4 ⚡");
@@ -2218,7 +2288,9 @@ async function fire(){
       }
     }
 
-    // ---- the swap first; the fee is charged only if it lands ----
+    // Preflight above proved this swap succeeds, so the fee is safe to take now.
+    var feePaid3=await chargeFee(signer, fee, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+
     btn.innerHTML='<span class="spin"></span> SNIPE — SIGN IN WALLET…';
     var router = new ethers.Contract(CFG.UNI.swapRouter02,
       ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"],
@@ -2228,7 +2300,8 @@ async function fire(){
     var params = { tokenIn:CFG.UNI.weth, tokenOut:p.baseToken, fee:best.fee,
       recipient: recip, amountIn: netWei,
       amountOutMinimum: minOut, sqrtPriceLimitX96: 0 };
-    var tx2;
+    var tx2, rcpt;
+    try{
     try{
       tx2 = await router.exactInputSingle(params, { value: netWei });
     }catch(sendErr){
@@ -2241,8 +2314,15 @@ async function fire(){
       } else throw sendErr;
     }
     btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
-    var rcpt = await tx2.wait();
+    rcpt = await tx2.wait();
     if(!rcpt || rcpt.status!==1) throw new Error("Swap reverted onchain");
+    }catch(swapErr3){
+      if(feePaid3 && feePaid3.paid>0){
+        addFeeCredit(feePaid3.paid);
+        toast("Swap failed after the fee was paid — "+feePaid3.paid.toFixed(6)+" ETH credited to your next snipe", true);
+      }
+      throw swapErr3;
+    }
 
     // ---- actual received amount from the ERC-20 Transfer log to us ----
     var got = null;
@@ -2257,13 +2337,6 @@ async function fire(){
       });
     }catch(e){}
     var tokensOut = +(ethers.formatUnits(got!=null?got:best.out, dec));
-
-    // FEE LAST — a failed swap must never cost the user a fee.
-    try{
-      btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-      var feeTx3 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
-      await feeTx3.wait();
-    }catch(e){ /* snipe already succeeded */ }
 
     recordTrade(p, amt, fee, modal.mode, tokensOut, rcpt.hash,
       { ver:"v3", deliveredTo: recip });
@@ -3078,6 +3151,7 @@ function updLooseFees(){
    +'<div><span class="k">Loose fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
    +'<div><span class="k">You keep</span><span class="up">'+(outEth-fee).toFixed(6)+' ETH</span></div>'
    +'<div><span class="k">Max slippage</span><span>'+(looseM.slip/100)+'%</span></div>'
+   +(feeCredit()>0?'<div><span class="k">Fee credit</span><span class="up">−'+Math.min(feeCredit(),fee).toFixed(6)+' ETH</span></div>':'')
    +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>'
    +'<div><span class="k">Route</span><span style="color:var(--gold)">'+(q&&q.fee?"UNISWAP V3":"V3, ELSE V4 ⚡")+'</span></div>';
   if(amt>0) liveLooseQuote(x, amt);
@@ -3200,11 +3274,12 @@ async function fireLoose(){
       if(!rcS || rcS.status!==1) throw new Error("v4 sale reverted onchain");
 
       var ethOut4=+ethers.formatEther(qEth);
-      var feeW=qEth*BigInt(CFG.FEE_BPS)/10000n;
+      // Sell fees come out of proceeds the user already received, so there's no
+      // ordering exploit here — but credits still apply.
+      var feeWEth=+ethers.formatEther(qEth*BigInt(CFG.FEE_BPS)/10000n);
+      var feeW=ethers.parseEther(feeWEth.toFixed(18));
       try{
-        btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-        var ftxS=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeW });
-        await ftxS.wait();
+        await chargeFee(signer, feeWEth, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
       }catch(e){ /* sale already settled */ }
 
       state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:ethOut4,
