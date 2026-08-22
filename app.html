@@ -1592,6 +1592,28 @@ async function verifyUniversalRouter(pr){
 // Client-side capability test. If the server hands back an unverified router we
 // check candidates ourselves rather than quoting against a contract that may not
 // implement execute() — that produced the no-data reverts.
+// The decisive test: does this router point at THIS chain's PoolManager?
+// A UniversalRouter deployed at the canonical mainnet address may well exist
+// here and answer execute() — but if its immutable poolManager is a different
+// contract (or zero), every v4 command reverts with no data. That's exactly the
+// failure we kept hitting. Bytecode presence proves nothing; this binding does.
+async function routerBoundToManager(addr){
+  var mgr = state.v4Manager || CFG.UNI.v4Manager;
+  if(!mgr) return null;                        // unknown manager — can't judge
+  var pr=rpc();
+  for(var i=0;i<2;i++){
+    var sel = i===0 ? "0xdc4c90d3" : "0xe34e7283";   // poolManager() / V4_POOL_MANAGER()
+    try{
+      var res=await pr.call({ to:addr, data:sel });
+      if(res && res.length>=66){
+        var got="0x"+res.slice(-40);
+        return got.toLowerCase()===String(mgr).toLowerCase();
+      }
+    }catch(e){}
+  }
+  return null;                                  // router doesn't expose it
+}
+
 async function clientProbeRouter(addr){
   try{
     // A call to an address with NO CODE succeeds and returns "0x" — which my
@@ -1618,22 +1640,56 @@ async function clientProbeRouter(addr){
 async function resolveVerifiedRouter(){
   if(state.v4RouterVerified && state.v4Router && state.v4Router!==CFG.UNI.universalRouter)
     return state.v4Router;
+
+  // Make sure we actually have candidates to choose from. If the server's
+  // bootstrap hasn't answered, ask for it now — otherwise the only option left
+  // is the hardcoded mainnet address, which is how we ended up using it.
+  if(!state.v4Candidates || !state.v4Candidates.length){
+    try{
+      var bj=await fetch(CFG.API+"/v4pools?boot=1&t="+Date.now()).then(function(r){return r.json()});
+      if(bj){
+        if(bj.manager) state.v4Manager=bj.manager;
+        if(bj.candidates && bj.candidates.length)
+          state.v4Candidates=bj.candidates.map(function(c){return c.addr});
+        if(bj.router && bj.routerVerified) state.v4Router=bj.router;
+      }
+    }catch(e){}
+  }
   // Candidates observed calling the PoolManager come FIRST. The configured
   // address is a last resort — it's a mainnet deployment that may not exist here.
   var list=(state.v4Candidates||[]).slice();
   if(state.v4Router && state.v4Router!==CFG.UNI.universalRouter && list.indexOf(state.v4Router)<0)
     list.unshift(state.v4Router);
   if(list.indexOf(CFG.UNI.universalRouter)<0) list.push(CFG.UNI.universalRouter);
+
+  // Pass 1: a router that names this chain's PoolManager is definitive.
+  var fallbackOk=null;
   for(var i=0;i<list.length;i++){
-    if(await clientProbeRouter(list[i])){
+    var bound=await routerBoundToManager(list[i]);
+    if(bound===true && await clientProbeRouter(list[i])){
       state.v4Router=list[i]; state.v4RouterVerified=true;
       return list[i];
     }
+    if(bound===null && fallbackOk===null && await clientProbeRouter(list[i])) fallbackOk=list[i];
+  }
+  // Pass 2: nothing exposed its manager — fall back to execute() capability,
+  // but NEVER treat the hardcoded mainnet address as verified.
+  if(fallbackOk){
+    state.v4Router=fallbackOk;
+    state.v4RouterVerified = (fallbackOk!==CFG.UNI.universalRouter);
+    return fallbackOk;
   }
   state.v4RouterVerified=false;
   return state.v4Router || CFG.UNI.universalRouter;
 }
 
+// A router proven by a real simulation beats anything we can infer.
+(function(){
+  try{
+    var saved=localStorage.getItem("hs_v4router");
+    if(saved && /^0x[0-9a-fA-F]{40}$/.test(saved)){ state.v4Router=saved; state.v4RouterVerified=true; }
+  }catch(e){}
+})();
 var v4BootPromise=null;
 async function ensureV4Router(){
   if(state.v4Router) return state.v4Router;
@@ -2048,20 +2104,27 @@ async function fire(){
       if(!q4.ok){
         // A no-data revert usually means the wrong contract, not a bad pool.
         // Several contracts call the PoolManager; try the other candidates.
+        if(!state.v4Candidates || !state.v4Candidates.length) await resolveVerifiedRouter();
         var cands=(state.v4Candidates||[]).filter(function(a){ return a!==state.v4Router; });
         for(var ci=0; ci<cands.length && !q4.ok; ci++){
           var prevR=state.v4Router;
           state.v4Router=cands[ci];
           q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
-          if(!q4.ok) state.v4Router=prevR; else state.v4RouterVerified=true;
+          if(!q4.ok){ state.v4Router=prevR; }
+          else {
+            // A successful simulation is the strongest possible proof.
+            state.v4RouterVerified=true;
+            try{ localStorage.setItem("hs_v4router", state.v4Router); }catch(e){}
+          }
         }
       }
       if(!q4.ok && !modal.force){
         armForce((q4.why? "v4 quote failed: "+q4.why+". " : "")
           +"Couldn't route "+net.toFixed(4)+" ETH via router "+short(v4Router())
-          +(state.v4RouterVerified? " (verified: implements execute)."
-            : state.v4Router? " (discovered, but it may not be the swap router)."
-            : " (FALLBACK — router discovery hasn't completed)."));
+          +(state.v4Router===CFG.UNI.universalRouter
+              ? " (FALLBACK address — not bound to this chain's PoolManager, which is the likely cause)."
+              : state.v4RouterVerified? " (bound to PoolManager "+short(state.v4Manager||CFG.UNI.v4Manager||"")+")."
+              : " (unverified router)."));
         return;
       }
       if(!q4.ok) q4={ ok:true, out:1n };   // forced: no slippage floor, user accepted
