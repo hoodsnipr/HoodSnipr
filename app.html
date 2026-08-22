@@ -1260,6 +1260,20 @@ function deriveV4Key(token, targetId){
   return null;
 }
 
+// Which launchpad does this pool belong to, and do we support it yet?
+var lpCache={};
+async function launchpadFor(hook, token){
+  var k=String(hook||"").toLowerCase();
+  if(lpCache[k]!==undefined) return lpCache[k];
+  try{
+    var r=await fetch(CFG.API+"/v4pools?adapter="+k+"&token="+String(token||"").toLowerCase());
+    if(!r.ok) return null;
+    var j=await r.json();
+    lpCache[k]=j;
+    return j;
+  }catch(e){ return null; }
+}
+
 var v4KeyCache={};
 // Exact lookup by indexed currencies — one server call, returns the real
 // PoolKey including CREATE2-mined hooks that derivation can't guess.
@@ -1724,8 +1738,32 @@ async function fire(){
       //    reads the real key straight from the Initialize log.
       var dk=await v4KeysDirect(p.baseToken);
       if(dk && dk.length){
-        var dpick=pickV4Key(dk, p.baseToken);
+        // a hookless pool is generically routable — always prefer it
+        var plain=dk.filter(function(k){ return (k.hooks||CFG.UNI.V4.NATIVE)===CFG.UNI.V4.NATIVE; });
+        var dpick=pickV4Key(plain.length?plain:dk, p.baseToken);
         if(dpick){ key=dpick.key; needWrap=dpick.wrap; }
+      }
+
+      // A hook contract that is ALSO the trade entry point means this is a
+      // launchpad bonding-curve pool: it only accepts swaps through its own
+      // contract, with its own ABI. Reading real swaps on this chain showed
+      // every one going to a different per-token contract with a different
+      // selector — no shared router in the path. A generic v4 execute() cannot
+      // route these, so say so instead of burning the user's gas on a revert.
+      if(key && key.hooks && key.hooks!==CFG.UNI.V4.NATIVE){
+        // Launchpad pool. We support these per-family: contracts from the same
+        // launchpad share bytecode and selectors, so one adapter covers every
+        // token it launched. Check whether this family is integrated yet.
+        var lp=await launchpadFor(key.hooks, p.baseToken);
+        if(lp && lp.supported){
+          key._lp=lp;                      // adapter takes over execution below
+        }else{
+          var hasV3alt=versionsOf(p).indexOf("v3")>=0;
+          throw new Error("$"+p.sym+" trades through "+(lp&&lp.name? lp.name : "a launchpad")
+            +" ("+short(key.hooks)+"), which HoodSnipr hasn't integrated yet."
+            +(hasV3alt? " Switch to V3 above to snipe it here now."
+                      : " Support for this launchpad is coming — nothing was charged.")); 
+        }
       }
 
       // 2) hash-derivation, for plain unhooked pools (instant, no RPC)
