@@ -1165,7 +1165,7 @@ function openToken(poolAddr){
   // FIRE doesn't stall on router discovery and key resolution.
   if(versionsOf(p).indexOf("v4")>=0){
     ensureV4Router();
-    if(!deriveV4Key(p.baseToken, p.pool) && p.created) v4KeyByTime(p.pool, p.created);
+    v4KeysDirect(p.baseToken);          // exact key, ready before FIRE is pressed
   }
   // default to the deepest venue, but prefer v3 since that's what we can route
   var vv=versionsOf(p);
@@ -1258,6 +1258,30 @@ function deriveV4Key(token, targetId){
     }
   }
   return null;
+}
+
+var v4KeyCache={};
+// Exact lookup by indexed currencies — one server call, returns the real
+// PoolKey including CREATE2-mined hooks that derivation can't guess.
+async function v4KeysDirect(token){
+  var t=String(token||"").toLowerCase();
+  if(v4KeyCache[t]!==undefined) return v4KeyCache[t];
+  try{
+    var r=await fetch(CFG.API+"/v4pools?keys="+t);
+    if(!r.ok) return null;
+    var j=await r.json();
+    var keys=(j && j.keys && j.keys.length)? j.keys : null;
+    if(keys){
+      v4KeyCache[t]=keys;
+      keys.forEach(function(k){
+        if(k.hooks && k.hooks!=="0x0000000000000000000000000000000000000000"){
+          state.v4Hooks=state.v4Hooks||[];
+          if(state.v4Hooks.indexOf(k.hooks)<0) state.v4Hooks.push(k.hooks);
+        }
+      });
+    }
+    return keys;
+  }catch(e){ return null; }
 }
 
 var v4ProbeCache={};
@@ -1679,14 +1703,25 @@ async function fire(){
     // ---------------- UNISWAP V4 ROUTE ----------------
     if(modal.venue==="v4"){
       btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
-      // 1) derive the PoolKey from the pool id — deterministic, no RPC
       var key=null, needWrap=false, v4=null;
       btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
-      var derived=deriveV4Key(p.baseToken, p.pool);
-      if(derived){ key=derived.key; needWrap=derived.wrap; }
 
-      // 1b) no hooks known yet? learn them, then derive again — this is far
-      //     faster than hunting the pool's Initialize log.
+      // 1) exact lookup by indexed currencies. Hooks on this chain are
+      //    CREATE2-mined per pool, so hash-derivation can't find them — this
+      //    reads the real key straight from the Initialize log.
+      var dk=await v4KeysDirect(p.baseToken);
+      if(dk && dk.length){
+        var dpick=pickV4Key(dk, p.baseToken);
+        if(dpick){ key=dpick.key; needWrap=dpick.wrap; }
+      }
+
+      // 2) hash-derivation, for plain unhooked pools (instant, no RPC)
+      if(!key){
+        var derived=deriveV4Key(p.baseToken, p.pool);
+        if(derived){ key=derived.key; needWrap=derived.wrap; }
+      }
+
+      // 3) learn hooks then retry derivation
       if(!key && (!state.v4Hooks || !state.v4Hooks.length)){
         btn.innerHTML='<span class="spin"></span> LEARNING POOL HOOKS…';
         try{
@@ -1699,7 +1734,7 @@ async function fire(){
         }catch(e){}
       }
 
-      // 2) timestamp-targeted lookup — recovers hooked pools
+      // 4) timestamp-targeted lookup
       if(!key && p.created){
         var timed=await v4KeyByTime(p.pool, p.created);
         if(timed){
@@ -1709,14 +1744,14 @@ async function fire(){
         }
       }
 
-      // 3) generic onchain probe
+      // 5) generic onchain probe
       var direct = key? null : await v4KeyByPoolId(p.pool);
       if(!key && direct){
         var dp=pickV4Key([direct], p.baseToken);
         if(dp){ key=dp.key; needWrap=dp.wrap; }
       }
 
-      // 3) last resort: the scanned index
+      // 6) last resort: the scanned index
       if(!key) v4=await v4KeysFor(p.baseToken, true);
       if(!key && (!v4 || !v4.keys || !v4.keys.length)){
         var pid=String(p.pool||"");
