@@ -178,6 +178,11 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .paytog button.on{background:var(--green-dim);color:var(--green);border-color:var(--green)}
 .amt{width:100%;margin-top:10px;background:var(--void);border:1px solid var(--line);border-radius:12px;color:var(--text);font-size:20px;padding:13px 14px;min-height:48px}
 .qamt{display:flex;gap:6px;margin-top:8px}
+.wbal{display:block;font-family:var(--mono);font-size:10px;font-weight:400;opacity:.85;margin-top:3px}
+.spend{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:11px;color:var(--mute);margin-top:8px;gap:8px}
+.spend b{color:var(--text)}
+.spend .max{color:var(--green);border:1px solid var(--line);border-radius:8px;padding:3px 9px;font-size:10px}
+.spend .low{color:var(--red)}
 .qamt button{flex:1;padding:9px 0;background:var(--void);border:1px solid var(--line);border-radius:8px;color:var(--mute);font-family:var(--mono);font-size:12px;min-height:38px}
 .fees{margin-top:12px;background:var(--void);border-radius:12px;padding:11px 13px;font-family:var(--mono);font-size:12px}
 .fees div{display:flex;justify-content:space-between;padding:3px 0}
@@ -1172,20 +1177,22 @@ function openToken(poolAddr){
      +'<a data-action="ext" href="'+CFG.CHAIN.blockExplorerUrls[0]+'/token/'+esc(p.baseToken)+'" target="_blank" rel="noopener" style="font-family:var(--mono);font-size:10px;color:var(--mute);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:4px 9px">SCAN ↗</a>'
    +'</div>':'')
    +'<div class="paytog">'
-     +'<button data-action="paymode" data-m="wallet" class="'+(modal.mode==="wallet"?"on":"")+'">🔗 Connected</button>'
-     +'<button data-action="paymode" data-m="burner" class="'+(modal.mode==="burner"?"on":"")+'">🏹 HoodSnipr wallet</button>'
+     +'<button data-action="paymode" data-m="wallet" class="'+(modal.mode==="wallet"?"on":"")+'">🔗 Connected<span class="wbal" id="balWallet">'+fmtBal(modal.bal&&modal.bal.wallet)+'</span></button>'
+     +'<button data-action="paymode" data-m="burner" class="'+(modal.mode==="burner"?"on":"")+'">🏹 HoodSnipr<span class="wbal" id="balBurner">'+fmtBal(modal.bal&&modal.bal.burner)+'</span></button>'
    +'</div>'
    +'<input class="amt" id="snipeAmt" inputmode="decimal" placeholder="0.0" value="0.05" aria-label="ETH amount">'
    +'<div class="qamt">'+["0.01","0.05","0.1","0.25","0.5"].map(function(v){return '<button data-action="qamt" data-v="'+v+'">'+v+'</button>'}).join("")+'</div>'
    +venueToggleHtml(p)
    +'<div class="qamt" style="margin-top:8px">'+[100,300,500,1000].map(function(b){return '<button data-action="slip" data-b="'+b+'" '+(b===modal.slip?'style="border-color:var(--green);color:var(--green)"':'')+'>'+(b/100)+'% slip</button>'}).join("")+'</div>'
+   +'<div class="spend" id="spendLine"></div>'
    +'<div class="fees" id="feeBox"></div>'
    +'<button class="fire" id="fireBtn" data-action="fire">🏹 FIRE SNIPE</button>'
    +(p.dsUrl?'<a class="linkout" href="'+esc(p.dsUrl)+'" target="_blank" rel="noopener">open on DexScreener ↗</a>':'')
    +'<a class="linkout" href="https://www.geckoterminal.com/'+CFG.GT_NET+'/pools/'+esc(p.pool)+'" target="_blank" rel="noopener">open on GeckoTerminal ↗</a>'
    +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
   +'</div></div>';
-  modal.quote=null; modal.force=false;
+  modal.quote=null; modal.force=false; modal.bal=modal.bal||{};
+  loadModalBalances();
   // Warm the v4 path in the background the moment the modal opens, so pressing
   // FIRE doesn't stall on router discovery and key resolution.
   if(versionsOf(p).indexOf("v4")>=0){
@@ -1196,7 +1203,7 @@ function openToken(poolAddr){
   var vv=versionsOf(p);
   modal.venue = vv.indexOf("v3")>=0 ? "v3" : (vv[0]||"v3");
   updFees();
-  $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); });
+  $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); renderSpendLine(); });
   // lazy metadata: socials via GT info, holders via Blockscout
   enrichSocials(p).then(function(){ var el=$("#mSocials"); if(el) el.innerHTML=socialLinks(p,16); });
   if(p.baseToken) enrichHolders([p]).then(function(){
@@ -1610,6 +1617,38 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut, recipient)
   return { ok:lo>0n, out:lo, calls:calls };
 }
 
+function fmtBal(v){
+  if(v==null) return " …";
+  return " "+(+v).toFixed(4)+" ETH";
+}
+// Live ETH for both wallets, so the user can see what they can actually spend
+// and which side they're spending from before they commit.
+async function loadModalBalances(){
+  modal.bal = modal.bal || {};
+  var pr=rpc();
+  var jobs=[];
+  if(state.wallet) jobs.push(pr.getBalance(state.wallet).then(function(b){ modal.bal.wallet=+ethers.formatEther(b); }).catch(function(){}));
+  if(state.burner) jobs.push(pr.getBalance(state.burner.addr).then(function(b){ modal.bal.burner=+ethers.formatEther(b); }).catch(function(){}));
+  await Promise.all(jobs);
+  var w=$("#balWallet"); if(w) w.textContent=fmtBal(modal.bal.wallet);
+  var b2=$("#balBurner"); if(b2) b2.textContent=fmtBal(modal.bal.burner);
+  renderSpendLine();
+}
+function activeBalance(){
+  if(!modal.bal) return null;
+  return modal.mode==="burner" ? modal.bal.burner : modal.bal.wallet;
+}
+function renderSpendLine(){
+  var el=$("#spendLine"); if(!el) return;
+  var bal=activeBalance();
+  var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
+  var label=modal.mode==="burner" ? "HoodSnipr wallet" : "Connected wallet";
+  if(bal==null){ el.innerHTML='<span>'+label+' balance…</span>'; return; }
+  var short_ = amt>0 && amt>bal;
+  el.innerHTML='<span>'+label+': <b class="'+(short_?"low":"")+'">'+bal.toFixed(5)+' ETH</b>'
+    +(short_?' — not enough for '+amt+' ETH':'')+'</span>'
+    +'<button class="max" data-action="maxamt">MAX</button>';
+}
 var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
@@ -1628,6 +1667,7 @@ function updFees(){
    +'<div><span class="k">Execution</span><span style="color:var(--gold)">'
      +(modal.venue==="v4" ? "UNISWAP V4 · UNIVERSAL ROUTER" : "UNISWAP V3 · ONCHAIN")+'</span></div>'
    +'<div><span class="k">Fee wallet</span><span class="k">'+short(CFG.FEE_WALLET)+' 🔒</span></div>';
+  renderSpendLine();
   if(net>0 && p.baseToken) liveQuote(p, net);
 }
 // ---- Uniswap plumbing ----
@@ -2432,69 +2472,129 @@ async function fetchPrices(addrs){
   return out;
 }
 async function discoverTokens(addr){
-  // Blockscout DISCOVERS which tokens an address has touched; balances are
-  // then read from RPC directly, because the indexer lags the chain and a
-  // just-loosed token would otherwise show its stale pre-sell amount.
-  var found={};
+  // Blockscout returns balances directly, so it's both the discovery source AND
+  // the data. Previously we also queued EVERY token on the board (up to 2,000)
+  // for an RPC balanceOf — thousands of parallel calls that the public RPC
+  // rate-limited into silent failure, which is why holdings looked empty and
+  // took forever. The board is no longer scanned.
+  var found={}, fromExplorer=false;
   try{
     var r=await fetch(CFG.EXPLORER_API+"/addresses/"+addr+"/token-balances");
     if(r.ok){
       var j=await r.json();
-      (j||[]).forEach(function(it){
+      (Array.isArray(j)?j:[]).forEach(function(it){
         var t=it.token||{};
-        if((t.type||"")!=="ERC-20") return;
+        var type=String(t.type||"").toUpperCase();
+        if(type && type.indexOf("ERC-20")<0) return;      // skip NFTs
         var a=(t.address||t.address_hash||"").toLowerCase();
-        if(a) found[a]={ sym:t.symbol||"?", name:t.name||"", img:t.icon_url||null, dec:+(t.decimals||18) };
+        if(!a) return;
+        var dec=+(t.decimals!=null?t.decimals:18);
+        var bal=+ethers.formatUnits(String(it.value||"0"), dec);
+        if(!(bal>0)) return;
+        found[a]={ sym:t.symbol||"?", name:t.name||"", img:t.icon_url||null, dec:dec, bal:bal, src:"bs" };
       });
+      fromExplorer=true;
     }
   }catch(e){}
-  // Always include every token we've ever sniped, even if the explorer hasn't
-  // indexed it — otherwise a fresh snipe is invisible in the portfolio.
-  state.trades.forEach(function(t){
+
+  // Tokens we've sniped may be seconds old and not indexed yet — those get an
+  // RPC check. It's a handful of calls, not thousands.
+  (state.trades||[]).forEach(function(t){
     if(!t.baseToken) return;
     var k=t.baseToken.toLowerCase();
-    if(!found[k]) found[k]={sym:t.sym,name:"",img:null,dec:t.dec||null};
+    if(!found[k]) found[k]={ sym:t.sym, name:"", img:null, dec:t.dec||null, bal:null, src:"trade" };
   });
-  state.pools.forEach(function(p){ if(p.baseToken){ var k=p.baseToken.toLowerCase(); if(!found[k]) found[k]={sym:p.sym,name:p.tokenName||"",img:p.img,dec:null}; else if(!found[k].img) found[k].img=p.img; } });
-  return found;
+  return { tokens:found, fromExplorer:fromExplorer };
 }
+
 var decCache = load("hs_dec", {});
+// Batched JSON-RPC: one HTTP request carries many eth_calls.
+async function batchCalls(calls){
+  try{
+    var body=calls.map(function(c,i){ return {jsonrpc:"2.0",id:i,method:"eth_call",params:[c,"latest"]}; });
+    var r=await fetch(CFG.CHAIN.rpcUrls[0],{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    var j=await r.json();
+    var out=new Array(calls.length).fill(null);
+    if(Array.isArray(j)) j.forEach(function(x){ if(!x.error) out[x.id]=x.result; });
+    return out;
+  }catch(e){ return new Array(calls.length).fill(null); }
+}
+var BAL_SEL="0x70a08231", DEC_SEL="0x313ce567";
 async function rpcBalances(addr, tokens, tag){
-  var pr=rpc(), keys=Object.keys(tokens), rows=[];
-  await Promise.all(keys.map(async function(k){
-    try{
-      var c=new ethers.Contract(k,["function balanceOf(address) view returns (uint256)","function decimals() view returns (uint8)"],pr);
-      var b=await c.balanceOf(addr);
-      if(b<=0n) return;
-      var d=tokens[k].dec;
-      if(d==null){
-        if(decCache[k]!=null) d=decCache[k];
-        else { d=Number(await c.decimals().catch(function(){return 18})); decCache[k]=d; }
-      }
+  var rows=[], needRpc=[];
+  Object.keys(tokens).forEach(function(k){
+    var t=tokens[k];
+    if(t.bal!=null && t.bal>0 && t.dec!=null){
+      rows.push({ wallet:tag, addr:k, sym:t.sym||"?", name:t.name||"", img:t.img||null, dec:t.dec, bal:t.bal });
+    }else{
+      needRpc.push(k);
+    }
+  });
+  // verify only what the explorer couldn't tell us — small, batched
+  for(var i=0;i<needRpc.length && i<120;i+=40){
+    var slice=needRpc.slice(i,i+40);
+    var calls=slice.map(function(k){
+      return { to:k, data:BAL_SEL+"000000000000000000000000"+addr.slice(2) };
+    });
+    var res=await batchCalls(calls);
+    var missingDec=[];
+    slice.forEach(function(k,idx){
+      var raw=res[idx];
+      if(!raw || raw==="0x") return;
+      var bal;
+      try{ bal=BigInt(raw); }catch(e){ return; }
+      if(bal<=0n) return;
+      var d=tokens[k].dec!=null? tokens[k].dec : decCache[k];
+      if(d==null){ missingDec.push({k:k,bal:bal}); return; }
       rows.push({ wallet:tag, addr:k, sym:tokens[k].sym||"?", name:tokens[k].name||"",
-        img:tokens[k].img||null, dec:d, bal:+ethers.formatUnits(b,d) });
-    }catch(e){}
-  }));
+        img:tokens[k].img||null, dec:d, bal:+ethers.formatUnits(bal,d) });
+    });
+    if(missingDec.length){
+      var dres=await batchCalls(missingDec.map(function(x){ return {to:x.k,data:DEC_SEL}; }));
+      missingDec.forEach(function(x,di){
+        var d=18;
+        try{ if(dres[di] && dres[di]!=="0x") d=Number(BigInt(dres[di])); }catch(e){}
+        decCache[x.k]=d;
+        rows.push({ wallet:tag, addr:x.k, sym:tokens[x.k].sym||"?", name:tokens[x.k].name||"",
+          img:tokens[x.k].img||null, dec:d, bal:+ethers.formatUnits(x.bal,d) });
+      });
+    }
+  }
   save("hs_dec", decCache);
   return rows;
+}
+// Show last known holdings immediately so the tab never opens blank.
+function paintCachedHoldings(){
+  if(port.holdings && port.holdings.length) return;
+  try{
+    var c=JSON.parse(localStorage.getItem("hs_hold")||"null");
+    if(c && c.rows && c.rows.length && Date.now()-c.t < 60*60e3){
+      port.holdings=c.rows;
+      port.ethBal=c.eth||{};
+      port.priceMap={};
+      c.rows.forEach(function(h){ if(h.price!=null) port.priceMap[h.addr]=h.price; });
+    }
+  }catch(e){}
 }
 async function loadPortfolio(){
   if(port.loading) return;
   port.loading=true;
   var rbtn=document.querySelector('[data-action="port-refresh"]');
   if(rbtn){ rbtn.textContent="↻ Refreshing…"; rbtn.disabled=true; }
-  var hb=$("#holdBox"); if(hb && !port.holdings.length) hb.innerHTML='<div class="skel"></div>'.repeat(3);
+  var hb=$("#holdBox");
+  if(hb && !port.holdings.length && !hb.querySelector(".lrow"))
+    hb.innerHTML='<div class="skel"></div>'.repeat(3);
   try{
     await fetchEthUsd();
     var pr=rpc(), rows=[];
     if(state.wallet){
-      var toksC=await discoverTokens(state.wallet);
-      var got=await Promise.all([ rpcBalances(state.wallet,toksC,"connected"), pr.getBalance(state.wallet) ]);
+      var dC=await discoverTokens(state.wallet);
+      var got=await Promise.all([ rpcBalances(state.wallet,dC.tokens,"connected"), pr.getBalance(state.wallet) ]);
       rows=rows.concat(got[0]); port.ethBal.connected=+ethers.formatEther(got[1]);
     } else { delete port.ethBal.connected; }
     if(state.burner){
-      var toksB=await discoverTokens(state.burner.addr);
-      var gotB=await Promise.all([ rpcBalances(state.burner.addr,toksB,"burner"), pr.getBalance(state.burner.addr) ]);
+      var dB=await discoverTokens(state.burner.addr);
+      var gotB=await Promise.all([ rpcBalances(state.burner.addr,dB.tokens,"burner"), pr.getBalance(state.burner.addr) ]);
       rows=rows.concat(gotB[0]); port.ethBal.burner=+ethers.formatEther(gotB[1]);
     } else { delete port.ethBal.burner; }
     // price: board first, then GT batch for the rest
@@ -2514,6 +2614,7 @@ async function loadPortfolio(){
     var ethUsdTotal=((port.ethBal.connected||0)+(port.ethBal.burner||0))*state.ethUsd;
     port.totalUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0) + ethUsdTotal;
     port.pnlUsd = tradePnl().pnl;
+    try{ localStorage.setItem("hs_hold", JSON.stringify({t:Date.now(),rows:port.holdings,eth:port.ethBal})); }catch(e){}
     snapshotPv();
   }catch(e){}
   finally{
@@ -2626,6 +2727,12 @@ function renderActivity(){
       +'</div></div></div>';
   }).join("");
 }
+var lastHoldSig="";
+function holdingsSignature(){
+  return (port.holdings||[]).map(function(h){
+    return h.wallet+h.addr+h.bal.toFixed(6)+(h.price||0);
+  }).join("|")+"|"+(port.ethBal.connected||0)+"|"+(port.ethBal.burner||0);
+}
 function renderPortfolio(){
   var st=$("#pStats"); if(!st)return;
   var L=tradePnl();
@@ -2639,6 +2746,11 @@ function renderPortfolio(){
   renderActivity();
   var hb=$("#holdBox"); if(!hb)return;
   if(!state.wallet && !state.burner){ hb.innerHTML='<div class="empty">Connect a wallet or arm your burner, then refresh.</div>'; return; }
+  // Repaint only on real change — rebuilding identical DOM every cycle is what
+  // made the list look like it was flickering.
+  var sig=holdingsSignature();
+  if(sig===lastHoldSig && hb.children.length) return;
+  lastHoldSig=sig;
   var h="";
   ["connected","burner"].forEach(function(tag){
     var eth=port.ethBal[tag];
@@ -2847,8 +2959,22 @@ document.addEventListener("click", function(e){
   else if(a==="open"){ e.stopPropagation(); openToken(el.getAttribute("data-pool")); }
   else if(a==="close") closeModal();
   else if(a==="closebg"){ if(e.target===el) closeModal(); }
-  else if(a==="paymode"){ modal.mode=el.getAttribute("data-m"); $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)}); updFees(); }
-  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; modal.force=false; updFees(); }
+  else if(a==="maxamt"){
+      var mb=activeBalance();
+      if(mb!=null){
+        // leave a little ETH for gas rather than emptying the wallet
+        var spend=Math.max(0, mb-0.0004);
+        $("#snipeAmt").value=spend>0? spend.toFixed(5) : "0";
+        modal.quote=null; modal.force=false; updFees(); renderSpendLine();
+      }
+    }
+  else if(a==="paymode"){
+      modal.mode=el.getAttribute("data-m");
+      $$(".paytog button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-m")===modal.mode)});
+      modal.quote=null; modal.force=false;
+      updFees(); renderSpendLine();      // balance shown follows the selected wallet
+    }
+  else if(a==="qamt"){ $("#snipeAmt").value=el.getAttribute("data-v"); modal.quote=null; modal.force=false; updFees(); renderSpendLine(); }
   else if(a==="venue"){
       modal.venue=el.getAttribute("data-v"); modal.force=false;
       $$('[data-action="venue"]').forEach(function(b){
@@ -2896,7 +3022,7 @@ $("#tabs").addEventListener("click",function(e){
   ["board","new","port","wallet","ranks"].forEach(function(k){ $("#v-"+k).style.display = k===v?"":"none"; });
   if(v==="ranks") renderRanks();
   if(v==="wallet") renderWallets();
-  if(v==="port"){ renderPortfolio(); loadPortfolio(); }
+  if(v==="port"){ paintCachedHoldings(); renderPortfolio(); loadPortfolio(); }
   if(v==="new") refreshNew(false);
 });
 $("#tfpills").addEventListener("click",function(e){
@@ -3002,7 +3128,11 @@ fetchEthUsd(); refresh();
 setInterval(refresh, CFG.REFRESH_MS); setInterval(fetchEthUsd, 120000);
 // token census polls fast so new launches show up almost the moment they land
 // portfolio stays fresh on its own while the tab is open — no button mashing needed
-setInterval(function(){ var vp=$("#v-port"); if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio(); }, 45000);
+setInterval(function(){
+  if(document.hidden) return;
+  var vp=$("#v-port");
+  if(vp && vp.style.display!=="none" && (state.wallet||state.burner)) loadPortfolio();
+}, 30000);
 setInterval(function(){
   if(document.hidden) return;
   var vn=$("#v-new");
