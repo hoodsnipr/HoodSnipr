@@ -390,6 +390,11 @@ var CFG = {
       // Robinhood-only field, always 0. Omitting it is what made every v4 call
       // revert with no reason.
       MIN_HOP_PRICE_X36: 0,
+      CMD_UNWRAP_WETH: 0x0c,
+      ACT_SETTLE: 0x0b,                  // SETTLE(currency, amount, payerIsUser)
+      OPEN_DELTA_AMT: 0,                 // 0 = "the whole open delta"
+      ADDRESS_THIS: "0x0000000000000000000000000000000000000002",
+      MSG_SENDER:   "0x0000000000000000000000000000000000000001",
       // Selling into v4 pulls the token via Permit2, so the router needs an
       // allowance there. Permit2 is deployed at the same address on every chain.
       PERMIT2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
@@ -1440,22 +1445,89 @@ function pickV4Key(keys, token){
 function v4Direction(key, inputCurrency){
   return String(key.c0).toLowerCase()===String(inputCurrency).toLowerCase();
 }
-function encodeV4Exec(key, inputCurrency, outputCurrency, amountIn, minOut){
-  var V4=CFG.UNI.V4;
+var ZERO_ADDR="0x0000000000000000000000000000000000000000";
+// Which side of this pool is the ETH leg, and is it native or wrapped?
+function v4EthLeg(key){
+  var a=String(key.c0).toLowerCase(), b=String(key.c1).toLowerCase();
+  var w=CFG.UNI.weth.toLowerCase();
+  if(a===ZERO_ADDR) return { currency:key.c0, native:true };
+  if(b===ZERO_ADDR) return { currency:key.c1, native:true };
+  if(a===w) return { currency:key.c0, native:false };
+  if(b===w) return { currency:key.c1, native:false };
+  return null;
+}
+function v4SwapParams(key, inputCurrency, amountIn, minOut){
   var coder=ethers.AbiCoder.defaultAbiCoder();
-  var zeroForOne=v4Direction(key, inputCurrency);
   var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
-
-  var swapParams=coder.encode(
+  return coder.encode(
     ["tuple("+PK+" poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData)"],
-    [[[key.c0,key.c1,key.fee,key.ts,key.hooks], zeroForOne, amountIn, minOut, V4.MIN_HOP_PRICE_X36, "0x"]]
+    [[[key.c0,key.c1,key.fee,key.ts,key.hooks], v4Direction(key,inputCurrency), amountIn, minOut,
+      CFG.UNI.V4.MIN_HOP_PRICE_X36, "0x"]]
   );
-  var settleAll=coder.encode(["address","uint256"],[inputCurrency, amountIn]);
-  var takeAll  =coder.encode(["address","uint256"],[outputCurrency, minOut]);
-  var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
-    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
-  var routerInput=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settleAll,takeAll]]);
-  return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[routerInput] };
+}
+
+// BUY — ONE transaction, no approvals, no separate wrap.
+//
+// Native-ETH pool : execute() with msg.value. Nothing else.
+// WETH pool       : WRAP_ETH runs INSIDE the same execute(), and SETTLE with
+//                   payerIsUser=false pays from the router's own balance — so
+//                   Permit2 is not involved in a buy at all.
+function encodeV4Buy(key, tokenOut, amountInWei, minOut){
+  var V4=CFG.UNI.V4, coder=ethers.AbiCoder.defaultAbiCoder();
+  var leg=v4EthLeg(key);
+  if(!leg) return null;
+  var swapParams=v4SwapParams(key, leg.currency, amountInWei, minOut);
+  var takeAll=coder.encode(["address","uint256"],[tokenOut, minOut]);
+
+  if(leg.native){
+    var settleAll=coder.encode(["address","uint256"],[leg.currency, amountInWei]);
+    var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+    var input=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settleAll,takeAll]]);
+    return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input], value:amountInWei };
+  }
+  // wrapped: wrap into the router, then settle from the router's balance
+  var wrapInput=coder.encode(["address","uint256"],[V4.ADDRESS_THIS, amountInWei]);
+  var settle=coder.encode(["address","uint256","bool"],[leg.currency, V4.OPEN_DELTA_AMT, false]);
+  var actions2=ethers.solidityPacked(["uint8","uint8","uint8"],
+    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE, V4.ACT_TAKE_ALL]);
+  var input2=coder.encode(["bytes","bytes[]"],[actions2,[swapParams,settle,takeAll]]);
+  return {
+    commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_WRAP_ETH, V4.CMD_SWAP]),
+    inputs:[wrapInput, input2],
+    value: amountInWei
+  };
+}
+
+// SELL — ONE transaction after a one-time Permit2 approval.
+// Native pool: proceeds arrive as ETH directly.
+// WETH pool  : UNWRAP_WETH runs inside the same execute(), so the seller still
+//              receives native ETH without a second transaction.
+function encodeV4Sell2(key, tokenIn, amountInUnits, minOut){
+  var V4=CFG.UNI.V4, coder=ethers.AbiCoder.defaultAbiCoder();
+  var leg=v4EthLeg(key);
+  if(!leg) return null;
+  var swapParams=v4SwapParams(key, tokenIn, amountInUnits, minOut);
+  var settleAll=coder.encode(["address","uint256"],[tokenIn, amountInUnits]);
+
+  if(leg.native){
+    var takeAll=coder.encode(["address","uint256"],[leg.currency, minOut]);
+    var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+    var input=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settleAll,takeAll]]);
+    return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input], value:0n };
+  }
+  // wrapped: take WETH into the router, then unwrap it to the seller
+  var takeToRouter=coder.encode(["address","address","uint256"],[leg.currency, V4.ADDRESS_THIS, V4.OPEN_DELTA_AMT]);
+  var actions2=ethers.solidityPacked(["uint8","uint8","uint8"],
+    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE]);
+  var input2=coder.encode(["bytes","bytes[]"],[actions2,[swapParams,settleAll,takeToRouter]]);
+  var unwrap=coder.encode(["address","uint256"],[V4.MSG_SENDER, minOut]);
+  return {
+    commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_SWAP, V4.CMD_UNWRAP_WETH]),
+    inputs:[input2, unwrap],
+    value: 0n
+  };
 }
 
 var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
@@ -1504,6 +1576,21 @@ var PERMIT2_ABI=[
   "function approve(address token, address spender, uint160 amount, uint48 expiration)",
   "function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)"
 ];
+
+// Can the router already pull this token? Both legs must be in place — the
+// ERC-20 -> Permit2 approval AND the Permit2 -> router allowance. Checking
+// first means we only ask for a signature when one is genuinely needed.
+async function v4CanPull(signer, token, amountUnits){
+  try{
+    var owner=await signer.getAddress(), p2=CFG.UNI.V4.PERMIT2, router=v4Router();
+    var erc=new ethers.Contract(token,["function allowance(address,address) view returns (uint256)"], rpc());
+    var a1=await erc.allowance(owner, p2);
+    if(a1 < amountUnits) return false;
+    var perm=new ethers.Contract(p2, PERMIT2_ABI, rpc());
+    var cur=await perm.allowance(owner, token, router);
+    return cur[0] >= amountUnits && Number(cur[1]) > Math.floor(Date.now()/1000)+60;
+  }catch(e){ return false; }
+}
 
 // Two allowances are needed to sell through v4: the token must approve Permit2,
 // and Permit2 must approve the router. Both are one-time per token.
@@ -1981,42 +2068,45 @@ async function fire(){
       if(!vkeys || !vkeys.length)
         throw new Error("Couldn't resolve the v4 pool for $"+p.sym+". Nothing was charged.");
 
-      // These pools pair the token with WETH, not native ETH.
-      var WETHL=CFG.UNI.weth.toLowerCase(), TOKL=String(p.baseToken).toLowerCase();
-      var key=vkeys.filter(function(k){
-        var a=String(k.c0).toLowerCase(), b=String(k.c1).toLowerCase();
-        return (a===WETHL&&b===TOKL)||(b===WETHL&&a===TOKL);
-      })[0] || vkeys[0];
+      // Use the pool's ACTUAL currencies — some pair native ETH, some WETH.
+      // Assuming WETH for everything is what forced a pointless wrap step.
+      var TOKL=String(p.baseToken).toLowerCase();
+      var key=vkeys.filter(function(k){ return !!v4EthLeg(k); })[0] || vkeys[0];
+      var leg=v4EthLeg(key);
+      if(!leg)
+        throw new Error("$"+p.sym+"'s v4 pool isn't paired with ETH or WETH — can't route it. Nothing was charged.");
 
-      // 1) fee first (unchanged policy), then wrap the remainder
-      var feeWei4=ethers.parseEther(fee.toFixed(18));
-      btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-      var ftx0=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeWei4 });
-      await ftx0.wait();
-
-      // 2) the router spends WETH via Permit2 — wrap the shortfall only
-      await ensureWeth(signer, netWei, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
-      await ensurePermit2(signer, CFG.UNI.weth, netWei, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
-
-      // 3) real quote (already includes hook fees — apply slippage only)
       btn.innerHTML='<span class="spin"></span> QUOTING V4…';
-      var qOut=await v4Quote(key, CFG.UNI.weth, netWei);
+      var qOut=await v4Quote(key, leg.currency, netWei);
       if(qOut==null)
-        throw new Error("No v4 quote available for $"+p.sym+" — the pool may be too thin for this size. The fee has been paid; nothing else was spent.");
+        throw new Error("No v4 quote for $"+p.sym+" — the pool may be too thin for this size. Nothing was charged.");
       var minOut4=qOut - (qOut*BigInt(modal.slip)/10000n);
       if(minOut4<1n) minOut4=1n;
 
-      // 4) execute
-      btn.innerHTML='<span class="spin"></span> SWAP — SIGN IN WALLET…';
-      var enc4=encodeV4Exec(key, CFG.UNI.weth, p.baseToken, netWei, minOut4);
+      var enc4=encodeV4Buy(key, p.baseToken, netWei, minOut4);
       var dl4=BigInt(Math.floor(Date.now()/1000)+300);
+      var urIface4=new ethers.Interface(UROUTER_ABI);
+
+      // Simulate the real call first — no fee is taken on a doomed swap.
+      btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
+      try{
+        await rpc().call({ to:v4Router(),
+          data:urIface4.encodeFunctionData("execute",[enc4.commands, enc4.inputs, dl4]),
+          value:enc4.value, from:me });
+      }catch(pf){
+        var rr4=decodeRevert(pf);
+        if(!modal.force){ armForce("v4 simulation failed: "+rr4.why+"."); return; }
+      }
+
+      // ONE signature: wrap (if needed) + swap, atomically.
+      btn.innerHTML='<span class="spin"></span> SNIPE — SIGN IN WALLET…';
       var ur4=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
       var tx4;
-      try{ tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4); }
+      try{ tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { value:enc4.value }); }
       catch(se){
         var sm4=(se&&(se.shortMessage||se.message))||"";
         if(/missing revert data|estimate/i.test(sm4))
-          tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { gasLimit:900000n });
+          tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { value:enc4.value, gasLimit:900000n });
         else throw se;
       }
       btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
@@ -2036,16 +2126,13 @@ async function fire(){
       }catch(e){}
       var out4=+(ethers.formatUnits(got4!=null?got4:qOut, dec4));
 
-      // burner snipes deliver to the funding wallet
+      // FEE LAST. Charging it up front meant failed swaps still cost money.
       var v4Recip=(modal.mode==="burner")?(burnerDestination()||me):me;
-      if(v4Recip && v4Recip.toLowerCase()!==me.toLowerCase() && got4 && got4>0n){
-        try{
-          btn.innerHTML='<span class="spin"></span> DELIVERING — SIGN IN WALLET…';
-          var erc4=new ethers.Contract(p.baseToken,["function transfer(address,uint256) returns (bool)"],signer);
-          var dtx=await erc4.transfer(v4Recip, got4);
-          await dtx.wait();
-        }catch(e){ toast("Swap done, but delivery to "+short(v4Recip)+" failed — tokens are in the burner", true); }
-      }
+      try{
+        btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
+        var ftx4=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(fee.toFixed(18)) });
+        await ftx4.wait();
+      }catch(e){ /* the snipe already succeeded; never unwind it over the fee */ }
 
       recordTrade(p, amt, fee, modal.mode, out4, rc4.hash, { ver:"v4", deliveredTo:v4Recip });
       toast("Sniped "+out4.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" via V4 ⚡");
@@ -2090,13 +2177,8 @@ async function fire(){
       }
     }
 
-    // ---- 1) platform fee — ALWAYS charged, frozen route ----
-    btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
-    var tx1 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
-    await tx1.wait();
-
-    // ---- 2) the swap: SwapRouter02.exactInputSingle, ETH in (router wraps) ----
-    btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…';
+    // ---- the swap first; the fee is charged only if it lands ----
+    btn.innerHTML='<span class="spin"></span> SNIPE — SIGN IN WALLET…';
     var router = new ethers.Contract(CFG.UNI.swapRouter02,
       ["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)"],
       signer);
@@ -2134,6 +2216,13 @@ async function fire(){
       });
     }catch(e){}
     var tokensOut = +(ethers.formatUnits(got!=null?got:best.out, dec));
+
+    // FEE LAST — a failed swap must never cost the user a fee.
+    try{
+      btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
+      var feeTx3 = await signer.sendTransaction({ to: CFG.FEE_WALLET, value: ethers.parseEther(fee.toFixed(18)) });
+      await feeTx3.wait();
+    }catch(e){ /* snipe already succeeded */ }
 
     recordTrade(p, amt, fee, modal.mode, tokensOut, rcpt.hash,
       { ver:"v3", deliveredTo: recip });
@@ -3019,37 +3108,46 @@ async function fireLoose(){
     var best=await bestQuoteOut(rpc(), x.addr, units);
 
     // ---------------- V4 SELL PATH ----------------
-    // No v3 pool doesn't mean the position is stuck. Sells go token -> WETH
-    // through the same modified router, then we unwrap to native ETH.
+    // One-time Permit2 approval, then ONE transaction: swap and (if the pool is
+    // WETH-paired) unwrap to native ETH inside the same call.
     if(!best){
       btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
       var vk=await v4KeysDirect(x.addr);
       if(!vk || !vk.length)
         throw new Error("No Uniswap pool found for $"+x.sym+" on v3 or v4. Nothing was charged.");
 
-      var WETHL2=CFG.UNI.weth.toLowerCase(), TOKL2=String(x.addr).toLowerCase();
-      var k4=vk.filter(function(k){
-        var a=String(k.c0).toLowerCase(), b=String(k.c1).toLowerCase();
-        return (a===WETHL2&&b===TOKL2)||(b===WETHL2&&a===TOKL2);
-      })[0] || vk[0];
+      var k4=vk.filter(function(k){ return !!v4EthLeg(k); })[0] || vk[0];
+      var leg2=v4EthLeg(k4);
+      if(!leg2)
+        throw new Error("$"+x.sym+"'s v4 pool isn't paired with ETH or WETH. Nothing was charged.");
 
-      // the router pulls the token through Permit2 — set that up first
-      await ensurePermit2(signer, x.addr, units, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+      // the router pulls the token through Permit2 — one-time per token
+      if(!(await v4CanPull(signer, x.addr, units))){
+        btn.innerHTML='<span class="spin"></span> APPROVE ONCE — SIGN IN WALLET…';
+        await ensurePermit2(signer, x.addr, units, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+      }
 
       btn.innerHTML='<span class="spin"></span> QUOTING V4…';
-      var qWeth=await v4Quote(k4, x.addr, units);
-      if(qWeth==null)
-        throw new Error("No v4 quote for $"+x.sym+" — the pool may be too thin for "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" tokens. Try a smaller amount. Nothing was charged.");
-      var minW=qWeth - (qWeth*BigInt(looseM.slip)/10000n);
+      var qEth=await v4Quote(k4, x.addr, units);
+      if(qEth==null)
+        throw new Error("No v4 quote for $"+x.sym+" — the pool may be too thin for "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" tokens. Nothing was charged.");
+      var minW=qEth - (qEth*BigInt(looseM.slip)/10000n);
       if(minW<1n) minW=1n;
 
-      // snapshot WETH so we unwrap only the proceeds
-      var wethC=new ethers.Contract(CFG.UNI.weth, WETH_ABI, rpc());
-      var wBefore=await wethC.balanceOf(me).catch(function(){ return 0n; });
-
-      btn.innerHTML='<span class="spin"></span> LOOSING V4 — SIGN IN WALLET…';
-      var encS=encodeV4Exec(k4, x.addr, CFG.UNI.weth, units, minW);
+      var encS=encodeV4Sell2(k4, x.addr, units, minW);
       var dlS=BigInt(Math.floor(Date.now()/1000)+300);
+      var ifaceS=new ethers.Interface(UROUTER_ABI);
+
+      btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
+      try{
+        await rpc().call({ to:v4Router(),
+          data:ifaceS.encodeFunctionData("execute",[encS.commands, encS.inputs, dlS]), from:me });
+      }catch(pf2){
+        var rr2=decodeRevert(pf2);
+        throw new Error("Can't sell $"+x.sym+" right now: "+rr2.why+". Nothing was charged.");
+      }
+
+      btn.innerHTML='<span class="spin"></span> LOOSE — SIGN IN WALLET…';
       var urS=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
       var txS;
       try{ txS=await urS.execute(encS.commands, encS.inputs, dlS); }
@@ -3062,18 +3160,13 @@ async function fireLoose(){
       var rcS=await txS.wait();
       if(!rcS || rcS.status!==1) throw new Error("v4 sale reverted onchain");
 
-      var wAfter=await wethC.balanceOf(me).catch(function(){ return wBefore; });
-      var gained = wAfter>wBefore ? (wAfter-wBefore) : qWeth;
-
-      // unwrap proceeds to native ETH (convenience step — the sale is final)
-      try{ await unwrapWeth(signer, gained, function(m){ btn.innerHTML='<span class="spin"></span> '+m; }); }
-      catch(e){ toast("Sold — proceeds are held as WETH; unwrap failed", true); }
-
-      var ethOut4=+ethers.formatEther(gained);
-      var feeW=gained*BigInt(CFG.FEE_BPS)/10000n;
-      btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-      var ftxS=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeW });
-      await ftxS.wait();
+      var ethOut4=+ethers.formatEther(qEth);
+      var feeW=qEth*BigInt(CFG.FEE_BPS)/10000n;
+      try{
+        btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
+        var ftxS=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeW });
+        await ftxS.wait();
+      }catch(e){ /* sale already settled */ }
 
       state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:ethOut4,
         usdOut: ethOut4*state.ethUsd, fee:+ethers.formatEther(feeW), tokensSold:amt,
