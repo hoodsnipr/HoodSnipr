@@ -1463,6 +1463,47 @@ function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap, sende
   return { commands:commands, inputs:[input0] };
 }
 var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
+// Known Uniswap v4 / Permit2 revert selectors. Swallowing the revert and
+// guessing "hook-gated or too thin" was unhelpful — the chain tells us exactly
+// what failed, so surface it.
+var V4_ERRORS={
+  "0x8b063d73":"slippage: pool returned less than your minimum",
+  "0x12bacdd3":"pool wanted more input than offered",
+  "0x4c085bf1":"delta not positive — the swap produced nothing to take",
+  "0x3351b260":"delta not negative — nothing to settle",
+  "0x5212cba1":"currency not settled — the router could not pay the pool",
+  "0x5bf6f916":"deadline passed",
+  "0xa9e35b2f":"the pool's hook rejected this swap",
+  "0xf801e525":"router rejected the action encoding",
+  "0xf4d678b8":"insufficient balance",
+  "0xd81b2f2e":"Permit2 allowance expired",
+  "0xf96fb071":"Permit2 allowance too small",
+  "0xedf429db":"token transferFrom failed",
+  "0x38bbd576":"invalid ETH sender",
+  "0x486aa307":"pool not initialized — wrong PoolKey",
+  "0xbe8b8507":"swap amount cannot be zero",
+  "0x6f5ffb7e":"router is locked",
+  "0x54e3ca0d":"pool manager locked",
+  "0xaaad13f7":"input length mismatch",
+  "0x5cda29d7":"unsupported action"
+};
+function decodeRevert(e){
+  var d=null;
+  try{
+    d = e && (e.data || (e.info&&e.info.error&&e.info.error.data) ||
+              (e.error&&e.error.data) || (e.value&&e.value.data));
+    if(d && typeof d==="object" && d.data) d=d.data;
+  }catch(_){}
+  var msg=String((e&&(e.shortMessage||e.message))||"");
+  if(typeof d==="string" && d.length>=10){
+    var sel=d.slice(0,10).toLowerCase();
+    if(V4_ERRORS[sel]) return { sel:sel, why:V4_ERRORS[sel] };
+    return { sel:sel, why:"reverted with "+sel };
+  }
+  if(/no data|require\(false\)/i.test(msg)) return { sel:null, why:"reverted with no reason (usually the wrong contract or a hook rejection)" };
+  return { sel:null, why:msg.slice(0,90) || "unknown revert" };
+}
+
 var PERMIT2_ABI=[
   "function approve(address token, address spender, uint160 amount, uint48 expiration)",
   "function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)"
@@ -1652,12 +1693,13 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut, recipient)
     var enc=encodeV4Swap(key, token, amountInWei, minOut, recipient||me, wrap, me);
     return iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
   }
+  var lastWhy=null;
   async function works(minOut){
     calls++;
     try{
       await pr.call({ to:v4Router(), data:build(minOut), value:amountInWei, from:me });
       return true;
-    }catch(e){ return false; }
+    }catch(e){ lastWhy=decodeRevert(e); return false; }
   }
 
   // Seeded search. The blind version needed ~28 sequential eth_calls, which is
@@ -1670,11 +1712,11 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut, recipient)
     if(pair[0] && pair[1]) { lo=high; hi=high*4n; }          // seed was low
     else if(pair[0])       { lo=low;  hi=high; }             // bracketed ✓
     else {
-      if(!(await works(1n))) return { ok:false, calls:calls };
+      if(!(await works(1n))) return { ok:false, calls:calls, why:(lastWhy&&lastWhy.why)||null };
       lo=1n; hi=low;
     }
   }else{
-    if(!(await works(1n))) return { ok:false, calls:calls };
+    if(!(await works(1n))) return { ok:false, calls:calls, why:(lastWhy&&lastWhy.why)||null };
     lo=1n; hi=1n;
     for(var i=0;i<8;i++){
       var probe=hi*4096n;
@@ -1688,7 +1730,7 @@ async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut, recipient)
     var mid=lo+(hi-lo)/2n;
     if(await works(mid)) lo=mid; else hi=mid;
   }
-  return { ok:lo>0n, out:lo, calls:calls };
+  return { ok:lo>0n, out:lo, calls:calls, why:(lastWhy&&lastWhy.why)||null };
 }
 
 function fmtBal(v){
@@ -2015,7 +2057,8 @@ async function fire(){
         }
       }
       if(!q4.ok && !modal.force){
-        armForce("Simulation couldn't route "+net.toFixed(4)+" ETH via router "+short(v4Router())
+        armForce((q4.why? "v4 quote failed: "+q4.why+". " : "")
+          +"Couldn't route "+net.toFixed(4)+" ETH via router "+short(v4Router())
           +(state.v4RouterVerified? " (verified: implements execute)."
             : state.v4Router? " (discovered, but it may not be the swap router)."
             : " (FALLBACK — router discovery hasn't completed)."));
@@ -3056,7 +3099,7 @@ async function fireLoose(){
       // find the achievable ETH out by simulation, same technique as the buy
       var iface4=new ethers.Interface(UROUTER_ABI);
       var dl4=BigInt(Math.floor(Date.now()/1000)+900);
-      var sellCalls=0;
+      var sellCalls=0, lastRevert=null;
       async function sellWorks(minOut){
         sellCalls++;
         try{
@@ -3064,7 +3107,7 @@ async function fireLoose(){
           var d=iface4.encodeFunctionData("execute",[e.commands, e.inputs, dl4]);
           await rpc().call({ to:v4Router(), data:d, from:me });
           return true;
-        }catch(err){ return false; }
+        }catch(err){ lastRevert=decodeRevert(err); return false; }
       }
       // seed from the indexed price so this is a handful of calls, not dozens
       var seedWei=0n;
@@ -3094,14 +3137,29 @@ async function fireLoose(){
       }else{
         if(await sellWorks(1n)){ lo4=1n; hi4=ethers.parseEther("1"); }
       }
+      // Before giving up, try every other v4 pool this token has — a token
+      // often has both a hooked launchpad pool and a plain one.
+      if(lo4<=0n && vk.length>1){
+        var others=vk.filter(function(kk){ return kk.id!==k4.id; });
+        for(var oi=0; oi<others.length && lo4<=0n; oi++){
+          k4=others[oi];
+          if(await sellWorks(1n)){ lo4=1n; hi4=ethers.parseEther("1");
+            for(var qq=0; qq<6 && hi4>lo4+1n; qq++){
+              var m4=lo4+(hi4-lo4)/2n;
+              if(await sellWorks(m4)) lo4=m4; else hi4=m4;
+            }
+          }
+        }
+      }
       if(lo4<=0n){
-        // Distinguish a real pool problem from a missing allowance so the
-        // message actually tells the user something true.
         var stillBlocked = !(await v4CanPull(signer, x.addr, units));
-        throw new Error(stillBlocked
-          ? "Couldn't get approval to move $"+x.sym+" — approve the token and try again. Nothing was charged."
-          : "$"+x.sym+"'s v4 pool rejected this sale. Its hook may block third-party routers, or liquidity is too thin for "
-            +amt.toLocaleString(undefined,{maximumFractionDigits:2})+" tokens. Try a smaller amount. Nothing was charged.");
+        if(stillBlocked)
+          throw new Error("Approval didn't stick for $"+x.sym+" — the router still can't move the token. Nothing was charged.");
+        var rr=lastRevert||{why:"unknown"};
+        var hooked = k4.hooks && k4.hooks!==CFG.UNI.V4.NATIVE;
+        throw new Error("Can't sell $"+x.sym+" through the router: "+rr.why+"."
+          + (hooked? " This pool uses a launchpad hook ("+short(k4.hooks)+"), which commonly blocks third-party selling — you may need to sell on the launchpad itself." : "")
+          + " Nothing was charged.");
       }
       for(var q=0;q<6 && hi4>lo4+1n;q++){
         var mid4=lo4+(hi4-lo4)/2n;
