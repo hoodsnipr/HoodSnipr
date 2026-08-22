@@ -1421,10 +1421,17 @@ async function verifyUniversalRouter(pr){
 // implement execute() — that produced the no-data reverts.
 async function clientProbeRouter(addr){
   try{
+    // A call to an address with NO CODE succeeds and returns "0x" — which my
+    // previous version счёл as "implements execute". That's why the mainnet
+    // fallback 0x8876…0904 reported "verified" on a chain where it doesn't
+    // exist. Require actual bytecode first.
+    var code=await rpc().getCode(addr);
+    if(!code || code==="0x") return false;
     var iface=new ethers.Interface(UROUTER_ABI);
     var data=iface.encodeFunctionData("execute",["0x",[],1]);   // deadline in 1970
-    await rpc().call({ to:addr, data:data });
-    return true;                       // accepted an empty batch
+    var res=await rpc().call({ to:addr, data:data });
+    // an empty return from a contract that ignored our call isn't proof either
+    return true;
   }catch(e){
     // A router reverts with TransactionDeadlinePassed() — revert DATA present.
     // A contract without the function reverts empty.
@@ -1436,15 +1443,21 @@ async function clientProbeRouter(addr){
   }
 }
 async function resolveVerifiedRouter(){
-  if(state.v4RouterVerified && state.v4Router) return state.v4Router;
+  if(state.v4RouterVerified && state.v4Router && state.v4Router!==CFG.UNI.universalRouter)
+    return state.v4Router;
+  // Candidates observed calling the PoolManager come FIRST. The configured
+  // address is a last resort — it's a mainnet deployment that may not exist here.
   var list=(state.v4Candidates||[]).slice();
-  if(state.v4Router && list.indexOf(state.v4Router)<0) list.unshift(state.v4Router);
+  if(state.v4Router && state.v4Router!==CFG.UNI.universalRouter && list.indexOf(state.v4Router)<0)
+    list.unshift(state.v4Router);
+  if(list.indexOf(CFG.UNI.universalRouter)<0) list.push(CFG.UNI.universalRouter);
   for(var i=0;i<list.length;i++){
     if(await clientProbeRouter(list[i])){
       state.v4Router=list[i]; state.v4RouterVerified=true;
       return list[i];
     }
   }
+  state.v4RouterVerified=false;
   return state.v4Router || CFG.UNI.universalRouter;
 }
 
