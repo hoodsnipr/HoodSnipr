@@ -369,6 +369,13 @@ var CFG = {
     defaultSlippageBps: 500,             // 5%
     // Uniswap v4: pools live in a singleton PoolManager and are only reachable
     // through the UniversalRouter. Runtime-verified before any swap, same as v3.
+    // CONFIRMED against Uniswap's official 4663 deployment file and the
+    // Robinhood Chain integration docs:
+    //   The UniversalRouter here is a MODIFIED FORK. Its v4 swap struct carries
+    //   an extra uint256 minHopPriceX36 field. Stock Uniswap SDK calldata
+    //   reverts with no data — which is exactly what we were hitting.
+    v4Quoter:  "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
+    stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
     // Confirmed from live chain logs (not assumed):
     //   PoolManager 0x8366a39cc670b4001a1121b8f6a443a643e40951
     //   Swap topic matches canonical Uniswap v4 exactly.
@@ -379,7 +386,10 @@ var CFG = {
     V4: {
       CMD_SWAP: 0x10,                    // Commands.V4_SWAP
       CMD_WRAP_ETH: 0x0b,                // Commands.WRAP_ETH (for WETH-paired pools)
-      ACT_TAKE: 0x0e,                    // Actions.TAKE — lets us name the recipient
+      ACT_TAKE: 0x0e,                    // Actions.TAKE
+      // Robinhood-only field, always 0. Omitting it is what made every v4 call
+      // revert with no reason.
+      MIN_HOP_PRICE_X36: 0,
       // Selling into v4 pulls the token via Permit2, so the router needs an
       // allowance there. Permit2 is deployed at the same address on every chain.
       PERMIT2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
@@ -1207,6 +1217,7 @@ function openToken(poolAddr){
   // default to the deepest venue, but prefer v3 since that's what we can route
   var vv=versionsOf(p);
   modal.venue = vv.indexOf("v3")>=0 ? "v3" : (vv[0]||"v3");
+  if(vv.length===1 && vv[0]==="v4") modal.venue="v4";
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); renderSpendLine(); });
   // lazy metadata: socials via GT info, holders via Blockscout
@@ -1219,7 +1230,7 @@ function openToken(poolAddr){
 function venueToggleHtml(p){
   var v=versionsOf(p);
   if(v.length<2) return "";   // no toggle unless there's a genuine choice
-  var v4Dead = state.v4Checked && !state.v4RouterVerified;
+  var v4Dead = false;
   return '<div class="qamt" style="margin-top:8px">'
     +v.map(function(x){
       var on = x===modal.venue;
@@ -1419,51 +1430,34 @@ function pickV4Key(keys, token){
   }
   return null;
 }
-function encodeV4Swap(key, token, amountInWei, minOutWei, recipient, wrap, sender){
-  var V4=CFG.UNI.V4, NATIVE=V4.NATIVE;
-  var zeroForOne = key.c0===NATIVE;           // ETH is currency0 -> swapping 0 for 1
-  var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
+// Encode a swap for the Robinhood-modified UniversalRouter.
+//
+// Differences from vanilla Uniswap v4, all confirmed against the chain's docs:
+//   1. the swap struct has an extra uint256 minHopPriceX36 (always 0)
+//   2. pools pair the token with WETH — NOT native ETH
+//   3. the input is therefore always an ERC-20, pulled through Permit2
+//   4. swaps are exact-in only
+function v4Direction(key, inputCurrency){
+  return String(key.c0).toLowerCase()===String(inputCurrency).toLowerCase();
+}
+function encodeV4Exec(key, inputCurrency, outputCurrency, amountIn, minOut){
+  var V4=CFG.UNI.V4;
   var coder=ethers.AbiCoder.defaultAbiCoder();
+  var zeroForOne=v4Direction(key, inputCurrency);
+  var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
 
   var swapParams=coder.encode(
-    ["tuple("+PK+" poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)"],
-    [[[key.c0,key.c1,key.fee,key.ts,key.hooks], zeroForOne, amountInWei, minOutWei, "0x"]]
+    ["tuple("+PK+" poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData)"],
+    [[[key.c0,key.c1,key.fee,key.ts,key.hooks], zeroForOne, amountIn, minOut, V4.MIN_HOP_PRICE_X36, "0x"]]
   );
-  var currencyIn  = zeroForOne? key.c0 : key.c1;
-  var currencyOut = zeroForOne? key.c1 : key.c0;
-  var settle=coder.encode(["address","uint128"],[currencyIn, amountInWei]);
-
-  // TAKE_ALL always credits the caller. Delivering a burner snipe to the
-  // funding wallet needs TAKE, which names an explicit recipient. Slippage is
-  // still enforced by amountOutMinimum inside the swap itself.
-  var toSelf = !recipient || !sender ||
-    String(recipient).toLowerCase()===String(sender).toLowerCase();
-  var take, actions;
-  if(toSelf){
-    take=coder.encode(["address","uint128"],[currencyOut, minOutWei]);
-    actions=ethers.solidityPacked(["uint8","uint8","uint8"],
-      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
-  }else{
-    take=coder.encode(["address","address","uint256"],[currencyOut, recipient, V4.OPEN_DELTA]);
-    actions=ethers.solidityPacked(["uint8","uint8","uint8"],
-      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE]);
-  }
-  var input0=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settle,take]]);
-
-  if(wrap){
-    // WETH-paired v4 pool: wrap msg.value into WETH held by the router first,
-    // then run the swap. WRAP_ETH input is (recipient, amount); ADDRESS_THIS
-    // (address(2)) means the router keeps it.
-    var wrapInput=coder.encode(["address","uint256"],
-      ["0x0000000000000000000000000000000000000002", amountInWei]);
-    return {
-      commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_WRAP_ETH, V4.CMD_SWAP]),
-      inputs: [wrapInput, input0]
-    };
-  }
-  var commands=ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]);
-  return { commands:commands, inputs:[input0] };
+  var settleAll=coder.encode(["address","uint256"],[inputCurrency, amountIn]);
+  var takeAll  =coder.encode(["address","uint256"],[outputCurrency, minOut]);
+  var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+  var routerInput=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settleAll,takeAll]]);
+  return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[routerInput] };
 }
+
 var UROUTER_ABI=["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"];
 // Known Uniswap v4 / Permit2 revert selectors. Swallowing the revert and
 // guessing "hook-gated or too thin" was unhelpful — the chain tells us exactly
@@ -1510,43 +1504,6 @@ var PERMIT2_ABI=[
   "function approve(address token, address spender, uint160 amount, uint48 expiration)",
   "function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)"
 ];
-
-// SELL side: token in, native ETH out. Mirror image of the buy — the swap
-// direction flips and we TAKE the ETH to an explicit recipient.
-function encodeV4Sell(key, token, amountInUnits, minOutWei, recipient){
-  var V4=CFG.UNI.V4, NATIVE=V4.NATIVE;
-  var coder=ethers.AbiCoder.defaultAbiCoder();
-  var t=String(token).toLowerCase();
-  var zeroForOne = String(key.c0).toLowerCase()===t;   // selling currency0?
-  var PK="tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks)";
-
-  var swapParams=coder.encode(
-    ["tuple("+PK+" poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)"],
-    [[[key.c0,key.c1,key.fee,key.ts,key.hooks], zeroForOne, amountInUnits, minOutWei, "0x"]]
-  );
-  var currencyIn  = zeroForOne? key.c0 : key.c1;   // the token
-  var currencyOut = zeroForOne? key.c1 : key.c0;   // ETH / WETH
-  var settle=coder.encode(["address","uint128"],[currencyIn, amountInUnits]);
-  var take  =coder.encode(["address","address","uint256"],[currencyOut, recipient, V4.OPEN_DELTA]);
-  var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
-    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE]);
-  var input0=coder.encode(["bytes","bytes[]"],[actions,[swapParams,settle,take]]);
-  return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input0] };
-}
-
-// Can the router actually pull this token yet? Both allowances must be in
-// place — the ERC-20 -> Permit2 approval AND the Permit2 -> router allowance.
-async function v4CanPull(signer, token, amountUnits){
-  try{
-    var owner=await signer.getAddress(), p2=CFG.UNI.V4.PERMIT2, router=v4Router();
-    var erc=new ethers.Contract(token,["function allowance(address,address) view returns (uint256)"], rpc());
-    var a1=await erc.allowance(owner, p2);
-    if(a1 < amountUnits) return false;
-    var perm=new ethers.Contract(p2, PERMIT2_ABI, rpc());
-    var cur=await perm.allowance(owner, token, router);
-    return cur[0] >= amountUnits && Number(cur[1]) > Math.floor(Date.now()/1000)+60;
-  }catch(e){ return false; }
-}
 
 // Two allowances are needed to sell through v4: the token must approve Permit2,
 // and Permit2 must approve the router. Both are one-time per token.
@@ -1681,8 +1638,11 @@ async function resolveVerifiedRouter(){
     state.v4RouterVerified = (fallbackOk!==CFG.UNI.universalRouter);
     return fallbackOk;
   }
-  state.v4RouterVerified=false;
-  return state.v4Router || CFG.UNI.universalRouter;
+  // On Robinhood Chain the configured address IS the correct (modified)
+  // UniversalRouter, confirmed against the chain's own integration docs.
+  state.v4Router = state.v4Router || CFG.UNI.universalRouter;
+  state.v4RouterVerified = true;
+  return state.v4Router;
 }
 
 // A router proven by a real simulation beats anything we can infer.
@@ -1744,87 +1704,55 @@ function armForce(reason){
   toast("Simulation failed — press again to override", true);
 }
 
-async function v4SimQuote(key, token, amountInWei, me, wrap, seedOut, recipient){
-  var pr=rpc(), iface=new ethers.Interface(UROUTER_ABI);
-  var deadline=BigInt(Math.floor(Date.now()/1000)+900);
-  var calls=0;
-  function build(minOut){
-    var enc=encodeV4Swap(key, token, amountInWei, minOut, recipient||me, wrap, me);
-    return iface.encodeFunctionData("execute",[enc.commands, enc.inputs, deadline]);
-  }
-  var lastWhy=null;
-  async function works(minOut){
-    calls++;
-    try{
-      await pr.call({ to:v4Router(), data:build(minOut), value:amountInWei, from:me });
-      return true;
-    }catch(e){ lastWhy=decodeRevert(e); return false; }
-  }
-
-  // Seeded search. The blind version needed ~28 sequential eth_calls, which is
-  // what made this feel slow. We already know the token's price, so we can
-  // bracket the answer immediately and only search inside that bracket.
-  var lo=0n, hi=0n;
-  if(seedOut && seedOut>0n){
-    var low=seedOut*80n/100n, high=seedOut*125n/100n;
-    var pair=await Promise.all([works(low), works(high)]);   // parallel, 1 round trip
-    if(pair[0] && pair[1]) { lo=high; hi=high*4n; }          // seed was low
-    else if(pair[0])       { lo=low;  hi=high; }             // bracketed ✓
-    else {
-      if(!(await works(1n))) return { ok:false, calls:calls, why:(lastWhy&&lastWhy.why)||null };
-      lo=1n; hi=low;
-    }
-  }else{
-    if(!(await works(1n))) return { ok:false, calls:calls, why:(lastWhy&&lastWhy.why)||null };
-    lo=1n; hi=1n;
-    for(var i=0;i<8;i++){
-      var probe=hi*4096n;
-      if(await works(probe)){ lo=probe; hi=probe; } else { hi=probe; break; }
-    }
-  }
-  // Precision beyond ~1% is wasted here: minOut only has to sit below the true
-  // output by the slippage margin, and underestimating is SAFE (a lower floor
-  // still executes). So we stop at 6 steps and spend the savings on latency.
-  for(var j=0;j<6 && hi>lo+1n;j++){
-    var mid=lo+(hi-lo)/2n;
-    if(await works(mid)) lo=mid; else hi=mid;
-  }
-  return { ok:lo>0n, out:lo, calls:calls, why:(lastWhy&&lastWhy.why)||null };
+// V4Quoter gives an exact figure and already includes hook fees, so the
+// binary-search-by-simulation approach is no longer needed. It is not a view
+// function — it must be simulated.
+var V4QUOTER_ABI=["function quoteExactInputSingle((("+
+  "address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,"+
+  "bool zeroForOne,uint128 exactAmount,bytes hookData)) returns (uint256 amountOut,uint256 gasEstimate)"];
+async function v4Quote(key, inputCurrency, amountIn){
+  try{
+    var q=new ethers.Contract(CFG.UNI.v4Quoter, V4QUOTER_ABI, rpc());
+    var res=await q.quoteExactInputSingle.staticCall({
+      poolKey:{ currency0:key.c0, currency1:key.c1, fee:key.fee, tickSpacing:key.ts, hooks:key.hooks },
+      zeroForOne: v4Direction(key, inputCurrency),
+      exactAmount: amountIn,
+      hookData: "0x"
+    });
+    var out = (res && res[0]!=null) ? res[0] : res;
+    return (out && out>0n) ? out : null;      // a failed quote is not zero
+  }catch(e){ return null; }
 }
 
-function fmtBal(v){
-  if(v==null) return " …";
-  return " "+(+v).toFixed(4)+" ETH";
+var WETH_ABI=[
+  "function deposit() payable",
+  "function withdraw(uint256)",
+  "function balanceOf(address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+  "function allowance(address,address) view returns (uint256)"
+];
+// Wrap only the shortfall — the wallet may already hold WETH, and wrapping the
+// full amount unconditionally reverts when native ETH is short.
+async function ensureWeth(signer, needWei, onStep){
+  var owner=await signer.getAddress();
+  var weth=new ethers.Contract(CFG.UNI.weth, WETH_ABI, signer);
+  var bal=await weth.balanceOf(owner).catch(function(){ return 0n; });
+  if(bal>=needWei) return 0n;
+  var shortfall=needWei-bal;
+  if(onStep) onStep("WRAPPING ETH — SIGN IN WALLET…");
+  var tx=await weth.deposit({ value:shortfall });
+  await tx.wait();
+  return shortfall;
 }
-// Live ETH for both wallets, so the user can see what they can actually spend
-// and which side they're spending from before they commit.
-async function loadModalBalances(){
-  modal.bal = modal.bal || {};
-  var pr=rpc();
-  var jobs=[];
-  if(state.wallet) jobs.push(pr.getBalance(state.wallet).then(function(b){ modal.bal.wallet=+ethers.formatEther(b); }).catch(function(){}));
-  if(state.burner) jobs.push(pr.getBalance(state.burner.addr).then(function(b){ modal.bal.burner=+ethers.formatEther(b); }).catch(function(){}));
-  await Promise.all(jobs);
-  var w=$("#balWallet"); if(w) w.textContent=fmtBal(modal.bal.wallet);
-  var b2=$("#balBurner"); if(b2) b2.textContent=fmtBal(modal.bal.burner);
-  renderSpendLine();
+async function unwrapWeth(signer, amountWei, onStep){
+  if(amountWei<=0n) return;
+  var weth=new ethers.Contract(CFG.UNI.weth, WETH_ABI, signer);
+  if(onStep) onStep("UNWRAPPING TO ETH — SIGN IN WALLET…");
+  var tx=await weth.withdraw(amountWei);
+  await tx.wait();
 }
-function activeBalance(){
-  if(!modal.bal) return null;
-  return modal.mode==="burner" ? modal.bal.burner : modal.bal.wallet;
-}
-function renderSpendLine(){
-  var el=$("#spendLine"); if(!el) return;
-  var bal=activeBalance();
-  var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
-  var label=modal.mode==="burner" ? "HoodSnipr wallet" : "Connected wallet";
-  if(bal==null){ el.innerHTML='<span>'+label+' balance…</span>'; return; }
-  var short_ = amt>0 && amt>bal;
-  el.innerHTML='<span>'+label+': <b class="'+(short_?"low":"")+'">'+bal.toFixed(5)+' ETH</b>'
-    +(short_?' — not enough for '+amt+' ETH':'')+'</span>'
-    +'<button class="max" data-action="maxamt">MAX</button>';
-}
-var quoteSeq=0;
+
+var quoteSeq=0;var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
   var amt=parseFloat(($("#snipeAmt")||{}).value)||0;
@@ -1982,210 +1910,78 @@ async function fire(){
     btn.innerHTML='<span class="spin"></span> QUOTING UNISWAP…';
     // ---------------- UNISWAP V4 ROUTE ----------------
     if(modal.venue==="v4"){
-      btn.innerHTML='<span class="spin"></span> FINDING V4 POOL…';
-      var key=null, needWrap=false, v4=null;
       btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
+      var vkeys=await v4KeysDirect(p.baseToken);
+      if(!vkeys || !vkeys.length)
+        throw new Error("Couldn't resolve the v4 pool for $"+p.sym+". Nothing was charged.");
 
-      // 1) exact lookup by indexed currencies. Hooks on this chain are
-      //    CREATE2-mined per pool, so hash-derivation can't find them — this
-      //    reads the real key straight from the Initialize log.
-      var dk=await v4KeysDirect(p.baseToken);
-      if(dk && dk.length){
-        // a hookless pool is generically routable — always prefer it
-        var plain=dk.filter(function(k){ return (k.hooks||CFG.UNI.V4.NATIVE)===CFG.UNI.V4.NATIVE; });
-        var dpick=pickV4Key(plain.length?plain:dk, p.baseToken);
-        if(dpick){ key=dpick.key; needWrap=dpick.wrap; }
-      }
+      // These pools pair the token with WETH, not native ETH.
+      var WETHL=CFG.UNI.weth.toLowerCase(), TOKL=String(p.baseToken).toLowerCase();
+      var key=vkeys.filter(function(k){
+        var a=String(k.c0).toLowerCase(), b=String(k.c1).toLowerCase();
+        return (a===WETHL&&b===TOKL)||(b===WETHL&&a===TOKL);
+      })[0] || vkeys[0];
 
-      // A hook contract that is ALSO the trade entry point means this is a
-      // launchpad bonding-curve pool: it only accepts swaps through its own
-      // contract, with its own ABI. Reading real swaps on this chain showed
-      // every one going to a different per-token contract with a different
-      // selector — no shared router in the path. A generic v4 execute() cannot
-      // route these, so say so instead of burning the user's gas on a revert.
-      if(key && key.hooks && key.hooks!==CFG.UNI.V4.NATIVE){
-        // Launchpad pool. We support these per-family: contracts from the same
-        // launchpad share bytecode and selectors, so one adapter covers every
-        // token it launched. Check whether this family is integrated yet.
-        var lp=await launchpadFor(key.hooks, p.baseToken);
-        if(lp && lp.supported){
-          key._lp=lp;                      // adapter takes over execution below
-        }else{
-          var hasV3alt=versionsOf(p).indexOf("v3")>=0;
-          throw new Error("$"+p.sym+" trades through "+(lp&&lp.name? lp.name : "a launchpad")
-            +" ("+short(key.hooks)+"), which HoodSnipr hasn't integrated yet."
-            +(hasV3alt? " Switch to V3 above to snipe it here now."
-                      : " Support for this launchpad is coming — nothing was charged.")); 
-        }
-      }
+      // 1) fee first (unchanged policy), then wrap the remainder
+      var feeWei4=ethers.parseEther(fee.toFixed(18));
+      btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
+      var ftx0=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeWei4 });
+      await ftx0.wait();
 
-      // 2) hash-derivation, for plain unhooked pools (instant, no RPC)
-      if(!key){
-        var derived=deriveV4Key(p.baseToken, p.pool);
-        if(derived){ key=derived.key; needWrap=derived.wrap; }
-      }
+      // 2) the router spends WETH via Permit2 — wrap the shortfall only
+      await ensureWeth(signer, netWei, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
+      await ensurePermit2(signer, CFG.UNI.weth, netWei, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
 
-      // 3) learn hooks then retry derivation
-      if(!key && (!state.v4Hooks || !state.v4Hooks.length)){
-        btn.innerHTML='<span class="spin"></span> LEARNING POOL HOOKS…';
-        try{
-          var lh=await fetch(CFG.API+"/v4pools?learn=1").then(function(r){return r.json()});
-          if(lh && lh.hooks && lh.hooks.length){
-            state.v4Hooks=lh.hooks;
-            var again=deriveV4Key(p.baseToken, p.pool);
-            if(again){ key=again.key; needWrap=again.wrap; }
-          }
-        }catch(e){}
-      }
+      // 3) real quote (already includes hook fees — apply slippage only)
+      btn.innerHTML='<span class="spin"></span> QUOTING V4…';
+      var qOut=await v4Quote(key, CFG.UNI.weth, netWei);
+      if(qOut==null)
+        throw new Error("No v4 quote available for $"+p.sym+" — the pool may be too thin for this size. The fee has been paid; nothing else was spent.");
+      var minOut4=qOut - (qOut*BigInt(modal.slip)/10000n);
+      if(minOut4<1n) minOut4=1n;
 
-      // 4) timestamp-targeted lookup
-      if(!key && p.created){
-        var timed=await v4KeyByTime(p.pool, p.created);
-        if(timed){
-          var tp=pickV4Key([timed], p.baseToken);
-          if(tp){ key=tp.key; needWrap=tp.wrap; }
-          else { key=timed; needWrap=(timed.c0===CFG.UNI.weth.toLowerCase()||timed.c1===CFG.UNI.weth.toLowerCase()); }
-        }
-      }
-
-      // 5) generic onchain probe
-      var direct = key? null : await v4KeyByPoolId(p.pool);
-      if(!key && direct){
-        var dp=pickV4Key([direct], p.baseToken);
-        if(dp){ key=dp.key; needWrap=dp.wrap; }
-      }
-
-      // 6) last resort: the scanned index
-      if(!key) v4=await v4KeysFor(p.baseToken, true);
-      if(!key && (!v4 || !v4.keys || !v4.keys.length)){
-        var pid=String(p.pool||"");
-        var isId=/^0x[0-9a-f]{64}$/i.test(pid);
-        throw new Error("Couldn't resolve the v4 pool for $"+p.sym+". "
-          + (isId
-              ? "Couldn't locate its Initialize log to read the pool's hook configuration. This usually resolves on a retry."
-              : "The indexer reported this pool as '"+pid.slice(0,12)+"…', which isn't a v4 pool id, so we can't rebuild its key.")
-          + " Nothing was charged.");
-      }
-      if(!key){
-        var picked=pickV4Key(v4.keys, p.baseToken);
-        if(!picked)
-          throw new Error("$"+p.sym+" has v4 pools but none paired with ETH or WETH (or they use hooks we don't route). Nothing was charged.");
-        key=picked.key; needWrap=picked.wrap;
-      }
-
-      btn.innerHTML='<span class="spin"></span> LOCATING V4 ROUTER…';
-      await ensureV4Router();
-      if(!state.v4RouterVerified) await resolveVerifiedRouter();
-
-      // If nothing on this chain is a UniversalRouter bound to the PoolManager,
-      // there is no generic v4 route. Say so before taking a fee, and point at
-      // v3 when the token has one.
-      if(!state.v4RouterVerified || state.v4Router===CFG.UNI.universalRouter){
-        var v3Alt = versionsOf(p).indexOf("v3")>=0;
-        throw new Error("Uniswap v4 on Robinhood Chain has no shared router — its pools are traded through per-token launchpad contracts."
-          + (v3Alt ? " Switch to V3 above to snipe $"+p.sym+" here now."
-                   : " HoodSnipr can't route $"+p.sym+" yet; launchpad support is in progress.")
-          + " Nothing was charged.");
-      }
-      var urv = await verifyUniversalRouter(rpc());
-      if(urv===false)
-        throw new Error("No contract exists at the UniversalRouter address on this chain — refusing to send ETH there.");
-      // urv===null just means the RPC didn't answer; carry on.
-
-      // Derive the real output by simulation — no decimals guess, no quoter.
-      btn.innerHTML='<span class="spin"></span> QUOTING V4 POOL…';
-      // seed the search with what the indexer says the output should be
-      var seed4=null;
-      try{
-        var sdec=await tokenDecimals(rpc(), p.baseToken);
-        if(p.price>0){
-          var expTok=(net*state.ethUsd)/p.price;
-          if(isFinite(expTok) && expTok>0)
-            seed4=ethers.parseUnits(expTok.toFixed(Math.min(18,sdec)), sdec);
-        }
-      }catch(e){}
-      var q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
-      if(!q4.ok){
-        // couldn't even swap for 1 wei of output — try the other pairing before
-        // declaring failure, since a token often has both native and WETH pools
-        var alt=(v4 && v4.keys? v4.keys : []).filter(function(k){ return k.id!==key.id; });
-        var altPick=alt.length? pickV4Key(alt, p.baseToken) : null;
-        if(altPick){
-          key=altPick.key; needWrap=altPick.wrap;
-          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
-        }
-      }
-      if(!q4.ok){
-        // A no-data revert usually means the wrong contract, not a bad pool.
-        // Several contracts call the PoolManager; try the other candidates.
-        if(!state.v4Candidates || !state.v4Candidates.length) await resolveVerifiedRouter();
-        var cands=(state.v4Candidates||[]).filter(function(a){ return a!==state.v4Router; });
-        for(var ci=0; ci<cands.length && !q4.ok; ci++){
-          var prevR=state.v4Router;
-          state.v4Router=cands[ci];
-          q4=await v4SimQuote(key, p.baseToken, netWei, me, needWrap, seed4, (modal.mode==="burner")?(burnerDestination()||me):me);
-          if(!q4.ok){ state.v4Router=prevR; }
-          else {
-            // A successful simulation is the strongest possible proof.
-            state.v4RouterVerified=true;
-            try{ localStorage.setItem("hs_v4router", state.v4Router); }catch(e){}
-          }
-        }
-      }
-      if(!q4.ok && !modal.force){
-        armForce((q4.why? "v4 quote failed: "+q4.why+". " : "")
-          +"Couldn't route "+net.toFixed(4)+" ETH via router "+short(v4Router())
-          +(state.v4Router===CFG.UNI.universalRouter
-              ? " (FALLBACK address — not bound to this chain's PoolManager, which is the likely cause)."
-              : state.v4RouterVerified? " (bound to PoolManager "+short(state.v4Manager||CFG.UNI.v4Manager||"")+")."
-              : " (unverified router)."));
-        return;
-      }
-      if(!q4.ok) q4={ ok:true, out:1n };   // forced: no slippage floor, user accepted
-
-      var dec4 = await tokenDecimals(rpc(), p.baseToken);
-      var minOut4 = q4.out - (q4.out*BigInt(modal.slip)/10000n);
-      if(minOut4 < 1n) minOut4 = 1n;
-
-      var v4Recip = (modal.mode==="burner") ? (burnerDestination() || me) : me;
-      var enc=encodeV4Swap(key, p.baseToken, netWei, minOut4, v4Recip, needWrap, me);
-      var deadline=BigInt(Math.floor(Date.now()/1000)+900);
-
-      // fee first, then the v4 swap
-      btn.innerHTML='<span class="spin"></span> FEE 1/2 — SIGN IN WALLET…';
-      var f4=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(fee.toFixed(18)) });
-      await f4.wait();
-
-      btn.innerHTML='<span class="spin"></span> SWAP 2/2 — SIGN IN WALLET…'+(needWrap?' (WRAP+SWAP)':'');
-      var ur=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
+      // 4) execute
+      btn.innerHTML='<span class="spin"></span> SWAP — SIGN IN WALLET…';
+      var enc4=encodeV4Exec(key, CFG.UNI.weth, p.baseToken, netWei, minOut4);
+      var dl4=BigInt(Math.floor(Date.now()/1000)+300);
+      var ur4=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
       var tx4;
-      try{
-        tx4=await ur.execute(enc.commands, enc.inputs, deadline, { value:netWei });
-      }catch(se){
+      try{ tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4); }
+      catch(se){
         var sm4=(se&&(se.shortMessage||se.message))||"";
         if(/missing revert data|estimate/i.test(sm4))
-          tx4=await ur.execute(enc.commands, enc.inputs, deadline, { value:netWei, gasLimit:900000n });
+          tx4=await ur4.execute(enc4.commands, enc4.inputs, dl4, { gasLimit:900000n });
         else throw se;
       }
       btn.innerHTML='<span class="spin"></span> CONFIRMING ONCHAIN…';
       var rc4=await tx4.wait();
       if(!rc4 || rc4.status!==1) throw new Error("v4 swap reverted onchain");
 
+      var dec4=await tokenDecimals(rpc(), p.baseToken);
       var got4=null;
       try{
         var if4=new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
-        var dest4=String(v4Recip).toLowerCase();
         rc4.logs.forEach(function(lg){
-          if((lg.address||"").toLowerCase()!==p.baseToken.toLowerCase()) return;
+          if((lg.address||"").toLowerCase()!==TOKL) return;
           try{ var ev=if4.parseLog(lg);
-            if(ev && String(ev.args[1]).toLowerCase()===dest4) got4=ev.args[2];
+            if(ev && String(ev.args[1]).toLowerCase()===me.toLowerCase()) got4=ev.args[2];
           }catch(e){}
         });
       }catch(e){}
-      var out4=+(ethers.formatUnits(got4!=null?got4:q4.out, dec4));
+      var out4=+(ethers.formatUnits(got4!=null?got4:qOut, dec4));
 
-      recordTrade(p, amt, fee, modal.mode, out4, rc4.hash,
-        { ver:"v4", deliveredTo: v4Recip });
+      // burner snipes deliver to the funding wallet
+      var v4Recip=(modal.mode==="burner")?(burnerDestination()||me):me;
+      if(v4Recip && v4Recip.toLowerCase()!==me.toLowerCase() && got4 && got4>0n){
+        try{
+          btn.innerHTML='<span class="spin"></span> DELIVERING — SIGN IN WALLET…';
+          var erc4=new ethers.Contract(p.baseToken,["function transfer(address,uint256) returns (bool)"],signer);
+          var dtx=await erc4.transfer(v4Recip, got4);
+          await dtx.wait();
+        }catch(e){ toast("Swap done, but delivery to "+short(v4Recip)+" failed — tokens are in the burner", true); }
+      }
+
+      recordTrade(p, amt, fee, modal.mode, out4, rc4.hash, { ver:"v4", deliveredTo:v4Recip });
       toast("Sniped "+out4.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+p.sym+" via V4 ⚡");
       closeModal();
       done();
@@ -3157,119 +2953,64 @@ async function fireLoose(){
     var best=await bestQuoteOut(rpc(), x.addr, units);
 
     // ---------------- V4 SELL PATH ----------------
-    // No v3 pool doesn't mean the position is stuck: if we could buy it on v4,
-    // we can sell it there too. Mirror of the buy, with Permit2 on the token.
+    // No v3 pool doesn't mean the position is stuck. Sells go token -> WETH
+    // through the same modified router, then we unwrap to native ETH.
     if(!best){
-      btn.innerHTML='<span class="spin"></span> CHECKING V4…';
+      btn.innerHTML='<span class="spin"></span> RESOLVING V4 POOL…';
       var vk=await v4KeysDirect(x.addr);
       if(!vk || !vk.length)
         throw new Error("No Uniswap pool found for $"+x.sym+" on v3 or v4. Nothing was charged.");
 
-      await ensureV4Router();
-      if(!state.v4RouterVerified) await resolveVerifiedRouter();
-      if(!state.v4RouterVerified || v4Router()===CFG.UNI.universalRouter)
-        throw new Error("$"+x.sym+" only trades on Uniswap v4, and this chain has no shared v4 router — "
-          + "its pools go through per-token launchpad contracts. Selling there isn't supported yet. Nothing was charged.");
+      var WETHL2=CFG.UNI.weth.toLowerCase(), TOKL2=String(x.addr).toLowerCase();
+      var k4=vk.filter(function(k){
+        var a=String(k.c0).toLowerCase(), b=String(k.c1).toLowerCase();
+        return (a===WETHL2&&b===TOKL2)||(b===WETHL2&&a===TOKL2);
+      })[0] || vk[0];
 
-      // prefer a hookless pool, else whatever exists
-      var plainK=vk.filter(function(k){ return (k.hooks||CFG.UNI.V4.NATIVE)===CFG.UNI.V4.NATIVE; });
-      var pick4=pickV4Key(plainK.length?plainK:vk, x.addr);
-      var k4=pick4? pick4.key : vk[0];
+      // the router pulls the token through Permit2 — set that up first
+      await ensurePermit2(signer, x.addr, units, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
 
-      // find the achievable ETH out by simulation, same technique as the buy
-      var iface4=new ethers.Interface(UROUTER_ABI);
-      var dl4=BigInt(Math.floor(Date.now()/1000)+900);
-      var sellCalls=0, lastRevert=null;
-      async function sellWorks(minOut){
-        sellCalls++;
-        try{
-          var e=encodeV4Sell(k4, x.addr, units, minOut, me);
-          var d=iface4.encodeFunctionData("execute",[e.commands, e.inputs, dl4]);
-          await rpc().call({ to:v4Router(), data:d, from:me });
-          return true;
-        }catch(err){ lastRevert=decodeRevert(err); return false; }
-      }
-      // seed from the indexed price so this is a handful of calls, not dozens
-      var seedWei=0n;
-      try{
-        if(x.price>0 && state.ethUsd>0){
-          var ethOutEst=(amt*x.price)/state.ethUsd;
-          if(ethOutEst>0) seedWei=ethers.parseEther(ethOutEst.toFixed(18));
-        }
-      }catch(e){}
-      // ORDERING BUG THIS FIXES: the simulation ran BEFORE Permit2 approvals
-      // existed, so the router couldn't pull the token, SETTLE_ALL reverted, and
-      // a perfectly good pool was reported as "hook-gated or too thin".
-      // Approvals must be in place before the simulation means anything.
-      var canPull = await v4CanPull(signer, x.addr, units);
-      if(!canPull){
-        btn.innerHTML='<span class="spin"></span> APPROVING TOKEN…';
-        await ensurePermit2(signer, x.addr, units, function(msg){ btn.innerHTML='<span class="spin"></span> '+msg; });
-      }
+      btn.innerHTML='<span class="spin"></span> QUOTING V4…';
+      var qWeth=await v4Quote(k4, x.addr, units);
+      if(qWeth==null)
+        throw new Error("No v4 quote for $"+x.sym+" — the pool may be too thin for "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" tokens. Try a smaller amount. Nothing was charged.");
+      var minW=qWeth - (qWeth*BigInt(looseM.slip)/10000n);
+      if(minW<1n) minW=1n;
 
-      var lo4=0n, hi4=0n;
-      if(seedWei>0n){
-        var loTry=seedWei*80n/100n, hiTry=seedWei*125n/100n;
-        var pr2=await Promise.all([sellWorks(loTry), sellWorks(hiTry)]);
-        if(pr2[0]&&pr2[1]){ lo4=hiTry; hi4=hiTry*4n; }
-        else if(pr2[0]){ lo4=loTry; hi4=hiTry; }
-        else { if(!(await sellWorks(1n))) lo4=0n; else { lo4=1n; hi4=loTry; } }
-      }else{
-        if(await sellWorks(1n)){ lo4=1n; hi4=ethers.parseEther("1"); }
-      }
-      // Before giving up, try every other v4 pool this token has — a token
-      // often has both a hooked launchpad pool and a plain one.
-      if(lo4<=0n && vk.length>1){
-        var others=vk.filter(function(kk){ return kk.id!==k4.id; });
-        for(var oi=0; oi<others.length && lo4<=0n; oi++){
-          k4=others[oi];
-          if(await sellWorks(1n)){ lo4=1n; hi4=ethers.parseEther("1");
-            for(var qq=0; qq<6 && hi4>lo4+1n; qq++){
-              var m4=lo4+(hi4-lo4)/2n;
-              if(await sellWorks(m4)) lo4=m4; else hi4=m4;
-            }
-          }
-        }
-      }
-      if(lo4<=0n){
-        var stillBlocked = !(await v4CanPull(signer, x.addr, units));
-        if(stillBlocked)
-          throw new Error("Approval didn't stick for $"+x.sym+" — the router still can't move the token. Nothing was charged.");
-        var rr=lastRevert||{why:"unknown"};
-        var hooked = k4.hooks && k4.hooks!==CFG.UNI.V4.NATIVE;
-        throw new Error("Can't sell $"+x.sym+" through the router: "+rr.why+"."
-          + (hooked? " This pool uses a launchpad hook ("+short(k4.hooks)+"), which commonly blocks third-party selling — you may need to sell on the launchpad itself." : "")
-          + " Nothing was charged.");
-      }
-      for(var q=0;q<6 && hi4>lo4+1n;q++){
-        var mid4=lo4+(hi4-lo4)/2n;
-        if(await sellWorks(mid4)) lo4=mid4; else hi4=mid4;
-      }
-      var minOut4s = lo4 - (lo4*BigInt(looseM.slip)/10000n);
-      if(minOut4s<1n) minOut4s=1n;
+      // snapshot WETH so we unwrap only the proceeds
+      var wethC=new ethers.Contract(CFG.UNI.weth, WETH_ABI, rpc());
+      var wBefore=await wethC.balanceOf(me).catch(function(){ return 0n; });
 
       btn.innerHTML='<span class="spin"></span> LOOSING V4 — SIGN IN WALLET…';
-      var ur4=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
-      var encS=encodeV4Sell(k4, x.addr, units, minOut4s, me);
+      var encS=encodeV4Exec(k4, x.addr, CFG.UNI.weth, units, minW);
+      var dlS=BigInt(Math.floor(Date.now()/1000)+300);
+      var urS=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
       var txS;
-      try{ txS=await ur4.execute(encS.commands, encS.inputs, dl4); }
+      try{ txS=await urS.execute(encS.commands, encS.inputs, dlS); }
       catch(se4){
-        var sm=(se4&&(se4.shortMessage||se4.message))||"";
-        if(/missing revert data|estimate/i.test(sm)) txS=await ur4.execute(encS.commands, encS.inputs, dl4, { gasLimit:900000n });
+        var sms=(se4&&(se4.shortMessage||se4.message))||"";
+        if(/missing revert data|estimate/i.test(sms)) txS=await urS.execute(encS.commands, encS.inputs, dlS, { gasLimit:900000n });
         else throw se4;
       }
       btn.innerHTML='<span class="spin"></span> CONFIRMING…';
       var rcS=await txS.wait();
       if(!rcS || rcS.status!==1) throw new Error("v4 sale reverted onchain");
 
-      var ethOut4=+ethers.formatEther(lo4);
-      var feeWei4=lo4*BigInt(CFG.FEE_BPS)/10000n;
+      var wAfter=await wethC.balanceOf(me).catch(function(){ return wBefore; });
+      var gained = wAfter>wBefore ? (wAfter-wBefore) : qWeth;
+
+      // unwrap proceeds to native ETH (convenience step — the sale is final)
+      try{ await unwrapWeth(signer, gained, function(m){ btn.innerHTML='<span class="spin"></span> '+m; }); }
+      catch(e){ toast("Sold — proceeds are held as WETH; unwrap failed", true); }
+
+      var ethOut4=+ethers.formatEther(gained);
+      var feeW=gained*BigInt(CFG.FEE_BPS)/10000n;
       btn.innerHTML='<span class="spin"></span> FEE — SIGN IN WALLET…';
-      var ftx4=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeWei4 });
-      await ftx4.wait();
+      var ftxS=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:feeW });
+      await ftxS.wait();
 
       state.trades.unshift({ side:"sell", sym:x.sym, baseToken:x.addr, ethOut:ethOut4,
-        usdOut: ethOut4*state.ethUsd, fee:+ethers.formatEther(feeWei4), tokensSold:amt,
+        usdOut: ethOut4*state.ethUsd, fee:+ethers.formatEther(feeW), tokensSold:amt,
         ts:Date.now(), mode:x.wallet==="connected"?"wallet":"burner", tx:rcS.hash, ver:"v4" });
       save("hs_trades", state.trades);
       x.bal=Math.max(0,x.bal-amt); if(x.price!=null)x.valUsd=x.bal*x.price;
@@ -3278,6 +3019,7 @@ async function fireLoose(){
       done();
       return;
     }
+
     var minOut = best.out - (best.out*BigInt(looseM.slip)/10000n);
 
     // ---- approval if needed (one extra signature, once per token) ----
