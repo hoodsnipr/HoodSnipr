@@ -845,6 +845,81 @@ export default async (req) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// DIRECT KEY LOOKUP — one query, exact answer, hooks included.
+//
+// Now that the PoolManager and the real Initialize topic are both confirmed, we
+// can stop scanning block windows entirely. Initialize indexes BOTH currencies:
+//
+//   topics = [Initialize, poolId, currency0, currency1]
+//
+// so filtering on address=PoolManager AND topic0=Initialize AND the currency
+// pair returns exactly this token's pools over ALL history in a single call.
+// That's precise regardless of hooks — which matters because these hooks are
+// CREATE2-mined per pool (…dead0030, …b0eacc), so guessing them can't scale.
+const pad32 = a => "0x" + String(a).replace(/^0x/, "").toLowerCase().padStart(64, "0");
+
+export async function keysForToken(token) {
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("v4pools", { type: "json" }).catch(() => null))
+    || { keys: {}, manager: null };
+  const manager = st.manager || KNOWN_MANAGER;
+  const t = String(token || "").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(t)) return { ok: false, error: "bad token" };
+  if (!manager) return { ok: false, error: "PoolManager unknown" };
+
+  const cached = (st.keys || {})[t];
+  if (cached && cached.length) return { ok: true, keys: cached, manager, cached: true };
+
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const WETH_L = WETHA.toLowerCase();
+  const topic = (st.topics && st.topics[0]) || INIT_TOPICS[0];
+
+  // token as currency1 (always the case when paired with native ETH, since
+  // 0x0 sorts lowest), and token as currency0 (possible against WETH)
+  const queries = [
+    { topics: [topic, null, [pad32(ZERO), pad32(WETH_L)], [pad32(t)]] },
+    { topics: [topic, null, [pad32(t)], [pad32(WETH_L)]] }
+  ];
+
+  const found = [];
+  for (const q of queries) {
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x0", toBlock: "latest", address: manager, topics: q.topics
+      }]);
+      for (const lg of (logs || [])) {
+        const k = decodeInit(lg);
+        if (!k) continue;
+        if (!found.some(x => x.id === k.id)) found.push(k);
+      }
+    } catch (e) {
+      // some nodes refuse fromBlock:0 even on selective filters — retry recent
+      try {
+        const head = Number(BigInt(await rpc("eth_blockNumber", [])));
+        const logs = await rpc("eth_getLogs", [{
+          fromBlock: "0x" + Math.max(0, head - 2000000).toString(16), toBlock: "latest",
+          address: manager, topics: q.topics
+        }]);
+        for (const lg of (logs || [])) {
+          const k = decodeInit(lg);
+          if (k && !found.some(x => x.id === k.id)) found.push(k);
+        }
+      } catch (e2) {}
+    }
+  }
+
+  if (found.length) {
+    st.keys = st.keys || {};
+    st.keys[t] = found;
+    // remember hooks for completeness, though we no longer depend on them
+    st.hooks = st.hooks || [];
+    for (const k of found) if (k.hooks && !st.hooks.includes(k.hooks)) st.hooks.push(k.hooks);
+    await store.setJSON("v4pools", st).catch(() => {});
+  }
+  return { ok: found.length > 0, keys: found, manager, error: found.length ? null : "no v4 pool for this token" };
+}
+
 async function handle(req) {
   const url = new URL(req.url);
   const store = await _store("hoodsnipr-cache");
@@ -893,6 +968,10 @@ async function handle(req) {
     for (const k of ["v4pools", "v4boot", "v4router", "v4probe"]) await store.delete(k).catch(() => {});
     return json(200, { ok: true, cleared: true });
   }
+
+  // ?keys=<token> — direct, exact PoolKey lookup for a token
+  const kt = url.searchParams.get("keys");
+  if (kt) return json(200, await keysForToken(kt));
 
   // ?whatis=<addr> — token or PoolManager?
   const wi = url.searchParams.get("whatis");
@@ -957,7 +1036,11 @@ async function handle(req) {
   }
   if (!/^0x[0-9a-f]{40}$/.test(token)) return json(400, { error: "bad token" });
 
-  const keys = (st.keys || {})[token] || [];
+  let keys = (st.keys || {})[token] || [];
+  if (!keys.length) {
+    const direct = await keysForToken(token).catch(() => null);
+    if (direct && direct.keys) keys = direct.keys;
+  }
   return json(200, {
     manager: st.manager, token, keys,
     scan: { done: !!st.done, cursor: st.lo ?? null, tokens: Object.keys(st.keys || {}).length }
