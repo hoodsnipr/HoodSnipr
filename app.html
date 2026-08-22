@@ -1811,6 +1811,27 @@ async function v4Quote(key, inputCurrency, amountIn){
   }catch(e){ return null; }
 }
 
+// A token often has v4 pools at several fee tiers. Taking the first one can
+// route through a thin pool and deliver a fraction of what the deep pool would
+// — quoting all of them and picking the best output is the only safe way.
+async function v4BestPool(keys, amountIn, side, token){
+  var cands=(keys||[]).filter(function(k){ return !!v4EthLeg(k); });
+  if(!cands.length) return null;
+  var results=await Promise.all(cands.map(async function(k){
+    var leg=v4EthLeg(k);
+    var inputCur = (side==="buy") ? leg.currency : token;
+    var out=await v4Quote(k, inputCur, amountIn);
+    return { key:k, leg:leg, out:(out||0n) };
+  }));
+  results.sort(function(a,b){ return (b.out>a.out)?1:((b.out<a.out)?-1:0); });
+  var best=results[0];
+  if(!best || best.out<=0n) return null;
+  best.alternatives=results.length;
+  // how much better than the next pool? useful signal when routing is wrong
+  best.runnerUp = results.length>1 ? results[1].out : 0n;
+  return best;
+}
+
 var WETH_ABI=[
   "function deposit() payable",
   "function withdraw(uint256)",
@@ -1912,9 +1933,15 @@ function updFees(){
   var fee=amt*CFG.FEE_BPS/10000, net=amt-fee;
   var estUsd=net*state.ethUsd, estTok=p.price? estUsd/p.price : null;
   var q=modal.quote;
-  var received = q && q.amt===net
-    ? "≈ "+(+q.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" · UNI V3 "+(q.fee/10000)+"%"
-    : (estTok?("≈ "+estTok.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" (indexer est.)"):"—");
+  var received;
+  if(q && q.amt===net){
+    received = "≈ "+(+q.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)
+      + (q.v4 ? " · V4 QUOTE" : " · UNI V3 "+(q.fee/10000)+"%");
+  }else{
+    received = estTok
+      ? "≈ "+estTok.toLocaleString(undefined,{maximumFractionDigits:0})+" $"+esc(p.sym)+" (estimate — quoting…)"
+      : "—";
+  }
   $("#feeBox").innerHTML=
     '<div><span class="k">Snipe fee (0.25%)</span><span>'+fee.toFixed(6)+' ETH</span></div>'
    +'<div><span class="k">Net swapped</span><span class="up">'+net.toFixed(6)+' ETH</span></div>'
@@ -1986,7 +2013,25 @@ async function bestQuote(pr, token, amountInWei){
 }
 async function liveQuote(p, netEth){
   var seq=++quoteSeq;
-  if(modal.venue==="v4") return;   // v4 sizing uses the indexed price + slippage
+  if(modal.venue==="v4"){
+    // Previously this bailed out and the fee box fell back to an INDEXER
+    // ESTIMATE — which is why the screen promised 18 tokens while the pool
+    // actually delivered 3. Show the real V4Quoter number instead.
+    try{
+      var keys4=await v4KeysDirect(p.baseToken);
+      if(!keys4 || !keys4.length) return;
+      var wei4=ethers.parseEther(netEth.toFixed(18));
+      var bp=await v4BestPool(keys4, wei4, "buy", p.baseToken);
+      if(seq!==quoteSeq || !bp) return;
+      var d4=await tokenDecimals(rpc(), p.baseToken);
+      if(seq!==quoteSeq) return;
+      modal.quote={ amt:netEth, out:bp.out, outFmt:ethers.formatUnits(bp.out,d4), fee:null, dec:d4, v4:true };
+      var el4=$("#quoteLine");
+      if(el4) el4.textContent="≈ "+(+modal.quote.outFmt).toLocaleString(undefined,{maximumFractionDigits:0})
+        +" $"+p.sym+" · V4 QUOTE"+(bp.alternatives>1? " (best of "+bp.alternatives+" pools)":"");
+    }catch(e){}
+    return;
+  }
   try{
     var pr=rpc();
     if(!(await verifyUni(pr))) return;
@@ -2068,18 +2113,14 @@ async function fire(){
       if(!vkeys || !vkeys.length)
         throw new Error("Couldn't resolve the v4 pool for $"+p.sym+". Nothing was charged.");
 
-      // Use the pool's ACTUAL currencies — some pair native ETH, some WETH.
-      // Assuming WETH for everything is what forced a pointless wrap step.
+      // Use the pool's ACTUAL currencies — some pair native ETH, some WETH —
+      // and quote EVERY candidate so we route through the deepest one.
       var TOKL=String(p.baseToken).toLowerCase();
-      var key=vkeys.filter(function(k){ return !!v4EthLeg(k); })[0] || vkeys[0];
-      var leg=v4EthLeg(key);
-      if(!leg)
-        throw new Error("$"+p.sym+"'s v4 pool isn't paired with ETH or WETH — can't route it. Nothing was charged.");
-
-      btn.innerHTML='<span class="spin"></span> QUOTING V4…';
-      var qOut=await v4Quote(key, leg.currency, netWei);
-      if(qOut==null)
-        throw new Error("No v4 quote for $"+p.sym+" — the pool may be too thin for this size. Nothing was charged.");
+      btn.innerHTML='<span class="spin"></span> QUOTING V4 POOLS…';
+      var bestPool=await v4BestPool(vkeys, netWei, "buy", p.baseToken);
+      if(!bestPool)
+        throw new Error("No v4 quote for $"+p.sym+" — no ETH-paired pool could fill this size. Nothing was charged.");
+      var key=bestPool.key, leg=bestPool.leg, qOut=bestPool.out;
       var minOut4=qOut - (qOut*BigInt(modal.slip)/10000n);
       if(minOut4<1n) minOut4=1n;
 
@@ -3116,10 +3157,11 @@ async function fireLoose(){
       if(!vk || !vk.length)
         throw new Error("No Uniswap pool found for $"+x.sym+" on v3 or v4. Nothing was charged.");
 
-      var k4=vk.filter(function(k){ return !!v4EthLeg(k); })[0] || vk[0];
-      var leg2=v4EthLeg(k4);
-      if(!leg2)
-        throw new Error("$"+x.sym+"'s v4 pool isn't paired with ETH or WETH. Nothing was charged.");
+      btn.innerHTML='<span class="spin"></span> QUOTING V4 POOLS…';
+      var bestSell=await v4BestPool(vk, units, "sell", x.addr);
+      if(!bestSell)
+        throw new Error("No v4 quote for $"+x.sym+" — no ETH-paired pool could fill this size. Nothing was charged.");
+      var k4=bestSell.key, leg2=bestSell.leg;
 
       // the router pulls the token through Permit2 — one-time per token
       if(!(await v4CanPull(signer, x.addr, units))){
@@ -3127,10 +3169,7 @@ async function fireLoose(){
         await ensurePermit2(signer, x.addr, units, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
       }
 
-      btn.innerHTML='<span class="spin"></span> QUOTING V4…';
-      var qEth=await v4Quote(k4, x.addr, units);
-      if(qEth==null)
-        throw new Error("No v4 quote for $"+x.sym+" — the pool may be too thin for "+amt.toLocaleString(undefined,{maximumFractionDigits:2})+" tokens. Nothing was charged.");
+      var qEth=bestSell.out;
       var minW=qEth - (qEth*BigInt(looseM.slip)/10000n);
       if(minW<1n) minW=1n;
 
