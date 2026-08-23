@@ -46,9 +46,24 @@ export function parseGT(page, out) {
     const v = a.volume_usd || {}, ch = a.price_change_percentage || {};
     const prev = out[addr];
     const liq = +(a.reserve_in_usd || 0);
-    if (prev && (prev.liq || 0) > liq) continue;     // keep the deepest pool
+    // Record this POOL rather than overwriting the token. A token can trade in
+    // several pools; keeping only the deepest one threw away the rest of its
+    // volume, and GT and DS often pick different pools for the same token —
+    // which is how liquidity and volume ended up describing different markets.
+    addPool(out, addr, a.address, {
+      liq,
+      m5: +(v.m5 || 0), h1: +(v.h1 || 0), h6: +(v.h6 || 0), h24: +(v.h24 || 0),
+      px: +a.base_token_price_usd || null,
+      txns: (function(){
+        const tx = a.transactions || {};
+        const pick = k => tx[k] ? { b: +tx[k].buys || 0, s: +tx[k].sells || 0 } : null;
+        return { m5: pick("m5"), h1: pick("h1"), h6: pick("h6"), h24: pick("h24") };
+      })()
+    });
+    if (prev && (prev.liq || 0) > liq) continue;     // metadata from the deepest
     out[addr] = {
       a: addr, pool: a.address,
+      pools: out[addr] && out[addr].pools,     // live map, includes this pool
       s: m.symbol || String(a.name || "?").split(" / ")[0],
       n: m.name || "",
       img: (m.image_url && m.image_url !== "missing.png") ? m.image_url : (prev?.img || null),
@@ -68,6 +83,55 @@ export function parseGT(page, out) {
   }
 }
 
+// Pools are keyed by ADDRESS, so the same pool seen from both GeckoTerminal and
+// DexScreener is stored once — no double counting. The last writer wins per
+// pool, which is fine: both sources describe the same market.
+export function addPool(out, tokenAddr, poolAddr, data) {
+  if (!poolAddr) return;
+  const t = out[tokenAddr] || (out[tokenAddr] = { a: tokenAddr });
+  if (!t.pools) t.pools = {};
+  t.pools[String(poolAddr).toLowerCase()] = data;
+}
+
+// Derive the token-level numbers from every pool we've seen. Liquidity and
+// volume are SUMS across pools, so they finally describe the same thing, and
+// the headline pool is the deepest one (what we chart and route through).
+export function finalizeTokens(out) {
+  for (const addr of Object.keys(out)) {
+    const t = out[addr];
+    const pools = t.pools;
+    if (!pools) continue;
+    const keys = Object.keys(pools);
+    if (!keys.length) continue;
+
+    let liq = 0, m5 = 0, h1 = 0, h6 = 0, h24 = 0;
+    const tx = { m5:{b:0,s:0}, h1:{b:0,s:0}, h6:{b:0,s:0}, h24:{b:0,s:0} };
+    let best = null, bestLiq = -1;
+    for (const k of keys) {
+      const p = pools[k];
+      liq += +p.liq || 0;
+      m5 += +p.m5 || 0; h1 += +p.h1 || 0; h6 += +p.h6 || 0; h24 += +p.h24 || 0;
+      for (const w of ["m5","h1","h6","h24"]) {
+        const x = p.txns && p.txns[w];
+        if (x) { tx[w].b += x.b || 0; tx[w].s += x.s || 0; }
+      }
+      if ((+p.liq || 0) > bestLiq) { bestLiq = +p.liq || 0; best = { k, p }; }
+    }
+
+    t.liq = liq;
+    t.m5 = m5; t.h1 = h1; t.h6 = h6; t.h24 = h24;
+    t.txns = tx;
+    t.txns24 = tx.h24.b + tx.h24.s;
+    t.poolCount = keys.length;
+    if (best) {
+      t.pool = best.k;                       // deepest pool: charts and routing
+      if (best.p.px) t.px = best.p.px;       // price from the deepest market
+    }
+    delete t.pools;                          // don't ship the detail to clients
+  }
+  return out;
+}
+
 export function parseDS(pairs, out, slug) {
   for (const p of (pairs || [])) {
     if (slug ? p.chainId !== slug : !/robinhood/i.test(p.chainId || "")) continue;
@@ -75,12 +139,25 @@ export function parseDS(pairs, out, slug) {
     if (!addr) continue;
     const liq = +(p.liquidity?.usd || 0);
     const prev = out[addr];
+    addPool(out, addr, p.pairAddress, {
+      liq,
+      m5: +(p.volume?.m5 || 0), h1: +(p.volume?.h1 || 0),
+      h6: +(p.volume?.h6 || 0), h24: +(p.volume?.h24 || 0),
+      px: +p.priceUsd || null,
+      txns: {
+        m5: p.txns?.m5 ? { b: +p.txns.m5.buys || 0, s: +p.txns.m5.sells || 0 } : null,
+        h1: p.txns?.h1 ? { b: +p.txns.h1.buys || 0, s: +p.txns.h1.sells || 0 } : null,
+        h6: p.txns?.h6 ? { b: +p.txns.h6.buys || 0, s: +p.txns.h6.sells || 0 } : null,
+        h24: p.txns?.h24 ? { b: +p.txns.h24.buys || 0, s: +p.txns.h24.sells || 0 } : null
+      }
+    });
     // DexScreener is the reference for what users expect to see, so its record
     // wins on ties — we only skip it for a strictly deeper pool.
     if (prev && prev.src === "ds" && (prev.liq || 0) > liq) continue;
     const labels = [].concat(p.labels || []);
     out[addr] = {
       a: addr, pool: p.pairAddress,
+      pools: out[addr] && out[addr].pools,     // live map, includes this pool
       s: p.baseToken?.symbol || prev?.s || "?",
       n: p.baseToken?.name || prev?.n || "",
       img: p.info?.imageUrl || prev?.img || null,

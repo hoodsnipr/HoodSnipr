@@ -5,7 +5,7 @@
 // volume, keep exactly one contract per ticker, and drop anything that looks
 // like an impersonator or a security token.
 import { store as _store } from "./_store.mjs";
-import { fetchUniverse, refreshKnown, dsSlug } from "./_feeds.mjs";
+import { fetchUniverse, refreshKnown, dsSlug, finalizeTokens } from "./_feeds.mjs";
 import { ponsMap } from "./_pons.mjs";
 import { isDenied, normSym } from "./_denylist.mjs";
 import { getBans } from "./banlist.mjs";
@@ -301,7 +301,7 @@ export function buildBoard(tokens, holders, blocked, bans) {
     h: (H[t.a] && H[t.a].h != null) ? H[t.a].h : null,
     ts5: trendScore(t, "m5"), ts1: trendScore(t, "h1"),
     ts6: trendScore(t, "h6"), ts24: trendScore(t, "h24"),
-    txns: t.txns || null,
+    txns: t.txns || null, pools: t.poolCount || 1,
     pons: !!t.pons, ponsBlock: t.ponsBlock || null,
     restrictionsEndBlock: t.restrictionsEndBlock || null,
     a: t.a, p: t.pool, s: String(t.s || "").replace(/^\$+/, ""), n: t.n,
@@ -344,6 +344,11 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
 
   known.page = page;
   await store.setJSON("universe", known).catch(() => {});
+
+  // Roll every pool up into token-level liquidity and volume BEFORE anything
+  // reads those numbers — filtering, scoring and holder priority all depend on
+  // them being consistent with each other.
+  finalizeTokens(known.t);
 
   // Prioritise holder lookups for the high-volume tokens — those are the ones
   // where the wash-trading test actually matters.
