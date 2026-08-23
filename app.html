@@ -225,6 +225,16 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .gradbar .bar{height:6px;border-radius:99px;background:var(--void);margin:8px 0 4px;overflow:hidden}
 .gradbar .bar i{display:block;height:100%;background:#8B5CF6;border-radius:99px}
 .gradbar .done{color:#8B5CF6}
+.pvhead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+.pvhead b{font-size:20px;letter-spacing:-.01em}
+.pvhead .up{color:var(--green);font-family:var(--mono);font-size:12px;margin-left:8px}
+.pvhead .dn{color:var(--red);font-family:var(--mono);font-size:12px;margin-left:8px}
+.pvrng{display:flex;gap:4px}
+.pvrng button{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--mute);
+  border:1px solid var(--line);border-radius:7px;padding:4px 9px;background:transparent}
+.pvrng button.on{color:var(--green);border-color:var(--green);background:var(--green-dim)}
+.pvfoot{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--mute);margin-top:6px}
+.pvfoot button{font-family:var(--mono);font-size:10px;color:var(--green);border:1px solid var(--line);border-radius:6px;padding:2px 7px}
 .trust{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.08em;border:1px solid;border-radius:6px;padding:1px 5px;margin-left:6px;vertical-align:middle}
 .trustpanel{margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:11px}
 .trustpanel .hdr{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:11px;letter-spacing:.1em}
@@ -233,6 +243,8 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .trustpanel ul{list-style:none;margin:6px 0 0}
 .trustpanel li{font-size:11px;color:var(--mute);padding:3px 0;line-height:1.45}
 .trustpanel li b{color:var(--red)}
+.hidehold{color:var(--mute);border:1px solid var(--line);border-radius:99px;font-size:12px;padding:7px 10px;flex:0 0 auto;min-height:38px}
+.hidehold:hover{color:var(--red);border-color:var(--red)}
 .wdraw{color:var(--gold);border:1.5px solid var(--gold);font-weight:700;font-size:11px;padding:7px 11px;border-radius:99px;transition:all .15s;flex:0 0 auto;min-height:38px;white-space:nowrap}
 .wdraw:hover{background:var(--gold);color:#000}
 .loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
@@ -641,6 +653,7 @@ function paintCachedBoard(){
     var uni=state.universe={};
     pools.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase(); if(k){ p.seen=Date.now(); uni[k]=p; } });
     state.pools=Object.keys(uni).map(function(k){return uni[k]});
+    invalidateRanks();                  // fresh data means the ranking is stale
     state.lastUpdate=pay.ts;
     renderChainBar(); renderBoard();
     return true;
@@ -904,7 +917,7 @@ async function ensure30d(){
         var list=(((j.data||{}).attributes)||{}).ohlcv_list||[];
         v=list.reduce(function(a,c){return a+(+c[5]||0)},0);
       }
-      state.d30[key]=v; cache[key]={v:v,t:now}; done++;
+      state.d30[key]=v; cache[key]={v:v,t:now}; done++; invalidateRanks();
       var pe=$("#board .progress"); pe&&(pe.textContent="RANGING 30D VOLUME… "+done+"/"+top.length);
       if(state.tf==="d30") renderBoard();
       // proxy answers are shared-cached — barely throttle; direct GT stays slow
@@ -1094,6 +1107,46 @@ function renderPager(total, pages){
 }
 function chgFor(p){ return state.tf==="m5"?p.cm5:state.tf==="h1"?p.ch1:state.tf==="h6"?p.ch6:p.ch24 }
 var PAGE_SIZE=50, MAX_TOKENS=2500;   // 50 rows a page, up to 2500 tokens deep
+// Ranking was recomputed from scratch on every timeframe tap, and for 30D the
+// comparator called volFor() — which ran .toLowerCase() on the pool address —
+// for every comparison. That's tens of thousands of string allocations mid-sort,
+// which is the lag you feel before rows settle into order.
+//
+// Now: score once per token (decorate-sort-undecorate), and memoise the result
+// per timeframe so tapping back to a tab you've already seen is instant.
+var rankCache={}, rankStamp=0;
+function invalidateRanks(){ rankCache={}; rankStamp=Date.now(); }
+function rankFor(tf, washTf){
+  var hideKey=Object.keys(hidden).length;
+  var key=tf+"|"+washTf+"|"+state.pools.length+"|"+hideKey+"|"+rankStamp;
+  if(rankCache[key]) return rankCache[key];
+
+  var d30=state.d30||{};
+  var isD30=(tf==="d30");
+  var scoreKey=SCORE_KEY[tf];
+  var out=[];
+  for(var i=0;i<state.pools.length;i++){
+    var p=state.pools[i];
+    if(isHidden(p)) continue;
+    if(washTf && p.wash) continue;
+    // resolve volume once — the d30 lookup normalises the address here instead
+    // of inside the comparator
+    var vol = isD30 ? (d30[(p.pool||"").toLowerCase()]||0) : (p[tf]||0);
+    if(!isD30 && !(vol>0 || (p.liq||0)>=1000)) continue;
+    var sc = isD30 ? vol : ((p[scoreKey]||0) > 0 ? p[scoreKey] : Math.sqrt(vol||0));
+    out.push({ p:p, sc:sc, vol:vol, liq:p.liq||0, id:p.baseToken||p.pool||"" });
+  }
+  out.sort(function(a,b){
+    var d=b.sc-a.sc; if(d) return d;
+    var v=b.vol-a.vol; if(v) return v;
+    var la=b.liq-a.liq; if(la) return la;
+    return a.id<b.id?-1:1;
+  });
+  var res=out.slice(0,MAX_TOKENS).map(function(x){ return x.p; });
+  rankCache={};                       // one timeframe cached at a time is plenty
+  rankCache[key]=res;
+  return res;
+}
 function renderBoard(){
   var el=$("#board");
   if(!state.pools.length){ el.innerHTML='<div class="skel"></div>'.repeat(7); return; }
@@ -1109,21 +1162,7 @@ function renderBoard(){
   // 5M/1H/6H views a real new launch legitimately has few holders, and hiding
   // those would defeat the point of a sniper — so those views stay unfiltered.
   var washTf = (state.tf==="h24" || state.tf==="d30");
-  var ranked=state.pools.slice().filter(function(p){
-    if(isHidden(p)) return false;
-    if(washTf && p.wash) return false;
-    if(state.tf==="d30") return true;
-    return volFor(p)>0 || (p.liq||0)>=1000;   // hide dead rows from timeframe views
-  }).sort(function(a,b){
-    // Rank by trend score (volume + acceleration + buy pressure + depth) rather
-    // than raw volume, so the board answers "what's heating up" not just "what
-    // traded most" — that's what a screener's trending tab shows.
-    var d=scoreFor(b)-scoreFor(a);
-    if(d) return d;
-    var v=volFor(b)-volFor(a); if(v) return v;
-    var la=(b.liq||0)-(a.liq||0); if(la) return la;
-    return (a.baseToken||a.pool||"")<(b.baseToken||b.pool||"")?-1:1;
-  }).slice(0,MAX_TOKENS);
+  var ranked=rankFor(state.tf, washTf);
   var pages=Math.max(1,Math.ceil(ranked.length/PAGE_SIZE));
   if(state.page>=pages) state.page=pages-1;
   if(state.page<0) state.page=0;
@@ -1152,7 +1191,9 @@ function renderBoard(){
   el.innerHTML=h;
   renderPager(ranked.length, pages);
   renderTopTape(ranked);
-  enrichTrust(rows);
+  // Trust lookups are network calls — never let them delay the paint.
+  if(window.requestIdleCallback) requestIdleCallback(function(){ enrichTrust(rows); }, {timeout:1200});
+  else setTimeout(function(){ enrichTrust(rows); }, 250);
   var pl=$("#pageLabel");
   if(pl){
     if(state.page===0){ pl.style.color="var(--gold)"; pl.textContent="🔥 TRENDING · TOP 50"; }
@@ -2085,16 +2126,43 @@ async function chargeFee(signer, feeEth, setBtn){
 // the judgement call a human makes instantly and a heuristic never will.
 var hidden = load("hs_hidden", {});
 function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
+function isHiddenAddr(a){ return !!hidden[String(a||"").toLowerCase()]; }
+// A pool with no liquidity left cannot be sold into — the position is gone in
+// every practical sense. Hide it automatically so a rug doesn't sit in the
+// portfolio forever, but record WHY, and keep it one tap from coming back.
+function autoHideRugged(rows){
+  var n=0;
+  (rows||[]).forEach(function(h){
+    var k=String(h.addr||"").toLowerCase();
+    if(!k || hidden[k]) return;
+    var row=(state.pools||[]).find(function(p){ return (p.baseToken||"").toLowerCase()===k; });
+    if(!row) return;                         // unknown token — never auto-hide
+    var liqGone = (row.liq||0) < 100;
+    var priceGone = !(row.price>0);
+    if(liqGone && priceGone){
+      hidden[k]={ sym:h.sym||row.sym||"", t:Date.now(), auto:true, why:"liquidity pool empty" };
+      n++;
+    }
+  });
+  if(n){
+    save("hs_hidden", hidden);
+    invalidateRanks();
+    toast(n+" rugged token"+(n>1?"s":"")+" hidden — undo in Wallets → hidden tokens", true);
+  }
+  return n;
+}
 function hideToken(addr, sym){
   var k=String(addr||"").toLowerCase(); if(!k) return;
   hidden[k]={ sym:sym||"", t:Date.now() };
   save("hs_hidden", hidden);
+  invalidateRanks();
   toast("$"+(sym||"token")+" hidden — undo in Wallets → hidden tokens");
   renderBoard();
 }
 function unhideToken(addr){
   delete hidden[String(addr||"").toLowerCase()];
   save("hs_hidden", hidden);
+  invalidateRanks();
   renderBoard(); renderWallets();
 }
 var trustCache={};
@@ -2192,16 +2260,43 @@ async function chargeFee(signer, feeEth, setBtn){
 // the judgement call a human makes instantly and a heuristic never will.
 var hidden = load("hs_hidden", {});
 function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
+function isHiddenAddr(a){ return !!hidden[String(a||"").toLowerCase()]; }
+// A pool with no liquidity left cannot be sold into — the position is gone in
+// every practical sense. Hide it automatically so a rug doesn't sit in the
+// portfolio forever, but record WHY, and keep it one tap from coming back.
+function autoHideRugged(rows){
+  var n=0;
+  (rows||[]).forEach(function(h){
+    var k=String(h.addr||"").toLowerCase();
+    if(!k || hidden[k]) return;
+    var row=(state.pools||[]).find(function(p){ return (p.baseToken||"").toLowerCase()===k; });
+    if(!row) return;                         // unknown token — never auto-hide
+    var liqGone = (row.liq||0) < 100;
+    var priceGone = !(row.price>0);
+    if(liqGone && priceGone){
+      hidden[k]={ sym:h.sym||row.sym||"", t:Date.now(), auto:true, why:"liquidity pool empty" };
+      n++;
+    }
+  });
+  if(n){
+    save("hs_hidden", hidden);
+    invalidateRanks();
+    toast(n+" rugged token"+(n>1?"s":"")+" hidden — undo in Wallets → hidden tokens", true);
+  }
+  return n;
+}
 function hideToken(addr, sym){
   var k=String(addr||"").toLowerCase(); if(!k) return;
   hidden[k]={ sym:sym||"", t:Date.now() };
   save("hs_hidden", hidden);
+  invalidateRanks();
   toast("$"+(sym||"token")+" hidden — undo in Wallets → hidden tokens");
   renderBoard();
 }
 function unhideToken(addr){
   delete hidden[String(addr||"").toLowerCase()];
   save("hs_hidden", hidden);
+  invalidateRanks();
   renderBoard(); renderWallets();
 }
 var trustCache={};
@@ -2663,8 +2758,9 @@ function hiddenListHtml(){
   return '<div class="card"><h3>🚫 Hidden tokens</h3>'
     +'<p class="hint">These never appear on your board. Hiding is per-device.</p>'
     +keys.map(function(k){
-      return '<div class="lrow"><div class="nm">$'+esc(hidden[k].sym||"?")
-        +'<div class="h">'+short(k)+'</div></div>'
+      var hh=hidden[k];
+      return '<div class="lrow"><div class="nm">$'+esc(hh.sym||"?")
+        +'<div class="h">'+short(k)+(hh.auto?' · <span style="color:var(--red)">auto-hidden: '+esc(hh.why||"rugged")+'</span>':' · hidden by you')+'</div></div>'
         +'<button class="obtn" data-action="unhide" data-addr="'+esc(k)+'">UNHIDE</button></div>';
     }).join("")
     +'</div>';
@@ -3141,6 +3237,8 @@ async function loadPortfolio(){
     Object.keys(boardPx).forEach(function(k){ if(boardPx[k]!=null) port.priceMap[k]=boardPx[k]; });
     var ethUsdTotal=((port.ethBal.connected||0)+(port.ethBal.burner||0))*state.ethUsd;
     port.totalUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0) + ethUsdTotal;
+    autoHideRugged(port.holdings);
+    port.holdings = port.holdings.filter(function(h){ return !isHiddenAddr(h.addr); });
     port.pnlUsd = tradePnl().pnl;
     try{ localStorage.setItem("hs_hold", JSON.stringify({t:Date.now(),rows:port.holdings,eth:port.ethBal})); }catch(e){}
     snapshotPv();
@@ -3205,6 +3303,181 @@ function priceForToken(addr){
   });
   return last;
 }
+function snapshotPv(){
+  var series=load("hs_pv",[]);
+  var last=series[series.length-1], now=Date.now();
+  if(!last || now-last.t>5*60e3 || Math.abs(port.totalUsd-last.v)>Math.max(1,last.v*0.01)){
+    series.push({t:now,v:+port.totalUsd.toFixed(2)});
+    if(series.length>400) series=series.slice(-400);
+    save("hs_pv",series);
+  }
+}
+// PORTFOLIO VALUE CHART
+//
+// Was a single smoothed line, which said almost nothing. Now the value history
+// is bucketed into OHLC candles so intraday swings are visible, with a range
+// selector and pinch/drag zoom. Rendered as inline SVG — no chart library, no
+// extra payload.
+var pvZoom = { span: null, offset: 0 };     // span = candles visible, null = all
+var PV_RANGES = [
+  { id:"1D",  ms: 24*3600e3,     bucket: 60*60e3 },
+  { id:"1W",  ms: 7*864e5,       bucket: 6*3600e3 },
+  { id:"1M",  ms: 30*864e5,      bucket: 24*3600e3 },
+  { id:"ALL", ms: null,          bucket: null }
+];
+var pvRange = load("hs_pvrange", "1W");
+
+function pvBuckets(series, bucketMs){
+  var out=[], cur=null;
+  for(var i=0;i<series.length;i++){
+    var pt=series[i];
+    var slot=Math.floor(pt.t/bucketMs)*bucketMs;
+    if(!cur || cur.t!==slot){
+      if(cur) out.push(cur);
+      cur={ t:slot, o:pt.v, h:pt.v, l:pt.v, c:pt.v };
+    }else{
+      cur.h=Math.max(cur.h,pt.v);
+      cur.l=Math.min(cur.l,pt.v);
+      cur.c=pt.v;
+    }
+  }
+  if(cur) out.push(cur);
+  return out;
+}
+
+function renderPvChart(){
+  var el=$("#pvChart"); if(!el) return;
+  var se=load("hs_pv",[]);
+  if(se.length<2){
+    el.innerHTML='<div class="empty" style="padding:24px">Value history builds as you use the portfolio — check back soon.</div>';
+    return;
+  }
+  var cfg=PV_RANGES.find(function(r){return r.id===pvRange}) || PV_RANGES[1];
+  var now=Date.now();
+  var win = cfg.ms ? se.filter(function(p){ return now-p.t <= cfg.ms; }) : se.slice();
+  if(win.length<2) win=se.slice(-Math.max(2,Math.min(se.length,40)));
+
+  // auto-size buckets when showing everything
+  var bucket = cfg.bucket;
+  if(!bucket){
+    var span=Math.max(1, win[win.length-1].t - win[0].t);
+    bucket=Math.max(60e3, Math.round(span/60));
+  }
+  var candles=pvBuckets(win, bucket);
+  if(candles.length<2){
+    // not enough spread to bucket — fall back to one candle per sample
+    candles=win.map(function(p){ return {t:p.t,o:p.v,h:p.v,l:p.v,c:p.v}; });
+  }
+
+  // zoom: keep the most recent N candles
+  if(pvZoom.span && pvZoom.span < candles.length){
+    var endIdx=Math.max(pvZoom.span, candles.length - pvZoom.offset);
+    candles=candles.slice(Math.max(0,endIdx-pvZoom.span), endIdx);
+  }
+
+  var W=640, H=190, PADL=6, PADR=52, PADT=10, PADB=18;
+  var lo=Infinity, hi=-Infinity;
+  candles.forEach(function(c){ lo=Math.min(lo,c.l); hi=Math.max(hi,c.h); });
+  if(!(hi>lo)) { hi=lo+Math.max(1, Math.abs(lo)*0.02); }
+  var pad=(hi-lo)*0.12; lo-=pad; hi+=pad;
+  var iw=W-PADL-PADR, ih=H-PADT-PADB;
+  var y=function(v){ return PADT + ih*(1-(v-lo)/(hi-lo)); };
+  var cw=Math.max(1.5, Math.min(16, iw/candles.length*0.66));
+  var step=iw/candles.length;
+
+  var first=candles[0].o, last=candles[candles.length-1].c;
+  var netUp = last>=first;
+
+  var body="", grid="";
+  // horizontal guides + right-side labels
+  for(var g=0; g<=3; g++){
+    var gv=lo+(hi-lo)*(g/3), gy=y(gv);
+    grid+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".5"/>'
+       +'<text x="'+(W-PADR+6)+'" y="'+(gy+3.5).toFixed(1)+'" fill="var(--mute)" font-size="10" font-family="var(--mono)">$'+fmtUsdShort(gv)+'</text>';
+  }
+  candles.forEach(function(c,i){
+    var cx=PADL + step*i + step/2;
+    var up=c.c>=c.o;
+    var col=up? "var(--green)" : "var(--red)";
+    var yo=y(c.o), yc=y(c.c), yh=y(c.h), yl=y(c.l);
+    var top=Math.min(yo,yc), hgt=Math.max(1.5, Math.abs(yc-yo));
+    body+='<line x1="'+cx.toFixed(1)+'" y1="'+yh.toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+yl.toFixed(1)+'" stroke="'+col+'" stroke-width="1.2"/>'
+       +'<rect x="'+(cx-cw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+hgt.toFixed(1)+'" fill="'+col+'" rx="1"/>';
+  });
+  // last-price marker
+  var ly=y(last);
+  body+='<line x1="'+PADL+'" y1="'+ly.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+ly.toFixed(1)+'" stroke="'+(netUp?"var(--green)":"var(--red)")+'" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>';
+
+  var chg = first!==0 ? ((last-first)/Math.abs(first))*100 : 0;
+  el.innerHTML=
+    '<div class="pvhead">'
+      +'<div><b>$'+last.toLocaleString(undefined,{maximumFractionDigits:2})+'</b>'
+      +'<span class="'+(netUp?"up":"dn")+'">'+(netUp?"▲":"▼")+' '+Math.abs(chg).toFixed(2)+'%</span></div>'
+      +'<div class="pvrng">'+PV_RANGES.map(function(r){
+          return '<button data-action="pvrange" data-r="'+r.id+'"'+(r.id===pvRange?' class="on"':'')+'>'+r.id+'</button>';
+        }).join("")+'</div>'
+    +'</div>'
+    +'<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="width:100%;height:190px;touch-action:none">'
+      +grid+body
+    +'</svg>'
+    +'<div class="pvfoot"><span>'+candles.length+' candles · '+bucketLabel(bucket)+'</span>'
+      +'<span>'+(pvZoom.span?'<button data-action="pvreset">RESET ZOOM</button>':'pinch or scroll to zoom')+'</span></div>';
+
+  bindPvZoom(candles.length);
+}
+function bucketLabel(ms){
+  if(ms>=864e5) return Math.round(ms/864e5)+"d candles";
+  if(ms>=3600e3) return Math.round(ms/3600e3)+"h candles";
+  return Math.round(ms/60e3)+"m candles";
+}
+function fmtUsdShort(v){
+  var a=Math.abs(v);
+  if(a>=1e6) return (v/1e6).toFixed(2)+"M";
+  if(a>=1e3) return (v/1e3).toFixed(1)+"k";
+  return v.toFixed(a<10?2:0);
+}
+// Pinch on touch, wheel on desktop, drag to pan.
+function bindPvZoom(total){
+  var svg=$("#pvSvg"); if(!svg) return;
+  var pointers={}, startDist=0, startSpan=0, dragX=null, startOffset=0;
+  function span(){ return pvZoom.span || total; }
+  function apply(newSpan, newOffset){
+    pvZoom.span=Math.max(5, Math.min(total, Math.round(newSpan)));
+    if(pvZoom.span>=total) pvZoom.span=null;
+    pvZoom.offset=Math.max(0, Math.min(total-(pvZoom.span||total), Math.round(newOffset||0)));
+    renderPvChart();
+  }
+  svg.addEventListener("wheel", function(e){
+    e.preventDefault();
+    apply(span()*(e.deltaY>0?1.2:0.83), pvZoom.offset);
+  }, {passive:false});
+  svg.addEventListener("pointerdown", function(e){
+    pointers[e.pointerId]={x:e.clientX};
+    svg.setPointerCapture(e.pointerId);
+    var ids=Object.keys(pointers);
+    if(ids.length===2){
+      startDist=Math.abs(pointers[ids[0]].x-pointers[ids[1]].x)||1;
+      startSpan=span();
+    }else{ dragX=e.clientX; startOffset=pvZoom.offset; }
+  });
+  svg.addEventListener("pointermove", function(e){
+    if(!pointers[e.pointerId]) return;
+    pointers[e.pointerId].x=e.clientX;
+    var ids=Object.keys(pointers);
+    if(ids.length===2 && startDist){
+      var d=Math.abs(pointers[ids[0]].x-pointers[ids[1]].x)||1;
+      apply(startSpan*(startDist/d), pvZoom.offset);
+    }else if(dragX!=null && pvZoom.span){
+      var dx=e.clientX-dragX;
+      var perCandle=svg.clientWidth/Math.max(1,pvZoom.span);
+      apply(pvZoom.span, startOffset + dx/perCandle);
+    }
+  });
+  ["pointerup","pointercancel","pointerleave"].forEach(function(ev){
+    svg.addEventListener(ev, function(e){ delete pointers[e.pointerId]; startDist=0; dragX=null; });
+  });
+}
+
 function snapshotPv(){
   var series=load("hs_pv",[]);
   var last=series[series.length-1], now=Date.now();
@@ -3302,7 +3575,8 @@ function renderPortfolio(){
         +'<img class="timg" alt="" data-sym="'+esc(x.sym)+'" src="'+(x.img?esc(x.img):letterAvatar(x.sym))+'">'
         +'<div class="nm">$'+esc(x.sym)+'<div class="h">'+x.bal.toLocaleString(undefined,{maximumFractionDigits:4})+(x.price?' · $'+fmtP(x.price):'')+' · tap for chart</div></div>'
         +'<div class="pnl">'+(x.valUsd!=null?"$"+x.valUsd.toFixed(2):"—")+'</div>'
-        +'<button class="loose" data-action="loose" data-h="'+gi+'">LOOSE</button></div>';
+        +'<button class="loose" data-action="loose" data-h="'+gi+'">LOOSE</button>'
+        +'<button class="hidehold" data-action="hide-holding" data-addr="'+esc(h.addr)+'" data-sym="'+esc(h.sym)+'" title="Hide this token from your portfolio">🚫</button></div>';
     });
   });
   hb.innerHTML=h || '<div class="empty">No holdings found yet — fire a snipe first.</div>';
@@ -3725,6 +3999,13 @@ document.addEventListener("click", function(e){
       var b=$("#board"); if(b) b.scrollIntoView({behavior:"smooth",block:"start"});
     }
   else if(a==="foot-tab"){ e.preventDefault(); showTab(el.getAttribute("data-tab")); window.scrollTo({top:0,behavior:"smooth"}); }
+  else if(a==="pvrange"){ pvRange=el.getAttribute("data-r"); save("hs_pvrange",pvRange); pvZoom={span:null,offset:0}; renderPvChart(); }
+  else if(a==="pvreset"){ pvZoom={span:null,offset:0}; renderPvChart(); }
+  else if(a==="hide-holding"){
+      e.stopPropagation();
+      hideToken(el.getAttribute("data-addr"), el.getAttribute("data-sym"));
+      renderPortfolio();
+    }
   else if(a==="port-refresh") loadPortfolio();
   else if(a==="port-open"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
   else if(a==="hide-token"){ e.stopPropagation(); hideToken(el.getAttribute("data-addr"), el.getAttribute("data-sym")); closeModal(); }
@@ -3780,7 +4061,7 @@ $("#tfpills").addEventListener("click",function(e){
   state.tf=b.getAttribute("data-tf");
   save("hs_tf", state.tf);
   state.page=0;
-  renderBoard();
+  renderBoard();                       // synchronous, from cache where possible
   if(state.tf==="d30") ensure30d();
 });
 
