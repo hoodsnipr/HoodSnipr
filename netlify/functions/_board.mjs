@@ -8,6 +8,7 @@ import { store as _store } from "./_store.mjs";
 import { fetchUniverse, refreshKnown, dsSlug } from "./_feeds.mjs";
 import { ponsMap } from "./_pons.mjs";
 import { isDenied, normSym } from "./_denylist.mjs";
+import { getBans } from "./banlist.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
@@ -257,7 +258,7 @@ export function credibility(t, holders) {
 }
 
 export const hiddenLog = [];
-export function buildBoard(tokens, holders, blocked) {
+export function buildBoard(tokens, holders, blocked, bans) {
   hiddenLog.length = 0;
   const byTicker = {};
   for (const addr of Object.keys(tokens)) {
@@ -268,6 +269,8 @@ export function buildBoard(tokens, holders, blocked) {
 
     // manual override — human judgement beats any heuristic
     if (isDenied(addr, t.s)) continue;
+    // owner-signed bans: absolute, no evidence test, no exemption
+    if (bans && bans[addr]) continue;
 
     // Cached DANGER verdicts from the deeper on-chain analysis — but only when
     // the token has no independent evidence of being real.
@@ -390,7 +393,8 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
     }
   } catch (e) {}
 
-  const rows = buildBoard(known.t, holders, blocked);
+  const bans = await getBans().catch(() => ({}));
+  const rows = buildBoard(known.t, holders, blocked, bans);
   let vol24 = 0, liq = 0;
   for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
 
@@ -402,6 +406,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       vol24, liq,
       washFiltered: rows.filter(r => r.wash).length,
       blockedByScore: Object.keys(blocked).length,
+      bannedTokens: Object.keys(bans || {}).length,
       hiddenSample: hiddenLog.slice(0, 25),
       hiddenCount: hiddenLog.length,
       ponsTokens: ponsTagged,
