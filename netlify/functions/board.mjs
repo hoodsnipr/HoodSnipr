@@ -3,6 +3,7 @@
 // other user without invoking this function, so 1 user and 100,000 cost the same.
 import { store as _store } from "./_store.mjs";
 import { rebuild } from "./_board.mjs";
+import { getBans } from "./banlist.mjs";
 
 export default async () => {
   const store = await _store("hoodsnipr-cache");
@@ -12,7 +13,14 @@ export default async () => {
   if (!board || !board.rows || !board.rows.length) {
     board = await rebuild({}).catch(() => null);
   }
-  const body = board && board.rows ? board : { ts: Date.now(), rows: [], stats: { warming: true } };
+  let body = board && board.rows ? board : { ts: Date.now(), rows: [], stats: { warming: true } };
+  // Owner bans apply even to a payload that was already built and cached.
+  try {
+    const _bans = await getBans();
+    if (_bans && Object.keys(_bans).length && body && body.rows) {
+      body = { ...body, rows: body.rows.filter(r => !_bans[String(r.a).toLowerCase()]) };
+    }
+  } catch (e) {}
   return new Response(JSON.stringify(body), {
     headers: {
       "content-type": "application/json",

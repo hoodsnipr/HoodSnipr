@@ -86,6 +86,9 @@ export default async (req) => {
       }
     } catch (e) {}
 
+    // bump a version stamp so the board endpoint knows its cache is stale
+    await store.setJSON("bansVersion", { v: Date.now() }).catch(() => {});
+
     return json(200, { ok: true, action, token, by: signer, total: Object.keys(bans).length });
   } catch (e) {
     return json(500, { error: String(e && e.message || e).slice(0, 160) });
