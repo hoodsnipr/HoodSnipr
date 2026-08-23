@@ -339,6 +339,7 @@ canvas.share{display:none}
 
   <!-- ============ WALLETS ============ -->
   <div id="v-wallet" style="display:none">
+    <div id="hiddenBox"></div>
     <div class="card">
       <h3>🔗 Connected wallet</h3>
       <div id="cwBox"><p class="hint">Connect MetaMask / Rabby / any EVM wallet. HoodSnipr adds Robinhood Chain (4663) automatically.</p>
@@ -1109,6 +1110,7 @@ function renderBoard(){
   // those would defeat the point of a sniper — so those views stay unfiltered.
   var washTf = (state.tf==="h24" || state.tf==="d30");
   var ranked=state.pools.slice().filter(function(p){
+    if(isHidden(p)) return false;
     if(washTf && p.wash) return false;
     if(state.tf==="d30") return true;
     return volFor(p)>0 || (p.liq||0)>=1000;   // hide dead rows from timeframe views
@@ -1141,7 +1143,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+ponsBadge(p)+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -1297,7 +1299,8 @@ function openToken(poolAddr){
    +'<div id="ponsBox"></div>'
    +'<div id="trustBox"></div>'
    +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
-   +(p.baseToken?'<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;align-items:center">'
+   +(p.baseToken?'<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap">'
+     +'<button data-action="hide-token" data-addr="'+esc(p.baseToken)+'" data-sym="'+esc(p.sym)+'" style="color:var(--mute);border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:10px;padding:4px 9px">🚫 HIDE</button>'
      +'<span style="font-family:var(--mono);font-size:11px;color:var(--mute)">CA '+short(p.baseToken)+'</span>'
      +'<button data-action="copy-ca" data-addr="'+esc(p.baseToken)+'" style="color:var(--green);border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:10px;padding:4px 9px;letter-spacing:.06em">📋 COPY CA</button>'
      +'<a data-action="ext" href="'+CFG.CHAIN.blockExplorerUrls[0]+'/token/'+esc(p.baseToken)+'" target="_blank" rel="noopener" style="font-family:var(--mono);font-size:10px;color:var(--mute);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:4px 9px">SCAN ↗</a>'
@@ -2078,6 +2081,22 @@ async function chargeFee(signer, feeEth, setBtn){
 // Scores contract behaviour and trade authenticity, never age. A ten-minute-old
 // token with real buyers reads CLEAN; a token with huge volume across four
 // wallets reads DANGER.
+// Personal hide list. Server-side filtering catches the patterns; this covers
+// the judgement call a human makes instantly and a heuristic never will.
+var hidden = load("hs_hidden", {});
+function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
+function hideToken(addr, sym){
+  var k=String(addr||"").toLowerCase(); if(!k) return;
+  hidden[k]={ sym:sym||"", t:Date.now() };
+  save("hs_hidden", hidden);
+  toast("$"+(sym||"token")+" hidden — undo in Wallets → hidden tokens");
+  renderBoard();
+}
+function unhideToken(addr){
+  delete hidden[String(addr||"").toLowerCase()];
+  save("hs_hidden", hidden);
+  renderBoard(); renderWallets();
+}
 var trustCache={};
 async function trustFor(token, pool){
   var k=String(token||"").toLowerCase();
@@ -2169,6 +2188,22 @@ async function chargeFee(signer, feeEth, setBtn){
 // Scores contract behaviour and trade authenticity, never age. A ten-minute-old
 // token with real buyers reads CLEAN; a token with huge volume across four
 // wallets reads DANGER.
+// Personal hide list. Server-side filtering catches the patterns; this covers
+// the judgement call a human makes instantly and a heuristic never will.
+var hidden = load("hs_hidden", {});
+function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
+function hideToken(addr, sym){
+  var k=String(addr||"").toLowerCase(); if(!k) return;
+  hidden[k]={ sym:sym||"", t:Date.now() };
+  save("hs_hidden", hidden);
+  toast("$"+(sym||"token")+" hidden — undo in Wallets → hidden tokens");
+  renderBoard();
+}
+function unhideToken(addr){
+  delete hidden[String(addr||"").toLowerCase()];
+  save("hs_hidden", hidden);
+  renderBoard(); renderWallets();
+}
 var trustCache={};
 async function trustFor(token, pool){
   var k=String(token||"").toLowerCase();
@@ -2622,7 +2657,20 @@ async function ensureChain(){
   if(parseInt(cid,16)!==CFG.CHAIN.chainId)
     throw new Error("Wallet is on the wrong network — switch to Robinhood Chain (4663)");
 }
+function hiddenListHtml(){
+  var keys=Object.keys(hidden);
+  if(!keys.length) return "";
+  return '<div class="card"><h3>🚫 Hidden tokens</h3>'
+    +'<p class="hint">These never appear on your board. Hiding is per-device.</p>'
+    +keys.map(function(k){
+      return '<div class="lrow"><div class="nm">$'+esc(hidden[k].sym||"?")
+        +'<div class="h">'+short(k)+'</div></div>'
+        +'<button class="obtn" data-action="unhide" data-addr="'+esc(k)+'">UNHIDE</button></div>';
+    }).join("")
+    +'</div>';
+}
 function renderWallets(){
+  var hb=$("#hiddenBox"); if(hb) hb.innerHTML=hiddenListHtml();
   var cw=$("#cwBox");
   if(state.wallet){
     cw.innerHTML='<div class="addr">'+esc(state.wallet)+'</div>'
@@ -3679,6 +3727,8 @@ document.addEventListener("click", function(e){
   else if(a==="foot-tab"){ e.preventDefault(); showTab(el.getAttribute("data-tab")); window.scrollTo({top:0,behavior:"smooth"}); }
   else if(a==="port-refresh") loadPortfolio();
   else if(a==="port-open"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
+  else if(a==="hide-token"){ e.stopPropagation(); hideToken(el.getAttribute("data-addr"), el.getAttribute("data-sym")); closeModal(); }
+  else if(a==="unhide"){ unhideToken(el.getAttribute("data-addr")); }
   else if(a==="copy-ca"){ navigator.clipboard.writeText(el.getAttribute("data-addr")).then(function(){ toast("Contract address copied 📋"); }).catch(function(){ prompt("Contract address:", el.getAttribute("data-addr")); }); }
   else if(a==="loose"){ e.stopPropagation(); openLoose(parseInt(el.getAttribute("data-h"),10)); }
   else if(a==="loose-fire") fireLoose();
