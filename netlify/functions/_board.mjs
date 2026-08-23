@@ -413,8 +413,31 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
     }
     out30 = { attached: have, total: rows.length };
   } catch (e) {}
+  // CHAIN TOTALS
+  //
+  // The headline liquidity figure was reading in the trillions, which no chain
+  // this size can support. A single token with a corrupt reserve figure — GT
+  // occasionally reports reserve_in_usd against a broken price — is enough to
+  // dominate a naive sum. So outliers are excluded from the aggregate and
+  // reported instead of silently distorting the number.
+  const MAX_TOKEN_LIQ = 5e7;      // $50M in one token's pools
+  const MAX_TOKEN_VOL = 5e8;      // $500M in 24h for one token
   let vol24 = 0, liq = 0;
-  for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
+  const dropped = [];
+  for (const r of rows) {
+    const l = +r.liq || 0, v = +r.h24 || 0;
+    if (l > MAX_TOKEN_LIQ || v > MAX_TOKEN_VOL) {
+      dropped.push({ s: r.s, a: r.a, liq: Math.round(l), vol: Math.round(v) });
+      continue;
+    }
+    if (Number.isFinite(l)) liq += l;
+    if (Number.isFinite(v)) vol24 += v;
+  }
+  // the biggest honest contributors, so the total can be sanity-checked
+  const topLiq = rows.slice()
+    .filter(r => (+r.liq || 0) <= MAX_TOKEN_LIQ)
+    .sort((a, b) => (b.liq || 0) - (a.liq || 0)).slice(0, 5)
+    .map(r => ({ s: r.s, liq: Math.round(r.liq || 0) }));
 
   const payload = {
     ts: Date.now(), v: 6, rows: rows.slice(0, 2000),
@@ -422,6 +445,9 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       tokensTradeable: rows.length,
       universeTokens: Object.keys(known.t).length,
       vol24, liq,
+      liqOutliers: dropped.slice(0, 10),
+      liqOutlierCount: dropped.length,
+      topLiquidity: topLiq,
       washFiltered: rows.filter(r => r.wash).length,
       blockedByScore: Object.keys(blocked).length,
       bannedTokens: Object.keys(bans || {}).length,

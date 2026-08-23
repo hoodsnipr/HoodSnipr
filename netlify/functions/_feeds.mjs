@@ -86,8 +86,18 @@ export function parseGT(page, out) {
 // Pools are keyed by ADDRESS, so the same pool seen from both GeckoTerminal and
 // DexScreener is stored once — no double counting. The last writer wins per
 // pool, which is fine: both sources describe the same market.
+// A single pool holding more than $25M on this chain is not credible and is
+// almost always a bad reserve figure from the feed. Reject it at the door
+// rather than letting it poison token totals and the chain-wide stat.
+const MAX_POOL_LIQ = 2.5e7;
 export function addPool(out, tokenAddr, poolAddr, data) {
   if (!poolAddr) return;
+  if (!Number.isFinite(+data.liq) || +data.liq < 0) data.liq = 0;
+  if (+data.liq > MAX_POOL_LIQ) data.liq = 0;        // keep volume, drop the bad reserve
+  for (const k of ["m5","h1","h6","h24"]) {
+    const v = +data[k];
+    data[k] = (Number.isFinite(v) && v >= 0) ? v : 0;
+  }
   const t = out[tokenAddr] || (out[tokenAddr] = { a: tokenAddr });
   if (!t.pools) t.pools = {};
   t.pools[String(poolAddr).toLowerCase()] = data;

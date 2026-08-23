@@ -31,7 +31,7 @@ async function poolVol30(pool) {
   return sum > 0 ? sum : 0;
 }
 
-export async function fillVol30(rows, { budgetMs = 5000, max = 12 } = {}) {
+export async function fillVol30(rows, { budgetMs = 5000, max = 25 } = {}) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
   const cache = (await store.get("vol30", { type: "json" }).catch(() => null)) || {};
@@ -49,16 +49,27 @@ export async function fillVol30(rows, { budgetMs = 5000, max = 12 } = {}) {
     .filter(x => x.age > TTL)
     .sort((a, b) => (b.h24 || 0) - (a.h24 || 0));
 
+  // Small concurrent batches. Serial fetching managed roughly a dozen pools a
+  // run, which left most of the board without a 30D figure for hours.
   let filled = 0, rateLimited = false;
-  for (const c of candidates) {
-    if (filled >= max || Date.now() - t0 > budgetMs - 600) break;
-    try {
-      const v = await poolVol30(c.k);
-      cache[c.k] = { v: v == null ? 0 : v, t: now };
-      filled++;
-    } catch (e) {
-      if (String(e.message) === "rate") { rateLimited = true; break; }
-      cache[c.k] = { v: 0, t: now };          // don't retry a dead pool immediately
+  for (let i = 0; i < candidates.length && filled < max; i += 5) {
+    if (Date.now() - t0 > budgetMs - 700 || rateLimited) break;
+    const batch = candidates.slice(i, i + 5);
+    const results = await Promise.all(batch.map(async c => {
+      try { return { k: c.k, v: await poolVol30(c.k) }; }
+      catch (e) { return { k: c.k, err: String(e.message) }; }
+    }));
+    for (const r of results) {
+      if (r.err) {
+        if (r.err === "rate") { rateLimited = true; continue; }
+        // Caching a FAILED fetch as 0 is how tokens showed $0 for a full 12
+        // hours. Store null with a short backoff so nothing reads it as real.
+        cache[r.k] = { v: null, t: now - (TTL - 10 * 60e3), failed: true };
+      } else {
+        // No OHLCV history genuinely means no 30-day volume; that zero is real.
+        cache[r.k] = { v: r.v == null ? 0 : r.v, t: now };
+        filled++;
+      }
     }
   }
 
@@ -79,6 +90,7 @@ export async function vol30Map() {
   const store = await _store("hoodsnipr-cache");
   const c = (await store.get("vol30", { type: "json" }).catch(() => null)) || {};
   const out = {};
-  for (const k of Object.keys(c)) out[k] = c[k].v || 0;
+  // null means "not measured yet" and must never surface as 0.
+  for (const k of Object.keys(c)) if (c[k] && c[k].v != null) out[k] = c[k].v;
   return out;
 }
