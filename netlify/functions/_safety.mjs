@@ -141,71 +141,87 @@ export async function analyseActivity(token, pool, { blocks = 120000, budgetMs =
 
 // Turn signals into a score. Deductions only — a token starts trusted and loses
 // points for OBSERVED manipulation, so being new is never itself a penalty.
+// SCORING — corroboration required.
+//
+// v1 deducted points for each signal independently, so two soft signals that
+// are perfectly normal on a quiet chain (a high share of non-swap transfers,
+// a modest trader count) added up to a WATCH on honest tokens. Non-swap
+// transfers are ordinary: wallet-to-wallet sends, airdrops, LP moves, CEX
+// deposits. A low trader count just means the chain is young.
+//
+// So no single behavioural signal can lower the score now. The exploit we care
+// about produces SEVERAL signals at once — forced cycling AND concentration AND
+// volume that no holder base supports. Only that combination is actionable, and
+// there is no WATCH tier: a token is either fine, or there is real evidence.
 export function scoreToken({ activity, goplus, liq, vol24, holders }) {
-  const flags = [];
+  const flags = [], notes = [];
   let score = 100;
   let confidence = "high";
 
-  if (!activity || !activity.ok || activity.swapCount < 5) {
-    confidence = "low";                    // not enough history to judge
+  // --- hard contract facts. These stand alone: they are not inferences. ---
+  let hardFail = false;
+  if (goplus && goplus.available) {
+    if (goplus.honeypot)   { score -= 70; hardFail = true; flags.push({ id:"honeypot", sev:"high", msg:"contract is flagged as a honeypot — buyers cannot sell" }); }
+    if (goplus.cannotSell) { score -= 60; hardFail = true; flags.push({ id:"cannot-sell", sev:"high", msg:"holders may be unable to sell" }); }
+    if (goplus.sellTax > 25) { score -= 40; hardFail = true; flags.push({ id:"sell-tax", sev:"high", msg:`${goplus.sellTax}% sell tax` }); }
+    else if (goplus.sellTax > 10) { notes.push(`${goplus.sellTax}% sell tax`); }
+    if (goplus.blacklist) notes.push("contract can blacklist addresses");
+    if (goplus.mintable)  notes.push("supply can still be minted");
+  }
+
+  // --- behavioural signals: counted, not immediately punished ---
+  const sig = [];
+  if (!activity || !activity.ok || activity.swapCount < 25) {
+    confidence = "low";                       // not enough history to judge
   } else {
     const a = activity;
 
-    // 1. forced transfers — the FOMO exploit's fingerprint
-    if (a.forcedRatio != null && a.forcedRatio > 0.85 && a.transferCount > 30) {
-      score -= 40; flags.push({ id: "forced-transfers", sev: "high",
-        msg: "most token movements happen outside real swaps — possible forced transfers" });
-    } else if (a.forcedRatio != null && a.forcedRatio > 0.65 && a.transferCount > 30) {
-      score -= 18; flags.push({ id: "transfer-noise", sev: "med",
-        msg: "unusually high transfer activity relative to trades" });
+    // Cycling is the real fingerprint of the force-send exploit: the SAME
+    // wallets receiving and returning tokens over and over.
+    if (a.cyclerRatio > 0.55 && a.transferCount > 60) {
+      sig.push({ id:"round-tripping", w:35,
+        msg:"the same wallets receive and return tokens repeatedly — wash-trade pattern" });
     }
-
-    // 2. addresses cycling tokens in and out repeatedly
-    if (a.cyclerRatio > 0.4 && a.transferCount > 20) {
-      score -= 25; flags.push({ id: "round-tripping", sev: "high",
-        msg: "the same wallets receive and return tokens repeatedly — wash-trade pattern" });
+    // Non-swap transfers only matter when they dwarf trading entirely.
+    if (a.forcedRatio != null && a.forcedRatio > 0.92 && a.transferCount > 100 && a.swapCount > 30) {
+      sig.push({ id:"forced-transfers", w:30,
+        msg:"almost all token movement happens outside real trades" });
     }
-
-    // 3. volume concentrated in very few hands
-    if (a.uniqueTraders <= 3 && a.swapCount >= 15) {
-      score -= 30; flags.push({ id: "few-traders", sev: "high",
-        msg: `only ${a.uniqueTraders} distinct trader(s) behind ${a.swapCount} swaps` });
-    } else if (a.uniqueTraders <= 8 && a.swapCount >= 30) {
-      score -= 15; flags.push({ id: "thin-participation", sev: "med",
-        msg: `${a.uniqueTraders} distinct traders across ${a.swapCount} swaps` });
+    // A genuinely tiny trader set behind heavy trading.
+    if (a.uniqueTraders <= 3 && a.swapCount >= 40) {
+      sig.push({ id:"few-traders", w:30,
+        msg:`only ${a.uniqueTraders} distinct trader(s) behind ${a.swapCount} swaps` });
     }
-
-    // 4. one address dominating
-    if (a.topTraderShare > 0.8 && a.swapCount >= 10) {
-      score -= 20; flags.push({ id: "single-actor", sev: "high",
-        msg: `${Math.round(a.topTraderShare * 100)}% of swaps come from one address` });
+    if (a.topTraderShare > 0.9 && a.swapCount >= 30) {
+      sig.push({ id:"single-actor", w:25,
+        msg:`${Math.round(a.topTraderShare * 100)}% of swaps come from one address` });
     }
   }
 
-  // 5. external security data, when the chain is actually covered
-  if (goplus && goplus.available) {
-    if (goplus.honeypot)   { score -= 60; flags.push({ id:"honeypot", sev:"high", msg:"flagged as a honeypot" }); }
-    if (goplus.cannotSell) { score -= 50; flags.push({ id:"cannot-sell", sev:"high", msg:"holders may be unable to sell" }); }
-    if (goplus.blacklist)  { score -= 25; flags.push({ id:"blacklist", sev:"med",  msg:"contract can blacklist addresses" }); }
-    if (goplus.mintable)   { score -= 15; flags.push({ id:"mintable", sev:"med",   msg:"supply can still be minted" }); }
-    if (goplus.sellTax > 15) { score -= 20; flags.push({ id:"sell-tax", sev:"med", msg:`${goplus.sellTax}% sell tax` }); }
-  }
-
-  // 6. economic sanity — heavy volume on almost no liquidity isn't real trading
-  if (liq > 0 && vol24 > 0 && vol24 / liq > 200) {
-    score -= 20; flags.push({ id:"vol-liq-mismatch", sev:"med",
-      msg:"24h volume is enormous relative to pool depth" });
-  }
-  if (holders != null && holders < 25 && vol24 > 100000) {
-    score -= 20; flags.push({ id:"volume-without-holders", sev:"high",
+  // Economic impossibility — heavy volume with no holders and no depth.
+  if (holders != null && holders < 15 && vol24 > 250000) {
+    sig.push({ id:"volume-without-holders", w:30,
       msg:`$${Math.round(vol24/1000)}k volume across only ${holders} holders` });
+  }
+  if (liq > 0 && vol24 > 0 && vol24 / liq > 500) {
+    sig.push({ id:"vol-liq-mismatch", w:20,
+      msg:"24h volume is impossibly large relative to pool depth" });
+  }
+
+  // CORROBORATION RULE: one signal is a note, not a verdict. Two or more
+  // pointing the same way is evidence.
+  if (sig.length >= 2) {
+    for (const x of sig) { score -= x.w; flags.push({ id:x.id, sev:"high", msg:x.msg }); }
+  } else if (sig.length === 1) {
+    notes.push(sig[0].msg);
   }
 
   score = Math.max(0, Math.min(100, score));
-  const label = confidence === "low" ? "UNPROVEN"
-    : score >= 80 ? "CLEAN"
-    : score >= 55 ? "WATCH"
-    : score >= 30 ? "RISKY" : "DANGER";
 
-  return { score, label, confidence, flags };
+  // No WATCH tier. Either there's evidence, or there isn't.
+  const label = (hardFail || score < 35) ? "DANGER"
+    : score < 70 ? "RISKY"
+    : confidence === "low" ? "UNPROVEN" : "CLEAN";
+
+  return { score, label, confidence, flags, notes };
 }

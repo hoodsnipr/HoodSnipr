@@ -83,11 +83,30 @@ function depthFactor(liq) {
   const l = Math.max(0, +liq || 0);
   return clamp(Math.log10(l + 100) / 5.5, 0.15, 1.2);   // ~$316k -> 1.0
 }
+// A paid boost or a completed profile costs money and takes effort. Neither
+// proves a token is good, but both are things wash-trade bots almost never do,
+// so they earn a modest lift — never enough to outrank genuine volume.
+function promoFactor(t) {
+  let f = 1;
+  if (t.boosts > 0) f *= Math.min(1.35, 1 + Math.log10(1 + t.boosts) * 0.25);
+  if (t.hasProfile) f *= 1.05;
+  return f;
+}
+// Trade COUNT matters as well as size: many small trades from many wallets is a
+// healthier signal than one enormous print.
+function txFactor(t, tf) {
+  const x = t.txns && t.txns[tf];
+  if (!x) return 1;
+  const total = (x.b || 0) + (x.s || 0);
+  if (total <= 0) return 0.85;
+  return Math.min(1.3, 0.85 + Math.log10(1 + total) * 0.18);
+}
 export function trendScore(t, tf) {
   const vol = +t[tf] || 0;
   if (vol <= 0) return 0;
   // sqrt keeps a whale trade from dominating outright
-  return Math.sqrt(vol) * accelFactor(t, tf) * buyFactor(t, tf) * depthFactor(t.liq);
+  return Math.sqrt(vol) * accelFactor(t, tf) * buyFactor(t, tf)
+       * depthFactor(t.liq) * txFactor(t, tf) * promoFactor(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +199,7 @@ export function buildBoard(tokens, holders) {
     m5: t.m5 || 0, h1: t.h1 || 0, h6: t.h6 || 0, h24: t.h24 || 0,
     cm5: t.cm5 || 0, c1: t.c1 || 0, c6: t.c6 || 0, c24: t.c24 || 0,
     site: t.site || null, tw: t.tw || null, tg: t.tg || null,
+    boosts: t.boosts || 0, hasProfile: !!t.hasProfile,
     cr: t.cr || null, ver: t.ver || "v3", dex: t.dex || "", src: t.src || ""
   }));
   for (const r of rows) r.wash = washSuspect(r);

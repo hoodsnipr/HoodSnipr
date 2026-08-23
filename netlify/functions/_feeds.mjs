@@ -102,6 +102,11 @@ export function parseDS(pairs, out, slug) {
       tw: (p.info?.socials || []).find(x => x.type === "twitter")?.url || prev?.tw || null,
       tg: (p.info?.socials || []).find(x => x.type === "telegram")?.url || prev?.tg || null,
       cr: p.pairCreatedAt || prev?.cr || null,
+      // DexScreener exposes no trending-pairs endpoint, but `boosts.active` is
+      // on the pair — paid promotion is a real component of what surfaces on
+      // their board, and it costs money, which fake tokens rarely spend.
+      boosts: +(p.boosts && p.boosts.active) || 0,
+      hasProfile: !!(p.info && (p.info.imageUrl || (p.info.socials || []).length)),
       ver: labels.find(l => /^v\d/i.test(l))?.toLowerCase() || "v3",
       dex: p.dexId || "",
       src: "ds", t: Date.now()
