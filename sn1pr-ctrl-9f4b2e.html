@@ -72,12 +72,13 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
 <script>
 (function(){
   var API="/.netlify/functions";
   var $=function(s){return document.querySelector(s)};
   var signer=null, addr=null;
+  var OWNER="0xae06E1ae756E7E9C2C1Ffe6aF236e4F3E6c19d67";
 
   function say(t, bad){
     var m=$("#msg");
@@ -88,18 +89,54 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
     return ["HoodSnipr admin action","action: "+action,"token: "+token.toLowerCase(),"timestamp: "+ts].join("\n");
   }
 
-  $("#connect").addEventListener("click", async function(){
-    if(!window.ethereum){ say("No wallet found in this browser.", true); return; }
+  function pickProvider(){
+    var eth=window.ethereum;
+    if(!eth) return null;
+    // Several extensions inject into the same slot; prefer one that can sign.
+    if(eth.providers && eth.providers.length){
+      return eth.providers.find(function(p){ return p.isMetaMask; }) || eth.providers[0];
+    }
+    return eth;
+  }
+  async function doConnect(){
+    if(typeof ethers==="undefined"){
+      say("ethers.js didn't load — check the network or an ad blocker, then refresh.", true);
+      return;
+    }
+    var eth=pickProvider();
+    if(!eth){
+      say("No injected wallet found.\nOn mobile, open this page inside your wallet's browser (MetaMask → Browser).", true);
+      return;
+    }
     try{
-      var prov=new ethers.BrowserProvider(window.ethereum);
-      await prov.send("eth_requestAccounts",[]);
+      say("Requesting accounts…");
+      var accts=await eth.request({ method:"eth_requestAccounts" });
+      if(!accts || !accts.length){ say("Wallet returned no accounts.", true); return; }
+      var prov=new ethers.BrowserProvider(eth);
       signer=await prov.getSigner();
       addr=await signer.getAddress();
-      $("#who").innerHTML='Signing as <b>'+addr+'</b>';
-      $("#who").className="who";
+      var ok = addr.toLowerCase()===OWNER.toLowerCase();
+      $("#who").innerHTML=(ok?"Signing as <b>":"Not an owner wallet <b>")+addr+"</b>";
+      $("#who").className="who"+(ok?"":" bad");
+      say(ok? "Connected. Ready to sign."
+            : "This wallet cannot ban tokens. Switch to the owner wallet.", !ok);
+      // reflect account changes without a reload
+      if(eth.on) eth.on("accountsChanged", function(){ location.reload(); });
       loadBans();
-    }catch(e){ say(e.message||"Connect failed", true); }
-  });
+    }catch(e){
+      var m=(e&&(e.message||e.shortMessage))||"Connect failed";
+      if(e && e.code===4001) m="You rejected the connection request.";
+      say(m, true);
+    }
+  }
+  $("#connect").addEventListener("click", doConnect);
+  // if the wallet is already authorised, pick it up without a click
+  (function(){
+    var eth=pickProvider();
+    if(eth && eth.request) eth.request({method:"eth_accounts"}).then(function(a){
+      if(a && a.length) doConnect();
+    }).catch(function(){});
+  })();
 
   async function submit(action){
     if(!signer){ say("Connect the owner wallet first.", true); return; }

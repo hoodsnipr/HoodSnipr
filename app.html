@@ -1128,6 +1128,7 @@ function rankFor(tf, washTf){
   var out=[];
   for(var i=0;i<state.pools.length;i++){
     var p=state.pools[i];
+    if(isBanned(p.baseToken)) continue;
     if(isHidden(p)) continue;
     if(washTf && p.wash) continue;
     // resolve volume once — the d30 lookup normalises the address here instead
@@ -2128,9 +2129,29 @@ async function chargeFee(signer, feeEth, setBtn){
 // wallets reads DANGER.
 // Personal hide list. Server-side filtering catches the patterns; this covers
 // the judgement call a human makes instantly and a heuristic never will.
+// Owner bans are enforced on the client too. The board payload is cached in
+// localStorage and at the CDN edge, so filtering server-side alone would leave
+// a banned token on screen until every cache expired.
+var banned = load("hs_bans", {});
+function isBanned(a){ return !!banned[String(a||"").toLowerCase()]; }
+function refreshBans(){
+  return fetch(CFG.API+"/banlist?t="+Date.now())
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(!j || !j.bans) return;
+      var next={};
+      j.bans.forEach(function(b){ next[String(b.token).toLowerCase()]=true; });
+      var changed = Object.keys(next).length!==Object.keys(banned).length
+        || Object.keys(next).some(function(k){ return !banned[k]; });
+      banned=next;
+      save("hs_bans", banned);
+      if(changed){ invalidateRanks(); renderBoard(); renderPortfolio(); }
+    }).catch(function(){});
+}
+
 var hidden = load("hs_hidden", {});
 function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
-function isHiddenAddr(a){ return !!hidden[String(a||"").toLowerCase()]; }
+function isHiddenAddr(a){ var k=String(a||"").toLowerCase(); return !!hidden[k] || !!banned[k]; }
 // A pool with no liquidity left cannot be sold into — the position is gone in
 // every practical sense. Hide it automatically so a rug doesn't sit in the
 // portfolio forever, but record WHY, and keep it one tap from coming back.
@@ -2160,6 +2181,7 @@ function hideToken(addr, sym){
   hidden[k]={ sym:sym||"", t:Date.now() };
   save("hs_hidden", hidden);
   invalidateRanks();
+  recomputePortfolio();
   toast("$"+(sym||"token")+" hidden — undo in Wallets → hidden tokens");
   renderBoard();
 }
@@ -2167,6 +2189,7 @@ function unhideToken(addr){
   delete hidden[String(addr||"").toLowerCase()];
   save("hs_hidden", hidden);
   invalidateRanks();
+  loadPortfolio();          // it must come back with its value
   renderBoard(); renderWallets();
 }
 var trustCache={};
@@ -2195,10 +2218,6 @@ function trustBadge(t){
 var quoteSeq=0;// Wallet balance helpers. These were collateral damage when I rewrote the v4
 // quoting block — the call sites survived, so opening ANY token modal threw a
 // ReferenceError and nothing rendered. Restored here.
-function fmtBal(v){
-  if(v==null) return " …";
-  return " "+(+v).toFixed(4)+" ETH";
-}
 async function loadModalBalances(){
   modal.bal = modal.bal || {};
   var pr=rpc(), jobs=[];
@@ -2262,70 +2281,6 @@ async function chargeFee(signer, feeEth, setBtn){
 // wallets reads DANGER.
 // Personal hide list. Server-side filtering catches the patterns; this covers
 // the judgement call a human makes instantly and a heuristic never will.
-var hidden = load("hs_hidden", {});
-function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
-function isHiddenAddr(a){ return !!hidden[String(a||"").toLowerCase()]; }
-// A pool with no liquidity left cannot be sold into — the position is gone in
-// every practical sense. Hide it automatically so a rug doesn't sit in the
-// portfolio forever, but record WHY, and keep it one tap from coming back.
-function autoHideRugged(rows){
-  var n=0;
-  (rows||[]).forEach(function(h){
-    var k=String(h.addr||"").toLowerCase();
-    if(!k || hidden[k]) return;
-    var row=(state.pools||[]).find(function(p){ return (p.baseToken||"").toLowerCase()===k; });
-    if(!row) return;                         // unknown token — never auto-hide
-    var liqGone = (row.liq||0) < 100;
-    var priceGone = !(row.price>0);
-    if(liqGone && priceGone){
-      hidden[k]={ sym:h.sym||row.sym||"", t:Date.now(), auto:true, why:"liquidity pool empty" };
-      n++;
-    }
-  });
-  if(n){
-    save("hs_hidden", hidden);
-    invalidateRanks();
-    toast(n+" rugged token"+(n>1?"s":"")+" hidden — undo in Wallets → hidden tokens", true);
-  }
-  return n;
-}
-function hideToken(addr, sym){
-  var k=String(addr||"").toLowerCase(); if(!k) return;
-  hidden[k]={ sym:sym||"", t:Date.now() };
-  save("hs_hidden", hidden);
-  invalidateRanks();
-  toast("$"+(sym||"token")+" hidden — undo in Wallets → hidden tokens");
-  renderBoard();
-}
-function unhideToken(addr){
-  delete hidden[String(addr||"").toLowerCase()];
-  save("hs_hidden", hidden);
-  invalidateRanks();
-  renderBoard(); renderWallets();
-}
-var trustCache={};
-async function trustFor(token, pool){
-  var k=String(token||"").toLowerCase();
-  if(!k) return null;
-  if(trustCache[k]) return trustCache[k];
-  try{
-    var r=await fetch(CFG.API+"/safety?token="+k+(pool?("&pool="+pool):""));
-    if(!r.ok) return null;
-    var j=await r.json();
-    trustCache[k]=j;
-    return j;
-  }catch(e){ return null; }
-}
-var TRUST_COLORS={ CLEAN:"var(--green)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
-// Only a corroborated verdict earns a mark on the board. Anything softer is
-// noise that trains users to ignore the badge entirely.
-function trustIsActionable(t){ return t && (t.label==="DANGER" || t.label==="RISKY"); }
-function trustBadge(t){
-  if(!trustIsActionable(t)) return "";
-  var c=TRUST_COLORS[t.label]||"var(--mute)";
-  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100 — open the token for details">⛔ '+t.label+'</span>';
-}
-
 var quoteSeq=0;
 function updFees(){
   var p=modal.pool; if(!p)return;
@@ -3248,7 +3203,14 @@ async function loadPortfolio(){
     var ethUsdTotal=((port.ethBal.connected||0)+(port.ethBal.burner||0))*state.ethUsd;
     port.totalUsd = rows.reduce(function(a,h){return a+(h.valUsd||0)},0) + ethUsdTotal;
     autoHideRugged(port.holdings);
+    // Hidden and banned tokens leave the holdings list AND the valuation — a
+    // hidden rug must not keep propping up the portfolio total.
     port.holdings = port.holdings.filter(function(h){ return !isHiddenAddr(h.addr); });
+    port.priceMap = {};
+    port.holdings.forEach(function(h){ if(h.price!=null) port.priceMap[h.addr]=h.price; });
+    port.totalUsd = port.holdings.reduce(function(a,h){ return a + (h.valUsd||0); }, 0)
+                  + (port.ethBal.connected||0)*state.ethUsd
+                  + (port.ethBal.burner||0)*state.ethUsd;
     port.pnlUsd = tradePnl().pnl;
     try{ localStorage.setItem("hs_hold", JSON.stringify({t:Date.now(),rows:port.holdings,eth:port.ethBal})); }catch(e){}
     snapshotPv();
@@ -3260,6 +3222,19 @@ async function loadPortfolio(){
   renderPortfolio();
 }
 // ---- ledger-based PnL: only HoodSnipr trades, positions net of sells ----
+// Drop hidden holdings and re-total, without waiting for a network refresh.
+function recomputePortfolio(){
+  if(!port.holdings) return;
+  port.holdings = port.holdings.filter(function(h){ return !isHiddenAddr(h.addr); });
+  port.priceMap = {};
+  port.holdings.forEach(function(h){ if(h.price!=null) port.priceMap[h.addr]=h.price; });
+  port.totalUsd = port.holdings.reduce(function(a,h){ return a + (h.valUsd||0); }, 0)
+                + ((port.ethBal&&port.ethBal.connected)||0)*state.ethUsd
+                + ((port.ethBal&&port.ethBal.burner)||0)*state.ethUsd;
+  port.pnlUsd = tradePnl().pnl;
+  lastHoldSig="";           // force the next render to repaint
+  renderPortfolio();
+}
 function tradePnl(){
   // Positions and cost basis are tracked per token. The previous version added
   // a token's COST to usdIn but contributed 0 value when no price was found —
@@ -3268,6 +3243,7 @@ function tradePnl(){
   var pos={}, cost={}, usdOut=0, ethIn=0, usdInAll=0;
   state.trades.forEach(function(t){
     var k=(t.baseToken||"").toLowerCase(); if(!k) return;
+    if(isHiddenAddr(k)) return;      // hidden positions leave the P&L entirely
     if(t.side==="sell"){
       var out=(t.usdOut!=null? t.usdOut : (t.ethOut||0)*state.ethUsd);
       usdOut+=out;
@@ -3319,12 +3295,21 @@ function priceForToken(addr){
   });
   return last;
 }
+// 5-minute candles need samples at least every minute, so the cadence is much
+// tighter than before — and the buffer is bigger so 30D history still fits.
 function snapshotPv(){
+  if(!(port.totalUsd>0) && !(port.holdings||[]).length) return;
   var series=load("hs_pv",[]);
   var last=series[series.length-1], now=Date.now();
-  if(!last || now-last.t>5*60e3 || Math.abs(port.totalUsd-last.v)>Math.max(1,last.v*0.01)){
-    series.push({t:now,v:+port.totalUsd.toFixed(2)});
-    if(series.length>400) series=series.slice(-400);
+  var moved = last ? Math.abs(port.totalUsd-last.v) > Math.max(0.01, last.v*0.0015) : true;
+  if(!last || now-last.t > 60e3 || moved){
+    series.push({t:now, v:+port.totalUsd.toFixed(2)});
+    // thin the oldest samples rather than dropping history outright
+    if(series.length>3000){
+      var keep=series.slice(-1500);
+      var older=series.slice(0,-1500).filter(function(_,i){ return i%3===0; });
+      series=older.concat(keep);
+    }
     save("hs_pv",series);
   }
 }
@@ -3335,13 +3320,16 @@ function snapshotPv(){
 // selector and pinch/drag zoom. Rendered as inline SVG — no chart library, no
 // extra payload.
 var pvZoom = { span: null, offset: 0 };     // span = candles visible, null = all
+// Timeframes match the trending board so the whole app speaks one language.
+// Each is a CANDLE size, and the window shown scales with it.
 var PV_RANGES = [
-  { id:"1D",  ms: 24*3600e3,     bucket: 60*60e3 },
-  { id:"1W",  ms: 7*864e5,       bucket: 6*3600e3 },
-  { id:"1M",  ms: 30*864e5,      bucket: 24*3600e3 },
-  { id:"ALL", ms: null,          bucket: null }
+  { id:"5M",  bucket: 5*60e3,    span: 4*3600e3 },
+  { id:"1H",  bucket: 60*60e3,   span: 2*864e5 },
+  { id:"6H",  bucket: 6*3600e3,  span: 10*864e5 },
+  { id:"24H", bucket: 24*3600e3, span: 45*864e5 },
+  { id:"30D", bucket: 30*864e5,  span: null }
 ];
-var pvRange = load("hs_pvrange", "1W");
+var pvRange = load("hs_pvrange", "5M");
 
 function pvBuckets(series, bucketMs){
   var out=[], cur=null;
@@ -3368,22 +3356,25 @@ function renderPvChart(){
     el.innerHTML='<div class="empty" style="padding:24px">Value history builds as you use the portfolio — check back soon.</div>';
     return;
   }
-  var cfg=PV_RANGES.find(function(r){return r.id===pvRange}) || PV_RANGES[1];
+  var cfg=PV_RANGES.find(function(r){return r.id===pvRange}) || PV_RANGES[0];
   var now=Date.now();
-  var win = cfg.ms ? se.filter(function(p){ return now-p.t <= cfg.ms; }) : se.slice();
-  if(win.length<2) win=se.slice(-Math.max(2,Math.min(se.length,40)));
+  var win = cfg.span ? se.filter(function(p){ return now-p.t <= cfg.span; }) : se.slice();
+  // If the chosen window is empty because history is short, show what exists
+  // rather than an empty chart.
+  if(win.length<2) win=se.slice();
 
-  // auto-size buckets when showing everything
-  var bucket = cfg.bucket;
-  if(!bucket){
-    var span=Math.max(1, win[win.length-1].t - win[0].t);
-    bucket=Math.max(60e3, Math.round(span/60));
-  }
+  var bucket=cfg.bucket;
   var candles=pvBuckets(win, bucket);
   if(candles.length<2){
-    // not enough spread to bucket — fall back to one candle per sample
-    candles=win.map(function(p){ return {t:p.t,o:p.v,h:p.v,l:p.v,c:p.v}; });
+    // History is younger than one candle — drop to a finer bucket so there is
+    // still something to read.
+    var finer=[5*60e3, 60e3, 15e3];
+    for(var fi=0; fi<finer.length && candles.length<2; fi++){
+      if(finer[fi]<bucket){ bucket=finer[fi]; candles=pvBuckets(win, bucket); }
+    }
   }
+  if(candles.length<2)
+    candles=win.map(function(p){ return {t:p.t,o:p.v,h:p.v,l:p.v,c:p.v}; });
 
   // zoom: keep the most recent N candles
   if(pvZoom.span && pvZoom.span < candles.length){
@@ -3391,7 +3382,7 @@ function renderPvChart(){
     candles=candles.slice(Math.max(0,endIdx-pvZoom.span), endIdx);
   }
 
-  var W=640, H=190, PADL=6, PADR=52, PADT=10, PADB=18;
+  var W=640, H=210, PADL=6, PADR=54, PADT=12, PADB=26;
   var lo=Infinity, hi=-Infinity;
   candles.forEach(function(c){ lo=Math.min(lo,c.l); hi=Math.max(hi,c.h); });
   if(!(hi>lo)) { hi=lo+Math.max(1, Math.abs(lo)*0.02); }
@@ -3411,15 +3402,26 @@ function renderPvChart(){
     grid+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".5"/>'
        +'<text x="'+(W-PADR+6)+'" y="'+(gy+3.5).toFixed(1)+'" fill="var(--mute)" font-size="10" font-family="var(--mono)">$'+fmtUsdShort(gv)+'</text>';
   }
+  var axis="";
   candles.forEach(function(c,i){
     var cx=PADL + step*i + step/2;
     var up=c.c>=c.o;
     var col=up? "var(--green)" : "var(--red)";
     var yo=y(c.o), yc=y(c.c), yh=y(c.h), yl=y(c.l);
     var top=Math.min(yo,yc), hgt=Math.max(1.5, Math.abs(yc-yo));
-    body+='<line x1="'+cx.toFixed(1)+'" y1="'+yh.toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+yl.toFixed(1)+'" stroke="'+col+'" stroke-width="1.2"/>'
-       +'<rect x="'+(cx-cw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+hgt.toFixed(1)+'" fill="'+col+'" rx="1"/>';
+    // hollow bodies on up candles read cleaner at small sizes
+    body+='<line x1="'+cx.toFixed(1)+'" y1="'+yh.toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+yl.toFixed(1)+'" stroke="'+col+'" stroke-width="1.1"/>'
+       +'<rect x="'+(cx-cw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+hgt.toFixed(1)+'" '
+       +(up? 'fill="none" stroke="'+col+'" stroke-width="1.2"' : 'fill="'+col+'"')+' rx="1"/>';
   });
+  // time axis — a few evenly spaced labels
+  var ticks=Math.min(4, candles.length);
+  for(var ti=0; ti<ticks; ti++){
+    var idx=Math.round(ti*(candles.length-1)/Math.max(1,ticks-1));
+    var tx=PADL + step*idx + step/2;
+    axis+='<text x="'+tx.toFixed(1)+'" y="'+(H-8)+'" fill="var(--mute)" font-size="9" font-family="var(--mono)" text-anchor="middle">'
+      +tsLabel(candles[idx].t, bucket)+'</text>';
+  }
   // last-price marker
   var ly=y(last);
   body+='<line x1="'+PADL+'" y1="'+ly.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+ly.toFixed(1)+'" stroke="'+(netUp?"var(--green)":"var(--red)")+'" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>';
@@ -3433,13 +3435,19 @@ function renderPvChart(){
           return '<button data-action="pvrange" data-r="'+r.id+'"'+(r.id===pvRange?' class="on"':'')+'>'+r.id+'</button>';
         }).join("")+'</div>'
     +'</div>'
-    +'<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="width:100%;height:190px;touch-action:none">'
-      +grid+body
+    +'<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="width:100%;height:200px;touch-action:none">'
+      +grid+body+axis
     +'</svg>'
     +'<div class="pvfoot"><span>'+candles.length+' candles · '+bucketLabel(bucket)+'</span>'
       +'<span>'+(pvZoom.span?'<button data-action="pvreset">RESET ZOOM</button>':'pinch or scroll to zoom')+'</span></div>';
 
   bindPvZoom(candles.length);
+}
+function tsLabel(t, bucket){
+  var d=new Date(t);
+  if(bucket >= 24*3600e3) return (d.getMonth()+1)+"/"+d.getDate();
+  if(bucket >= 3600e3) return d.getHours()+":00";
+  return d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
 }
 function bucketLabel(ms){
   if(ms>=864e5) return Math.round(ms/864e5)+"d candles";
@@ -3494,33 +3502,6 @@ function bindPvZoom(total){
   });
 }
 
-function snapshotPv(){
-  var series=load("hs_pv",[]);
-  var last=series[series.length-1], now=Date.now();
-  if(!last || now-last.t>5*60e3 || Math.abs(port.totalUsd-last.v)>Math.max(1,last.v*0.01)){
-    series.push({t:now,v:+port.totalUsd.toFixed(2)});
-    if(series.length>400) series=series.slice(-400);
-    save("hs_pv",series);
-  }
-}
-function renderPvChart(){
-  var el=$("#pvChart"); if(!el)return;
-  var se=load("hs_pv",[]);
-  if(se.length<2){ el.innerHTML='<div class="empty" style="padding:24px">Value history builds as you use the portfolio — check back soon.</div>'; return; }
-  var W=600,H=150,P=8;
-  var vs=se.map(function(p){return p.v}), mn=Math.min.apply(0,vs), mx=Math.max.apply(0,vs);
-  if(mx-mn<1e-9){mx=mn+1}
-  var t0=se[0].t, t1=se[se.length-1].t||t0+1;
-  function X(t){return P+(t-t0)/(t1-t0||1)*(W-2*P)} function Y(v){return H-P-(v-mn)/(mx-mn)*(H-2*P)}
-  var d=se.map(function(p,i){return (i?"L":"M")+X(p.t).toFixed(1)+","+Y(p.v).toFixed(1)}).join(" ");
-  var up=se[se.length-1].v>=se[0].v, col=up?"#00C805":"#FF5000";
-  el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
-   +'<path d="'+d+' L'+X(t1).toFixed(1)+','+(H-P)+' L'+X(t0).toFixed(1)+','+(H-P)+' Z" fill="'+col+'" opacity="0.08"/>'
-   +'<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2"/>'
-   +'<text x="'+P+'" y="12" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mx.toFixed(2)+'</text>'
-   +'<text x="'+P+'" y="'+(H-2)+'" font-family="DM Mono,monospace" font-size="10" fill="#7C8683">$'+mn.toFixed(2)+'</text>'
-   +'</svg>';
-}
 // Every snipe and loose, newest first, with links to the transaction.
 function renderActivity(){
   var box=$("#actBox"); if(!box) return;
@@ -4174,6 +4155,29 @@ function loadV4Hooks(){
   }).catch(function(){});
 }
 loadV4Hooks().then(function(){ if(!state.v4RouterVerified) ensureV4Router(); });
+refreshBans();
+setInterval(refreshBans, 120000);
+
+// Keep the value series ticking while the app is open so 5M candles have
+// something to draw, without forcing a network refresh each minute.
+setInterval(function(){
+  if(document.hidden) return;
+  if(port.holdings && port.holdings.length) snapshotPv();
+}, 60000);
+
+// Holdings used to load only when the Portfolio tab was first opened, so there
+// was always a visible wait. Start the fetch as soon as we know an address —
+// by the time the tab is tapped the data is usually already there.
+(function primePortfolio(){
+  var kick=function(){ if(state.wallet||state.burner) loadPortfolio(); };
+  kick();
+  var tries=0;
+  var iv=setInterval(function(){
+    tries++;
+    if(state.wallet||state.burner){ loadPortfolio(); clearInterval(iv); }
+    if(tries>20) clearInterval(iv);
+  }, 500);
+})();        // a ban reaches open sessions within 2 min
 
 fetch(CFG.API+"/v4pools?hooks=1&t="+Date.now()).then(function(r){return r.json()}).then(function(j){
   if(j && j.hooks && j.hooks.length) state.v4Hooks=j.hooks;
