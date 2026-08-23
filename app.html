@@ -243,6 +243,12 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvrng button{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--mute);
   border:1px solid var(--line);border-radius:7px;padding:4px 9px;background:transparent}
 .pvrng button.on{color:var(--green);border-color:var(--green);background:var(--green-dim)}
+.pvbar{display:flex;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap}
+.pvbar .grp{display:flex;gap:5px}
+.pvbar button{font-family:var(--mono);font-size:11px;color:var(--text);background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:6px 11px;min-width:38px;min-height:34px;line-height:1}
+.pvbar button:hover:not([disabled]){border-color:var(--green);color:var(--green)}
+.pvbar button[disabled]{opacity:.35}
 .pvfoot{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--mute);margin-top:6px}
 .pvfoot button{font-family:var(--mono);font-size:10px;color:var(--green);border:1px solid var(--line);border-radius:6px;padding:2px 7px}
 .trust{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.08em;border:1px solid;border-radius:6px;padding:1px 5px;margin-left:6px;vertical-align:middle}
@@ -1158,14 +1164,23 @@ function rankFor(tf, washTf){
     // hour scores enormous acceleration and outranks real markets. Require a
     // token to be a real market before it can trend on 1H or 6H.
     if(tf==="h1" || tf==="h6"){
-      var minLiq = (tf==="h1") ? 3000 : 5000;
-      var minVol = (tf==="h1") ? 500  : 2000;
+      // 6H came out clean with these constraints; 1H needed the same rigour.
+      // An hour is a short window, so a handful of trades on a shallow pool
+      // generates enormous apparent acceleration — that was the junk.
+      var minLiq = (tf==="h1") ? 5000  : 5000;
+      var minVol = (tf==="h1") ? 1500  : 2000;
+      var minTx  = (tf==="h1") ? 12    : 8;
       if((p.liq||0) < minLiq) continue;
       if(vol < minVol) continue;
       // volume must be plausible against the pool that supposedly produced it
-      if((p.liq||0) > 0 && vol/(p.liq||1) > 150) continue;
+      if((p.liq||0) > 0 && vol/(p.liq||1) > 120) continue;
       var tk = p.txns && p.txns[tf];
-      if(tk && ((tk.b||0)+(tk.s||0)) < 8) continue;
+      var tn = tk ? ((tk.b||0)+(tk.s||0)) : null;
+      if(tn != null && tn < minTx) continue;
+      // a single wallet cannot be the whole hour
+      if(tn && vol/tn > (p.liq||1) * 0.35) continue;
+      // needs a real holder base, not three wallets
+      if(p.holders != null && p.holders < 25) continue;
     }
     var sc = isD30 ? vol : ((p[scoreKey]||0) > 0 ? p[scoreKey] : Math.sqrt(vol||0));
     out.push({ p:p, sc:sc, vol:vol, liq:p.liq||0, id:p.baseToken||p.pool||"" });
@@ -3352,7 +3367,12 @@ function snapshotPv(){
 // selector and pinch/drag zoom. Rendered as inline SVG — no chart library, no
 // extra payload.
 var pvZoom = { span: null, offset: 0 };
-var pvView=[], pvBucketMs=0;     // span = candles visible, null = all
+var pvView=[], pvBucketMs=0, pvTotalCandles=0;
+// Chart height ("squeeze"). Gestures alone aren't discoverable, so every
+// control also has a button.
+var PV_HEIGHTS=[120,160,200,260,320];
+var pvHeightIdx=load("hs_pvh", 2);
+function pvHeight(){ return PV_HEIGHTS[Math.max(0,Math.min(PV_HEIGHTS.length-1,pvHeightIdx))]; }     // span = candles visible, null = all
 // Timeframes match the trending board so the whole app speaks one language.
 // Each is a CANDLE size, and the window shown scales with it.
 var PV_RANGES = [
@@ -3425,7 +3445,7 @@ function renderPvChart(){
     var endIdx=Math.max(pvZoom.span, total - pvZoom.offset);
     candles=candles.slice(Math.max(0,endIdx-pvZoom.span), endIdx);
   }
-  pvView=candles; pvBucketMs=bucket;
+  pvView=candles; pvBucketMs=bucket; pvTotalCandles=total;
 
   var W=680, H=200, PADL=8, PADR=58, PADT=14, PADB=24;
   var lo=Infinity, hi=-Infinity;
@@ -3465,15 +3485,28 @@ function renderPvChart(){
 
   el.innerHTML = head
     + '<div class="pvwrap">'
-      + '<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="height:200px;touch-action:none">'
+      + '<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="height:'+pvHeight()+'px;touch-action:none">'
         + grid + body + axis
         + '<line id="pvCross" x1="0" y1="'+PADT+'" x2="0" y2="'+(H-PADB)+'" stroke="var(--mute)" stroke-width="1" opacity="0"/>'
       + '</svg>'
       + '<div class="pvtip" id="pvTip"></div>'
     + '</div>'
+    + '<div class="pvbar">'
+      + '<div class="grp">'
+        + '<button data-action="pvzoom" data-d="out" title="Zoom out">－</button>'
+        + '<button data-action="pvzoom" data-d="in" title="Zoom in">＋</button>'
+        + '<button data-action="pvpan" data-d="-1" title="Older"'+(pvZoom.span?'':' disabled')+'>‹</button>'
+        + '<button data-action="pvpan" data-d="1" title="Newer"'+(pvZoom.span?'':' disabled')+'>›</button>'
+      + '</div>'
+      + '<div class="grp">'
+        + '<button data-action="pvsqueeze" data-d="-1" title="Shorter chart">⇕−</button>'
+        + '<button data-action="pvsqueeze" data-d="1" title="Taller chart">⇕+</button>'
+        + '<button data-action="pvreset" title="Reset view">RESET</button>'
+      + '</div>'
+    + '</div>'
     + '<div class="pvfoot"><span>'+candles.length+' × '+bucketLabel(bucket)
-      +(pvZoom.span?' · zoomed':'')+'</span>'
-      +'<span>'+(pvZoom.span?'<button data-action="pvreset">RESET</button>':'drag or pinch to zoom')+'</span></div>';
+      +(pvZoom.span?' · showing '+candles.length+' of '+total:' · full range')+'</span>'
+      +'<span>drag to pan · pinch or scroll to zoom</span></div>';
 
   paintReadout(last, first);
   bindPvZoom(total, {W:W,PADL:PADL,step:step,PADT:PADT,PADB:PADB,H:H});
@@ -3678,7 +3711,10 @@ function renderPortfolio(){
         +'<div class="nm">$'+esc(x.sym)+'<div class="h">'+x.bal.toLocaleString(undefined,{maximumFractionDigits:4})+(x.price?' · $'+fmtP(x.price):'')+' · tap for chart</div></div>'
         +'<div class="pnl">'+(x.valUsd!=null?"$"+x.valUsd.toFixed(2):"—")+'</div>'
         +'<button class="loose" data-action="loose" data-h="'+gi+'">LOOSE</button>'
-        +'<button class="hidehold" data-action="hide-holding" data-addr="'+esc(h.addr)+'" data-sym="'+esc(h.sym)+'" title="Hide this token from your portfolio">🚫</button></div>';
+        // `h` is the HTML accumulator here — the holding is `x`. Reading h.addr
+        // produced undefined, so the button carried no address and hiding did
+        // nothing at all.
+        +'<button class="hidehold" data-action="hide-holding" data-addr="'+esc(x.addr)+'" data-sym="'+esc(x.sym)+'" title="Hide $'+esc(x.sym)+' from your portfolio">🚫</button></div>';
     });
   });
   hb.innerHTML=h || '<div class="empty">No holdings found yet — fire a snipe first.</div>';
@@ -4102,7 +4138,32 @@ document.addEventListener("click", function(e){
     }
   else if(a==="foot-tab"){ e.preventDefault(); showTab(el.getAttribute("data-tab")); window.scrollTo({top:0,behavior:"smooth"}); }
   else if(a==="pvrange"){ pvRange=el.getAttribute("data-r"); save("hs_pvrange",pvRange); pvZoom={span:null,offset:0}; renderPvChart(); }
-  else if(a==="pvreset"){ pvZoom={span:null,offset:0}; renderPvChart(); }
+  else if(a==="pvreset"){ pvZoom={span:null,offset:0}; pvHeightIdx=2; save("hs_pvh",2); renderPvChart(); }
+  else if(a==="pvzoom"){
+      var dir=el.getAttribute("data-d");
+      var tot=pvTotalCandles||1;
+      var cur=pvZoom.span||tot;
+      var next = dir==="in" ? cur*0.6 : cur*1.7;
+      next=Math.max(6, Math.min(tot, Math.round(next)));
+      pvZoom.span = next>=tot ? null : next;
+      pvZoom.offset=Math.max(0, Math.min(tot-(pvZoom.span||tot), pvZoom.offset));
+      renderPvChart();
+    }
+  else if(a==="pvpan"){
+      if(!pvZoom.span) return;
+      var d=parseInt(el.getAttribute("data-d"),10);
+      var stepN=Math.max(1, Math.round(pvZoom.span*0.35));
+      var maxOff=(pvTotalCandles||1)-pvZoom.span;
+      // data-d=-1 means "older", which is a LARGER offset from the right edge
+      pvZoom.offset=Math.max(0, Math.min(maxOff, pvZoom.offset + (d<0? stepN : -stepN)));
+      renderPvChart();
+    }
+  else if(a==="pvsqueeze"){
+      var dd=parseInt(el.getAttribute("data-d"),10);
+      pvHeightIdx=Math.max(0, Math.min(PV_HEIGHTS.length-1, pvHeightIdx+dd));
+      save("hs_pvh", pvHeightIdx);
+      renderPvChart();
+    }
   else if(a==="hide-holding"){
       e.stopPropagation();
       hideToken(el.getAttribute("data-addr"), el.getAttribute("data-sym"));
