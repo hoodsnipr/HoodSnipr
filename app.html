@@ -1028,13 +1028,9 @@ function ponsBadge(p){
   if(!p.pons) return "";
   return '<span class="pons" title="Launched on pons — Uniswap V3, 1% pool, liquidity locked at launch">pons</span> ';
 }
-function venueBadge(p){
-  var v=versionsOf(p);
-  if(!v.length) return "";
-  if(v.length>1) return '<span style="color:var(--gold)">'+v.map(function(x){return x.toUpperCase()}).join("+")+'</span> · ';
-  if(v[0]==="v4") return '<span style="color:var(--gold)">V4</span> · ';
-  return "";
-}
+// Venue is an execution detail, not something a trader scans a list for. It
+// still shows in the snipe modal where it affects routing; the board stays clean.
+function venueBadge(){ return ""; }
 // Score the visible page only, a few at a time, so the board stays fast.
 var trustQueue=[], trustRunning=false;
 function enrichTrust(rows){
@@ -1051,7 +1047,7 @@ async function runTrustQueue(){
     var item=trustQueue.shift();
     if(!item || trustCache[item.a]) continue;
     var t=await trustFor(item.a, item.pool);
-    if(t && (t.label==="DANGER"||t.label==="RISKY"||t.label==="WATCH")){
+    if(trustIsActionable(t)){
       document.querySelectorAll('[data-trust="'+item.a+'"]').forEach(function(el){
         el.innerHTML=trustBadge(t);
       });
@@ -1367,8 +1363,11 @@ function openToken(poolAddr){
       +'<span style="color:var(--mute)">TRUST '+t.score+'/100</span></div>'
       +'<div class="bar"><i style="width:'+t.score+'%;background:'+c+'"></i></div>'
       +(t.flags && t.flags.length
-        ? '<ul>'+t.flags.map(function(f){ return '<li>'+(f.sev==="high"?'<b>⛔</b> ':'⚠ ')+esc(f.msg)+'</li>'; }).join("")+'</ul>'
+        ? '<ul>'+t.flags.map(function(f){ return '<li><b>⛔</b> '+esc(f.msg)+'</li>'; }).join("")+'</ul>'
         : '<div style="font-size:11px;color:var(--mute)">No manipulation signals detected'+conf+'.</div>')
+      +(t.notes && t.notes.length
+        ? '<ul style="margin-top:4px">'+t.notes.map(function(n){ return '<li style="color:var(--mute)">· '+esc(n)+' <span style="opacity:.6">(single signal — not treated as evidence on its own)</span></li>'; }).join("")+'</ul>'
+        : '')
       +(t.signals? '<div style="font-size:10px;color:var(--mute);margin-top:7px;font-family:var(--mono)">'
           +t.signals.swaps+' swaps · '+t.signals.uniqueTraders+' traders · '
           +Math.round((t.signals.forcedRatio||0)*100)+'% transfers outside swaps</div>' : '')
@@ -2092,12 +2091,14 @@ async function trustFor(token, pool){
     return j;
   }catch(e){ return null; }
 }
-var TRUST_COLORS={ CLEAN:"var(--green)", WATCH:"var(--gold)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
-function trustBadge(t, size){
-  if(!t) return "";
+var TRUST_COLORS={ CLEAN:"var(--green)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
+// Only a corroborated verdict earns a mark on the board. Anything softer is
+// noise that trains users to ignore the badge entirely.
+function trustIsActionable(t){ return t && (t.label==="DANGER" || t.label==="RISKY"); }
+function trustBadge(t){
+  if(!trustIsActionable(t)) return "";
   var c=TRUST_COLORS[t.label]||"var(--mute)";
-  var icon = t.label==="CLEAN"?"🛡" : t.label==="UNPROVEN"?"◌" : t.label==="WATCH"?"⚠" : "⛔";
-  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100">'+icon+' '+t.label+'</span>';
+  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100 — open the token for details">⛔ '+t.label+'</span>';
 }
 
 var quoteSeq=0;// Wallet balance helpers. These were collateral damage when I rewrote the v4
@@ -2181,12 +2182,14 @@ async function trustFor(token, pool){
     return j;
   }catch(e){ return null; }
 }
-var TRUST_COLORS={ CLEAN:"var(--green)", WATCH:"var(--gold)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
-function trustBadge(t, size){
-  if(!t) return "";
+var TRUST_COLORS={ CLEAN:"var(--green)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
+// Only a corroborated verdict earns a mark on the board. Anything softer is
+// noise that trains users to ignore the badge entirely.
+function trustIsActionable(t){ return t && (t.label==="DANGER" || t.label==="RISKY"); }
+function trustBadge(t){
+  if(!trustIsActionable(t)) return "";
   var c=TRUST_COLORS[t.label]||"var(--mute)";
-  var icon = t.label==="CLEAN"?"🛡" : t.label==="UNPROVEN"?"◌" : t.label==="WATCH"?"⚠" : "⛔";
-  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100">'+icon+' '+t.label+'</span>';
+  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100 — open the token for details">⛔ '+t.label+'</span>';
 }
 
 var quoteSeq=0;
@@ -2370,7 +2373,7 @@ async function fire(){
     if(!modal.trustAck){
       btn.innerHTML='<span class="spin"></span> CHECKING TOKEN…';
       var tScore=await trustFor(p.baseToken, p.pool);
-      if(tScore && (tScore.label==="DANGER" || tScore.label==="RISKY")){
+      if(tScore && tScore.label==="DANGER"){
         modal.trustAck=true;
         var worst=(tScore.flags||[]).filter(function(f){return f.sev==="high"});
         var reason=(worst[0]||(tScore.flags||[])[0]||{}).msg||"manipulation signals detected";
