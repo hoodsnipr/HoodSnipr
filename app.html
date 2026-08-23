@@ -219,6 +219,12 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvchart{height:150px}
 .pvchart svg{width:100%;height:100%;display:block}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.pons{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#8B5CF6;border:1px solid #8B5CF6;border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle}
+.gradbar{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:11px}
+.gradbar .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--mute)}
+.gradbar .bar{height:6px;border-radius:99px;background:var(--void);margin:8px 0 4px;overflow:hidden}
+.gradbar .bar i{display:block;height:100%;background:#8B5CF6;border-radius:99px}
+.gradbar .done{color:#8B5CF6}
 .trust{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.08em;border:1px solid;border-radius:6px;padding:1px 5px;margin-left:6px;vertical-align:middle}
 .trustpanel{margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:11px}
 .trustpanel .hdr{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:11px;letter-spacing:.1em}
@@ -231,6 +237,25 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .wdraw:hover{background:var(--gold);color:#000}
 .loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
 .loose:hover{background:var(--red);color:#000}
+/* ===== footer ===== */
+.appfoot{border-top:1px solid var(--line);margin-top:36px;padding:26px 16px calc(28px + env(safe-area-inset-bottom));background:var(--panel)}
+.fwrap{max-width:960px;margin:0 auto;display:grid;grid-template-columns:2fr 1fr 1fr;gap:26px}
+.fbrand p{font-size:12px;color:var(--mute);line-height:1.6;margin-top:10px;max-width:44ch}
+.flogo{display:flex;align-items:center;gap:8px;font-family:var(--disp);font-weight:700;font-size:16px;letter-spacing:-.02em}
+.flogo span{color:var(--green)}
+.fchain{margin-top:12px;font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.1em;display:flex;align-items:center;gap:7px}
+.fchain i{width:6px;height:6px;border-radius:99px;background:var(--green);display:inline-block;animation:blink 1.8s infinite}
+.fcol h5{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--mute);margin-bottom:10px;font-weight:500}
+.fcol a{display:block;font-size:13px;color:var(--text);text-decoration:none;padding:4px 0}
+.fcol a:hover{color:var(--green)}
+.frisk{max-width:960px;margin:22px auto 0;font-size:11px;line-height:1.65;color:var(--mute);border-top:1px solid var(--line);padding-top:16px}
+.frisk b{color:var(--gold)}
+.fbase{max-width:960px;margin:14px auto 0;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.06em}
+@media(max-width:700px){
+  .fwrap{grid-template-columns:1fr 1fr}
+  .fbrand{grid-column:1 / -1}
+  .fbase{flex-direction:column;gap:6px}
+}
 .toast{position:fixed;bottom:calc(20px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:13px;padding:11px 18px;border-radius:99px;z-index:70;animation:pop .2s ease-out;max-width:92vw}
 .toast.bad{background:var(--red)}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,.3);border-top-color:#000;border-radius:99px;animation:spin .8s linear infinite;vertical-align:-2px}
@@ -337,6 +362,48 @@ canvas.share{display:none}
 </main>
 
 <canvas class="share" id="shareCanvas" width="1200" height="630"></canvas>
+<footer class="appfoot">
+  <div class="fwrap">
+    <div class="fbrand">
+      <div class="flogo">
+        <svg width="22" height="22" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="15" fill="none" stroke="#00C805" stroke-width="3"/><circle cx="20" cy="20" r="4" fill="#00C805"/><line x1="20" y1="0" x2="20" y2="10" stroke="#00C805" stroke-width="3"/><line x1="20" y1="30" x2="20" y2="40" stroke="#00C805" stroke-width="3"/><line x1="0" y1="20" x2="10" y2="20" stroke="#00C805" stroke-width="3"/><line x1="30" y1="20" x2="40" y2="20" stroke="#00C805" stroke-width="3"/></svg>
+        <b>Hood<span>Snipr</span></b>
+      </div>
+      <p>The sniping terminal for Robinhood Chain. Live volume-ranked targets across 5M · 1H · 6H · 24H · 30D, real charts, and one-tap Uniswap execution at 0.25%. Non-custodial — every trade is signed in your own wallet.</p>
+      <div class="fchain"><i></i> ROBINHOOD CHAIN · 4663</div>
+    </div>
+
+    <div class="fcol">
+      <h5>Product</h5>
+      <a href="#board" data-action="foot-tab" data-tab="board">Trending</a>
+      <a href="#new" data-action="foot-tab" data-tab="new">New launches</a>
+      <a href="#port" data-action="foot-tab" data-tab="port">Portfolio</a>
+      <a href="#wallet" data-action="foot-tab" data-tab="wallet">Wallets</a>
+      <a href="#ranks" data-action="foot-tab" data-tab="ranks">Ranks</a>
+    </div>
+
+    <div class="fcol">
+      <h5>Legal</h5>
+      <a href="./privacy.html">Privacy policy</a>
+      <a href="./terms.html">Terms of use</a>
+      <a href="./quivr-paper.pdf" target="_blank" rel="noopener">The Quivr Paper</a>
+    </div>
+  </div>
+
+  <div class="frisk">
+    <b>⚠ Risk notice.</b> Trading memecoins involves total-loss risk. Trending volume is not a signal of
+    quality and is frequently manipulation — our filters reduce noise, they do not make a token safe.
+    Prices, quotes, and scores are estimates, not execution guarantees. Fees are non-refundable once a
+    transaction is signed. Smart contracts, wallets, RPCs, and indexers can fail. Nothing here is
+    financial advice, and HoodSnipr is not a broker, exchange, or advisor.
+  </div>
+
+  <div class="fbase">
+    <span>© 2026 HoodSnipr</span>
+    <span>Not affiliated with, endorsed by, or connected to Robinhood Markets, Inc.</span>
+  </div>
+</footer>
+
 <div id="modalRoot"></div>
 <div id="toastRoot"></div>
 
@@ -538,6 +605,7 @@ function boardRowToPool(r){
     cm5:r.cm5, ch1:r.c1, ch6:r.c6, ch24:r.c24,
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
+    pons:!!r.pons, ponsBlock:r.ponsBlock||null, restrictionsEndBlock:r.restrictionsEndBlock||null,
     ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
     holders:r.h!=null?r.h:null, wash:!!r.wash,
     created:r.cr? new Date(r.cr).toISOString() : null,
@@ -956,6 +1024,10 @@ function holdersCell(p){
   var col = thin? ' style="color:var(--gold)"' : '';
   return '<span data-holders="'+k+'"'+col+'>👥 '+h.toLocaleString()+(thin?' ⚠':'')+'</span>';
 }
+function ponsBadge(p){
+  if(!p.pons) return "";
+  return '<span class="pons" title="Launched on pons — Uniswap V3, 1% pool, liquidity locked at launch">pons</span> ';
+}
 function venueBadge(p){
   var v=versionsOf(p);
   if(!v.length) return "";
@@ -1073,7 +1145,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+ponsBadge(p)+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
@@ -1226,6 +1298,7 @@ function openToken(poolAddr){
      +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
      +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
    +'</div>'
+   +'<div id="ponsBox"></div>'
    +'<div id="trustBox"></div>'
    +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
    +(p.baseToken?'<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;align-items:center">'
@@ -1262,6 +1335,28 @@ function openToken(poolAddr){
   if(vv.length===1 && vv[0]==="v4") modal.venue="v4";
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); renderSpendLine(); });
+  // pons context: graduation progress and the launch-protection window
+  if(p.pons){
+    fetch(CFG.API+"/pons?token="+String(p.baseToken).toLowerCase())
+      .then(function(r){return r.json()}).then(function(j){
+        if(!j || !j.isPons) return;
+        var box=$("#ponsBox"); if(!box) return;
+        var g=j.graduation;
+        var pct=g? Math.round(g.progress*100) : 0;
+        var restricted = j.restrictionsEndBlock && state.block && state.block < j.restrictionsEndBlock;
+        box.innerHTML='<div class="gradbar">'
+          +'<div class="row"><span>PONS LAUNCH</span><span>'
+            +(g? (g.graduated? '<b class="done">GRADUATED</b>' : pct+'% TO GRADUATION') : 'LIVE')+'</span></div>'
+          +(g? '<div class="bar"><i style="width:'+Math.max(2,pct)+'%"></i></div>'
+              +'<div class="row"><span>'+g.pairedEth+' / '+g.thresholdEth+' ETH paired</span>'
+              +'<a href="'+esc(j.app||"https://www.ponsfamily.com/launchpad")+'" target="_blank" rel="noopener" data-action="ext" style="color:#8B5CF6;text-decoration:none">view on pons ↗</a></div>' : '')
+          +(restricted? '<div style="margin-top:8px;font-size:11px;color:var(--gold)">⚠ Launch protection is active: max 5% of supply per wallet and 5.5% per buy until block '
+              +j.restrictionsEndBlock.toLocaleString()+'. Selling is never restricted.</div>' : '')
+          +'<div style="margin-top:6px;font-size:10px;color:var(--mute)">Fixed 1B supply · 1% pool fee · liquidity locked at launch. Graduation is a threshold, not a quality signal.</div>'
+          +'</div>';
+      }).catch(function(){});
+  }
+
   // trust score — lazy, cached, never blocks the modal from opening
   trustFor(p.baseToken, p.pool).then(function(t){
     var box=$("#trustBox"); if(!box||!t) return;
@@ -3578,6 +3673,7 @@ document.addEventListener("click", function(e){
       renderBoard();
       var b=$("#board"); if(b) b.scrollIntoView({behavior:"smooth",block:"start"});
     }
+  else if(a==="foot-tab"){ e.preventDefault(); showTab(el.getAttribute("data-tab")); window.scrollTo({top:0,behavior:"smooth"}); }
   else if(a==="port-refresh") loadPortfolio();
   else if(a==="port-open"){ e.stopPropagation(); openTokenByAddr(el.getAttribute("data-addr")); }
   else if(a==="copy-ca"){ navigator.clipboard.writeText(el.getAttribute("data-addr")).then(function(){ toast("Contract address copied 📋"); }).catch(function(){ prompt("Contract address:", el.getAttribute("data-addr")); }); }

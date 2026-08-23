@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Privacy Policy · HoodSnipr</title>
+<meta name="robots" content="index, follow">
+<style>
+:root{
+  --void:#0C0E10;--panel:#15181C;--panel2:#1B1F24;--line:#242A30;
+  --green:#00C805;--green-dim:rgba(0,200,5,.14);--red:#FF5000;
+  --text:#F0F4F1;--mute:#7C8683;--gold:#FFD166;
+  --body:'Space Grotesk',system-ui,sans-serif;--mono:'DM Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--text);font-family:'DM Sans',system-ui,-apple-system,sans-serif;line-height:1.7;
+  padding:0 16px calc(60px + env(safe-area-inset-bottom));-webkit-text-size-adjust:100%}
+.wrap{max-width:760px;margin:0 auto}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 0;border-bottom:1px solid var(--line);
+  margin-bottom:28px;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:-.02em;text-decoration:none;color:var(--text)}
+.logo span{color:var(--green)}
+.back{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--green);text-decoration:none;border:1px solid var(--line);
+  border-radius:99px;padding:7px 14px}
+.back:hover{border-color:var(--green)}
+h1{font-size:30px;letter-spacing:-.02em;margin-bottom:6px}
+.upd{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mute);letter-spacing:.08em;margin-bottom:26px}
+h2{font-size:17px;margin:26px 0 8px;color:var(--green)}
+p,li{font-size:14px;color:var(--text);margin-bottom:10px}
+ul{padding-left:20px;margin-bottom:12px}
+li{margin-bottom:6px}
+.note{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--panel);font-size:13px;color:var(--mute);margin:18px 0}
+.note b{color:var(--gold)}
+a{color:var(--green)}
+footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);font-family:ui-monospace,Menlo,monospace;
+  font-size:10px;color:var(--mute);letter-spacing:.06em;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <a class="logo" href="./app.html">
+    <svg width="20" height="20" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15" fill="none" stroke="#00C805" stroke-width="3"/><circle cx="20" cy="20" r="4" fill="#00C805"/><line x1="20" y1="0" x2="20" y2="10" stroke="#00C805" stroke-width="3"/><line x1="20" y1="30" x2="20" y2="40" stroke="#00C805" stroke-width="3"/><line x1="0" y1="20" x2="10" y2="20" stroke="#00C805" stroke-width="3"/><line x1="30" y1="20" x2="40" y2="20" stroke="#00C805" stroke-width="3"/></svg>
+    Hood<span>Snipr</span>
+  </a>
+  <a class="back" href="./app.html">← BACK TO APP</a>
+</header>
+<h1>Privacy Policy</h1>
+<div class="upd">LAST UPDATED · 22 August 2026</div>
+
+<div class="note"><b>The short version.</b> HoodSnipr is non-custodial and account-free. We never take your private keys,
+we never hold your funds, and we don't sell data. Most of what the app knows about you lives in your own browser.</div>
+
+<h2>1. What we do not collect</h2>
+<ul>
+  <li>Private keys or seed phrases. The in-browser HoodSnipr wallet is generated on your device and its key never leaves it — we could not access it if we wanted to.</li>
+  <li>Names, emails, phone numbers, or passwords. There are no accounts to create.</li>
+  <li>Custody of any asset. Every transaction is signed in your wallet and broadcast to Robinhood Chain.</li>
+</ul>
+
+<h2>2. What is stored in your browser</h2>
+<p>The following are kept in your device's local storage and are never transmitted to us:</p>
+<ul>
+  <li>Your trade history, portfolio snapshots, and PnL figures.</li>
+  <li>Interface preferences — selected tab, timeframe, and slippage.</li>
+  <li>Your HoodSnipr wallet key, if you create one, and the address that funded it.</li>
+  <li>Cached market data so the app paints instantly on load.</li>
+</ul>
+<p>Clearing your browser data erases all of it. If you hold funds in a HoodSnipr wallet and have not exported the key, clearing that data destroys access to those funds permanently.</p>
+
+<h2>3. What we store on our servers</h2>
+<ul>
+  <li><b>Profiles.</b> If you claim a handle, we store that handle, your chosen display name, an optional X handle, an optional profile image, and the wallet address that signed for it. This is public by design — it appears on the leaderboard.</li>
+  <li><b>Leaderboard entries.</b> Wallet address and reported PnL for participating wallets.</li>
+  <li><b>Market caches.</b> Token, pool, and price data about the chain itself. This concerns tokens, not people.</li>
+</ul>
+
+<h2>4. Public blockchain data</h2>
+<p>Robinhood Chain is a public ledger. Every transaction you make — including through HoodSnipr — is permanently visible to anyone, and we cannot alter or remove it. Connecting a wallet reveals its address and its full transaction history to the app, as it does to any dapp.</p>
+
+<h2>5. Third parties</h2>
+<p>The app reads data from third-party services, and requests to them carry your IP address under their own policies:</p>
+<ul>
+  <li>Robinhood Chain public RPC — balances, quotes, and transaction submission.</li>
+  <li>DexScreener and GeckoTerminal — market data and charts.</li>
+  <li>Blockscout — holder counts and token metadata.</li>
+  <li>Netlify — hosting and edge caching.</li>
+</ul>
+<p>We do not run advertising or third-party analytics trackers.</p>
+
+<h2>6. Your control</h2>
+<p>Disconnect your wallet at any time. Delete local data by clearing site storage. To remove a stored profile, contact us with a signature from the owning wallet — we verify ownership cryptographically before making changes, because a wallet address is the only identity we recognise.</p>
+
+<h2>7. Changes</h2>
+<p>Material changes will be reflected in the date above. Continued use after a change constitutes acceptance.</p>
+
+<footer>
+  <span>© 2026 HoodSnipr</span>
+  <span>Not affiliated with Robinhood Markets, Inc.</span>
+</footer>
+</div>
+</body>
+</html>
