@@ -6,6 +6,7 @@
 // like an impersonator or a security token.
 import { store as _store } from "./_store.mjs";
 import { fetchUniverse, refreshKnown, dsSlug } from "./_feeds.mjs";
+import { ponsMap } from "./_pons.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
@@ -151,8 +152,10 @@ export function buildBoard(tokens, holders) {
     if (!t || addr === WETH) continue;
     if (excluded(t.s, t.n)) continue;
     if (looksFake(t)) continue;
+    // A pons launch is legitimate from block one, even before any volume
+    // exists. Requiring volume would hide exactly the launches a sniper wants.
     const hasMarket = (t.h24 > 0 || t.h6 > 0 || t.h1 > 0 || t.m5 > 0) && (t.liq || 0) >= 200;
-    if (!hasMarket) continue;
+    if (!hasMarket && !t.pons) continue;
 
     const k = normTicker(t.s);
     if (!k) continue;
@@ -170,6 +173,8 @@ export function buildBoard(tokens, holders) {
     ts5: trendScore(t, "m5"), ts1: trendScore(t, "h1"),
     ts6: trendScore(t, "h6"), ts24: trendScore(t, "h24"),
     txns: t.txns || null,
+    pons: !!t.pons, ponsBlock: t.ponsBlock || null,
+    restrictionsEndBlock: t.restrictionsEndBlock || null,
     a: t.a, p: t.pool, s: String(t.s || "").replace(/^\$+/, ""), n: t.n,
     img: t.img || null, px: t.px, mc: t.mc, liq: t.liq,
     m5: t.m5 || 0, h1: t.h1 || 0, h6: t.h6 || 0, h24: t.h24 || 0,
@@ -218,6 +223,36 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
     calls: deep ? 60 : 30, deadline: Date.now() + Math.min(5000, timeLeft() - 1500)
   }).catch(() => ({}));
 
+  // pons launches are indexed straight from its factory events, so a token
+  // appears the moment it is created — before any screener has picked it up.
+  // That's the whole point of a sniper.
+  let ponsTagged = 0;
+  try {
+    const pm = await ponsMap();
+    for (const addr of Object.keys(pm)) {
+      const p = pm[addr];
+      if (!p.sym || p.sym === "?") continue;
+      const ex = known.t[addr];
+      if (ex) {
+        ex.pons = true; ex.ponsPool = p.pool; ex.ponsBlock = p.block;
+        ex.restrictionsEndBlock = p.restrictionsEndBlock;
+        if (!ex.img && p.logo) ex.img = p.logo;
+        ponsTagged++;
+      } else {
+        // brand-new launch no feed knows about yet
+        known.t[addr] = {
+          a: addr, pool: p.pool, s: p.sym, n: p.name || "",
+          img: p.logo || null, px: null, liq: 0, mc: null,
+          m5: 0, h1: 0, h6: 0, h24: 0, cm5: 0, c1: 0, c6: 0, c24: 0,
+          cr: null, ver: "v3", src: "pons", pons: true, ponsPool: p.pool,
+          ponsBlock: p.block, restrictionsEndBlock: p.restrictionsEndBlock,
+          t: Date.now()
+        };
+        ponsTagged++;
+      }
+    }
+  } catch (e) {}
+
   const rows = buildBoard(known.t, holders);
   let vol24 = 0, liq = 0;
   for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
@@ -229,6 +264,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       universeTokens: Object.keys(known.t).length,
       vol24, liq,
       washFiltered: rows.filter(r => r.wash).length,
+      ponsTokens: ponsTagged,
       feedPage: page,
       errors: errors.slice(0, 3)
     }
