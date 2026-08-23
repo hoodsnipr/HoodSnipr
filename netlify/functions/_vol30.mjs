@@ -13,6 +13,11 @@ import { store as _store } from "./_store.mjs";
 const GT = "https://api.geckoterminal.com/api/v2";
 const NET = "robinhood";
 const TTL = 12 * 3600e3;
+// Bumped when the cache format or its trustworthiness changes. An earlier build
+// wrote v:0 on every failed fetch, so thousands of live tokens were cached as
+// "$0 for 12 hours". Those entries can't be told apart from genuine zeros, so
+// the whole cache is discarded once at this version.
+const CACHE_VERSION = 2;
 
 async function gt(path) {
   const r = await fetch(GT + path, { headers: { accept: "application/json;version=20230302" } });
@@ -34,13 +39,17 @@ async function poolVol30(pool) {
 export async function fillVol30(rows, { budgetMs = 5000, max = 25 } = {}) {
   const t0 = Date.now();
   const store = await _store("hoodsnipr-cache");
-  const cache = (await store.get("vol30", { type: "json" }).catch(() => null)) || {};
+  let cache = (await store.get("vol30", { type: "json" }).catch(() => null)) || {};
+  if (cache.__v !== CACHE_VERSION) {
+    cache = { __v: CACHE_VERSION };          // discard the poisoned generation
+  }
   const now = Date.now();
 
   // Refresh the stalest first, but always prioritise tokens with real 24h
   // activity — those are the ones a 30D ranking actually needs.
   const candidates = (rows || [])
     .filter(r => r.p && /^0x[0-9a-f]{40}$/i.test(String(r.p)))
+    .filter(r => (r.h24 || 0) > 0 || (r.liq || 0) > 0)   // don't burn calls on dead pools
     .map(r => {
       const k = String(r.p).toLowerCase();
       const c = cache[k];
@@ -74,7 +83,7 @@ export async function fillVol30(rows, { budgetMs = 5000, max = 25 } = {}) {
   }
 
   // keep the blob bounded
-  const keys = Object.keys(cache);
+  const keys = Object.keys(cache).filter(k => k !== "__v");
   if (keys.length > 5000) {
     const trimmed = {};
     for (const k of keys.slice(-3500)) trimmed[k] = cache[k];
@@ -90,7 +99,11 @@ export async function vol30Map() {
   const store = await _store("hoodsnipr-cache");
   const c = (await store.get("vol30", { type: "json" }).catch(() => null)) || {};
   const out = {};
-  // null means "not measured yet" and must never surface as 0.
-  for (const k of Object.keys(c)) if (c[k] && c[k].v != null) out[k] = c[k].v;
+  if (c.__v !== CACHE_VERSION) return out;   // stale generation — ignore wholesale
+  for (const k of Object.keys(c)) {
+    if (k === "__v") continue;
+    // null means "not measured yet" and must never surface as 0.
+    if (c[k] && c[k].v != null) out[k] = c[k].v;
+  }
   return out;
 }
