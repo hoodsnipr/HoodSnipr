@@ -853,11 +853,17 @@ function fmtNum(n){ if(n==null||isNaN(n))return"—"; if(n>=1e9)return (n/1e9).t
 // Aggregate from whatever data we actually have in hand. The proxy's numbers
 // are used only when they're larger (deeper coverage) — the bar can never sit
 // empty just because a function hasn't warmed up.
+// Client-side fallback totals. These need the same outlier rejection as the
+// server, or a single corrupt row poisons the headline number.
 function localStats(){
   var vol=0, liq=0, toks={}, seen={};
+  var MAX_TOKEN_LIQ=5e7, MAX_TOKEN_VOL=5e8;
   (state.pools||[]).forEach(function(p){
     var k=(p.pool||"").toLowerCase(); if(!k||seen[k])return; seen[k]=1;
-    vol+=(+p.h24||0); liq+=(+p.liq||0);
+    var l=+p.liq||0, v=+p.h24||0;
+    // one corrupt reserve figure is enough to swamp a chain-wide sum
+    if(isFinite(l) && l>0 && l<=MAX_TOKEN_LIQ) liq+=l;
+    if(isFinite(v) && v>0 && v<=MAX_TOKEN_VOL) vol+=v;
     if(p.baseToken) toks[p.baseToken.toLowerCase()]=1;
   });
   return { vol24:vol, liq:liq, tokenCount:Object.keys(toks).length, pools:Object.keys(seen).length };
@@ -874,10 +880,25 @@ function renderChainBar(){
     if(vol==null) vol=l.vol24;
     if(liq==null) liq=l.liq;
   }
-  // guard against a mid-sweep dip making the number visibly jump backwards
-  var b=state.statBest||(state.statBest={});
-  if(vol>0){ if(vol >= (b.vol||0)*0.7) b.vol=vol; else vol=b.vol; }
-  if(liq>0){ if(liq >= (b.liq||0)*0.7) b.liq=liq; else liq=b.liq; }
+  // A ratchet used to hold the running maximum here to stop mid-sweep dips.
+  // It also meant a single corrupt reading was locked in forever — which is
+  // exactly how the liquidity stat got stuck at $27,500B and would not clear
+  // no matter what the server reported. A rolling median gives the same
+  // stability without ever being captured by one bad value.
+  var CHAIN_MAX_LIQ = 5e9, CHAIN_MAX_VOL = 5e9;
+  if(!(liq>0) || liq>CHAIN_MAX_LIQ) liq=null;
+  if(!(vol>0) || vol>CHAIN_MAX_VOL) vol=null;
+
+  var hist=state.statHist||(state.statHist={vol:[],liq:[]});
+  function median(a){
+    if(!a.length) return null;
+    var x=a.slice().sort(function(p,q){return p-q});
+    return x[Math.floor(x.length/2)];
+  }
+  if(liq!=null){ hist.liq.push(liq); if(hist.liq.length>5) hist.liq.shift(); }
+  if(vol!=null){ hist.vol.push(vol); if(hist.vol.length>5) hist.vol.shift(); }
+  liq = median(hist.liq);
+  vol = median(hist.vol);
 
   if((e=$("#cbVol"))) e.textContent = vol>0? fmtUsd(vol) : "…";
   if((e=$("#cbLiq"))) e.textContent = liq>0? fmtUsd(liq) : "…";
@@ -1023,7 +1044,17 @@ function socialLinks(p, size){
 }
 
 // ================= BOARD =================
-function volFor(p){ if(state.tf==="d30") return state.d30[(p.pool||"").toLowerCase()]||0; return p[state.tf]||0 }
+function volFor(p){
+  if(state.tf==="d30"){
+    // mirror the ranking logic exactly, or the row shows a different number
+    // from the one it was sorted by
+    if(p.d30!=null && p.d30>0) return p.d30;
+    var c=state.d30[(p.pool||"").toLowerCase()];
+    if(c!=null && c>0) return c;
+    return (p.h24||0)*30;                    // labelled EST in the row
+  }
+  return p[state.tf]||0;
+}
 var SCORE_KEY={m5:"ts5",h1:"ts1",h6:"ts6",h24:"ts24"};
 function scoreFor(p){
   if(state.tf==="d30") return volFor(p);
@@ -1163,9 +1194,20 @@ function rankFor(tf, washTf){
       // held back from the 30D board until a real figure exists.
       var cached=d30[(p.pool||"").toLowerCase()];
       var known = (p.d30!=null) ? p.d30 : (cached!=null ? cached : null);
-      if(known==null) continue;
-      if(known<=0) continue;                 // genuinely no 30-day trading
-      vol=known;
+      if(known!=null && known>0){
+        vol=known;
+        p._d30est=false;
+      }else if(known!=null){
+        continue;                            // measured, and genuinely dead
+      }else{
+        // Not measured yet. Emptying the board while coverage builds is worse
+        // than ranking on a clearly-labelled proxy, so a token with real recent
+        // trading still appears — marked EST until the true figure lands.
+        var proxy=(p.h24||0)*30;
+        if(!(proxy>0)) continue;
+        vol=proxy;
+        p._d30est=true;
+      }
     }else{
       vol=p[tf]||0;
     }
@@ -1244,7 +1286,8 @@ function renderBoard(){
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
       +'<div class="n">'+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
-      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]+'</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]
+        +(p._d30est&&state.tf==="d30"?' <span style="color:var(--gold)">EST</span>':'')+'</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
       +'</div>';
   });
@@ -2211,6 +2254,10 @@ function refreshBans(){
       if(changed){ invalidateRanks(); renderBoard(); renderPortfolio(); }
     }).catch(function(){});
 }
+
+// A previous build persisted a corrupt running maximum for the chain stats.
+// Clear it once so the fixed numbers can take effect.
+try{ localStorage.removeItem("hs_statbest"); }catch(e){}
 
 var hidden = load("hs_hidden", {});
 function isHidden(p){ return !!hidden[(p.baseToken||"").toLowerCase()]; }
