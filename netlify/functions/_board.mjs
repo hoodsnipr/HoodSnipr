@@ -7,6 +7,7 @@
 import { store as _store } from "./_store.mjs";
 import { fetchUniverse, refreshKnown, dsSlug } from "./_feeds.mjs";
 import { ponsMap } from "./_pons.mjs";
+import { isDenied, normSym } from "./_denylist.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
@@ -164,19 +165,84 @@ export function washSuspect(row) {
   return true;
 }
 
-export function buildBoard(tokens, holders) {
+// CREDIBILITY GATE
+//
+// The tokens slipping through were showing large volume on our board while not
+// trending anywhere else — which means the volume itself is manufactured. A
+// badge after the fact is too late; these need to not appear at all.
+//
+// Each rule below describes something that cannot be true of an honest market,
+// and each is checked against data we already hold, so the gate costs nothing.
+export function credibility(t, holders) {
+  const liq = +t.liq || 0;
+  const vol = +t.h24 || 0;
+  const h = (holders && holders[t.a] && holders[t.a].h != null) ? holders[t.a].h : null;
+  const tx = t.txns && t.txns.h24 ? t.txns.h24 : null;
+  const tx24 = tx ? ((tx.b || 0) + (tx.s || 0)) : null;
+  const severe = [], soft = [];
+
+  // A pons launch is legitimate from block one with no volume at all, so the
+  // depth and volume rules don't apply until it actually starts trading.
+  const infant = !!t.pons && vol < 1000;
+
+  // --- individually impossible in an honest market ---
+
+  // Each trade larger than the entire pool. The pool physically cannot absorb
+  // that, so the "volume" is not passing through this liquidity.
+  if (!infant && tx24 && tx24 > 0 && liq > 0) {
+    const avgTrade = vol / tx24;
+    if (avgTrade > liq * 0.5)
+      severe.push(`average trade $${Math.round(avgTrade).toLocaleString()} against a $${Math.round(liq).toLocaleString()} pool`);
+  }
+  // Turnover no real market sustains.
+  if (!infant && liq > 0 && vol / liq > 200)
+    severe.push(`volume ${Math.round(vol / liq)}x pool depth`);
+  // Serious money, almost nobody holding it.
+  if (h != null && h < 20 && vol > 50000)
+    severe.push(`$${Math.round(vol/1000)}k volume across only ${h} holders`);
+  // Serious money, almost no trades — a few enormous prints.
+  if (tx24 != null && tx24 < 15 && vol > 50000)
+    severe.push(`only ${tx24} trades behind $${Math.round(vol/1000)}k of volume`);
+  // Entirely one-sided flow.
+  if (tx24 != null && tx24 >= 40 && tx && (tx.b === 0 || tx.s === 0))
+    severe.push("every trade in the same direction");
+  // Buys and sells matched to the trade — the cycling signature.
+  if (tx24 != null && tx24 >= 60 && tx && vol > 50000 &&
+      Math.abs((tx.b || 0) - (tx.s || 0)) / tx24 < 0.02)
+    severe.push("buys and sells perfectly matched — cycling pattern");
+
+  // --- weaker signals: need corroboration ---
+  if (!infant && liq < 1000) soft.push("liquidity under $1k");
+  if (h != null && h < 10 && vol > 5000) soft.push(`only ${h} holders`);
+
+  return { severe, soft, hide: severe.length >= 1 || soft.length >= 2,
+           reasons: severe.concat(soft) };
+}
+
+export function buildBoard(tokens, holders, blocked) {
   const byTicker = {};
   for (const addr of Object.keys(tokens)) {
     const t = tokens[addr];
     if (!t || addr === WETH) continue;
     if (excluded(t.s, t.n)) continue;
     if (looksFake(t)) continue;
+
+    // manual override — human judgement beats any heuristic
+    if (isDenied(addr, t.s)) continue;
+
+    // cached DANGER verdicts from the deeper on-chain analysis
+    if (blocked && blocked[addr]) continue;
+
+    // credibility gate: two independent impossibilities means it isn't a market
+    const cred = credibility(t, holders);
+    if (cred.hide) continue;
+    t._credWarn = cred.soft.length === 1 ? cred.soft[0] : null;
     // A pons launch is legitimate from block one, even before any volume
     // exists. Requiring volume would hide exactly the launches a sniper wants.
     const hasMarket = (t.h24 > 0 || t.h6 > 0 || t.h1 > 0 || t.m5 > 0) && (t.liq || 0) >= 200;
     if (!hasMarket && !t.pons) continue;
 
-    const k = normTicker(t.s);
+    const k = normSym(t.s) || normTicker(t.s);
     if (!k) continue;
     const cur = byTicker[k];
     if (!cur) { byTicker[k] = t; continue; }
@@ -200,6 +266,7 @@ export function buildBoard(tokens, holders) {
     cm5: t.cm5 || 0, c1: t.c1 || 0, c6: t.c6 || 0, c24: t.c24 || 0,
     site: t.site || null, tw: t.tw || null, tg: t.tg || null,
     boosts: t.boosts || 0, hasProfile: !!t.hasProfile,
+    credWarn: t._credWarn || null,
     cr: t.cr || null, ver: t.ver || "v3", dex: t.dex || "", src: t.src || ""
   }));
   for (const r of rows) r.wash = washSuspect(r);
@@ -273,7 +340,17 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
     }
   } catch (e) {}
 
-  const rows = buildBoard(known.t, holders);
+  // DANGER verdicts from the on-chain safety analysis, cached from earlier runs
+  let blocked = {};
+  try {
+    const sf = await store.get("safety", { type: "json" });
+    if (sf) for (const k of Object.keys(sf)) {
+      const v = sf[k] && sf[k].v;
+      if (v && v.label === "DANGER") blocked[k] = true;
+    }
+  } catch (e) {}
+
+  const rows = buildBoard(known.t, holders, blocked);
   let vol24 = 0, liq = 0;
   for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
 
@@ -284,6 +361,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       universeTokens: Object.keys(known.t).length,
       vol24, liq,
       washFiltered: rows.filter(r => r.wash).length,
+      blockedByScore: Object.keys(blocked).length,
       ponsTokens: ponsTagged,
       feedPage: page,
       errors: errors.slice(0, 3)
