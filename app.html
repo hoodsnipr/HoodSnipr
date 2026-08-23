@@ -454,7 +454,8 @@ var CFG = {
     swapRouter02: "0xCaf681a66D020601342297493863E78C959E5cb2",
     quoterV2:     "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
     feeTiers: [10000, 3000, 500, 100],   // 1% first — memecoin pools live there
-    defaultSlippageBps: 500,             // 5%
+    defaultSlippageBps: 300,             // 3% — enough for a memecoin fill without
+                                         // handing the pool a wide price band
     // Uniswap v4: pools live in a singleton PoolManager and are only reachable
     // through the UniversalRouter. Runtime-verified before any swap, same as v3.
     // CONFIRMED against Uniswap's official 4663 deployment file and the
@@ -1320,7 +1321,10 @@ function openToken(poolAddr){
      || state.extraPools.find(function(x){return (x.pool||"").toLowerCase()===key});
   if(!p) return;
   modal.pool=p; modal.mode = state.wallet?"wallet":(state.burner?"burner":"wallet");
-  var gtEmbed="https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool+"?embed=1&info=0&swaps=0&light_chart=0";
+  // Open on the 1-minute candle: snipers care about the last few minutes, and
+  // GeckoTerminal otherwise defaults to a much slower timeframe.
+  var gtEmbed="https://www.geckoterminal.com/"+CFG.GT_NET+"/pools/"+p.pool
+    +"?embed=1&info=0&swaps=0&light_chart=0&resolution=1m";
   var c=p.ch24, up=c>=0;
   $("#modalRoot").innerHTML=
   '<div class="modal-bg" data-action="closebg"><div class="modal">'
@@ -2704,7 +2708,13 @@ async function fire(){
 function recordTrade(p, ethIn, fee, mode, tokensOut, txHash, extra){
   var t={ sym:p.sym, baseToken:p.baseToken, pool:p.pool, ethIn:ethIn, fee:fee,
     usdIn: ethIn*state.ethUsd,           // cost basis frozen at trade time
-    entryPrice:p.price, ts:Date.now(), mode:mode,
+    // Execution price, derived from the trade itself. The indexer's price is a
+    // cached quote from a different moment and includes none of the pool fee,
+    // spread, or slippage you actually paid — valuing a fresh position with it
+    // manufactured an instant double-digit "loss" on every snipe.
+    entryPrice: (tokensOut>0 ? (ethIn*state.ethUsd)/tokensOut : (p.price||0)),
+    quotedPrice: p.price || null,
+    ts:Date.now(), mode:mode,
     dec: p.dec||null,
     tokens: tokensOut, tx: txHash||null };
   if(extra) for(var kk in extra) t[kk]=extra[kk];
@@ -3284,9 +3294,15 @@ function tradePnl(){
     }
   });
 
+  // Fees are a real cost and stay in PnL, but we surface them separately so a
+  // flat position reads as "-$0.30 in fees" rather than an unexplained loss.
+  var feesUsd=0;
+  state.trades.forEach(function(t){ feesUsd += (+t.fee||0)*state.ethUsd; });
+
   var pnl = state.trades.length? (open + usdOut - costCounted) : null;
   return { pnl:pnl, usdIn:usdInAll, costCounted:costCounted, ethIn:ethIn,
-           usdOut:usdOut, openUsd:open, unpriced:unpriced };
+           usdOut:usdOut, openUsd:open, unpriced:unpriced, feesUsd:feesUsd,
+           grossPnl: pnl==null? null : pnl + feesUsd };
 }
 // Best available price for a token: live holdings -> board -> last trade entry.
 function priceForToken(addr){
@@ -3296,7 +3312,7 @@ function priceForToken(addr){
   if(row && row.price>0) return row.price;
   var h=(port.holdings||[]).find(function(x){return x.addr===k});
   if(h && h.price>0) return h.price;
-  // fall back to the price we paid, so an unlisted token shows flat, not -100%
+  // fall back to what we actually paid, so an unpriced position reads flat
   var last=null;
   (state.trades||[]).forEach(function(t){
     if((t.baseToken||"").toLowerCase()===k && t.side!=="sell" && t.entryPrice>0) last=t.entryPrice;

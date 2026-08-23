@@ -1,2 +1,3 @@
 User-agent: *
 Allow: /
+Disallow: /sn1pr-ctrl-9f4b2e.html
