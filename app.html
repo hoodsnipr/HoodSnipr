@@ -216,8 +216,18 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pst .k{font-family:var(--mono);font-size:9px;color:var(--mute);letter-spacing:.14em}
 .pst .v{font-family:var(--mono);font-size:18px;margin-top:5px}
 .pst .s{font-size:10px;color:var(--mute);margin-top:2px}
-.pvchart{height:150px}
-.pvchart svg{width:100%;height:100%;display:block}
+/* The chart is a stack (header / canvas / footer) and must size to content —
+   a fixed 150px container made it overflow onto the holdings card. */
+.pvchart{display:block}
+.pvchart svg{width:100%;display:block;border-radius:10px;background:var(--void)}
+.pvwrap{position:relative}
+.pvtip{position:absolute;pointer-events:none;background:var(--panel2);border:1px solid var(--line);
+  border-radius:8px;padding:6px 9px;font-family:var(--mono);font-size:10px;color:var(--text);
+  white-space:nowrap;opacity:0;transition:opacity .12s;z-index:3;box-shadow:0 6px 18px rgba(0,0,0,.45)}
+.pvtip.on{opacity:1}
+.pvtip .u{color:var(--green)} .pvtip .d{color:var(--red)}
+.pvempty{padding:26px 14px;text-align:center;color:var(--mute);font-size:13px;
+  border:1px dashed var(--line);border-radius:12px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
 .pons{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#8B5CF6;border:1px solid #8B5CF6;border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle}
 .gradbar{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:11px}
@@ -620,6 +630,7 @@ function boardRowToPool(r){
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
     pons:!!r.pons, ponsBlock:r.ponsBlock||null, restrictionsEndBlock:r.restrictionsEndBlock||null,
+    d30:(r.d30!=null? r.d30 : null),        // server-computed, whole board
     ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
     holders:r.h!=null?r.h:null, wash:!!r.wash,
     created:r.cr? new Date(r.cr).toISOString() : null,
@@ -902,7 +913,10 @@ async function ensure30d(){
   if(state.d30Loading) return;
   state.d30Loading=true;
   var cache=load("hs_d30",{}); var now=Date.now();
-  var top = state.pools.slice().sort(function(a,b){return b.h24-a.h24}).slice(0,60);
+  // The server now supplies 30D for the whole board; only chase gaps.
+  var top = state.pools.filter(function(p){ return p.d30==null; })
+    .sort(function(a,b){return b.h24-a.h24}).slice(0,40);
+  if(!top.length){ state.d30Loading=false; return; }
   var done=0;
   for(var i=0;i<top.length;i++){
     var p=top[i], key=(p.pool||"").toLowerCase();
@@ -1133,8 +1147,26 @@ function rankFor(tf, washTf){
     if(washTf && p.wash) continue;
     // resolve volume once — the d30 lookup normalises the address here instead
     // of inside the comparator
-    var vol = isD30 ? (d30[(p.pool||"").toLowerCase()]||0) : (p[tf]||0);
+    // 30D now arrives with the board payload; the per-pool client fetch only
+    // fills gaps for anything the indexer hasn't reached yet.
+    var vol = isD30
+      ? (p.d30!=null ? p.d30 : (d30[(p.pool||"").toLowerCase()]||0))
+      : (p[tf]||0);
     if(!isD30 && !(vol>0 || (p.liq||0)>=1000)) continue;
+
+    // The short-window boards were full of junk: a $300 pool doing $900 in an
+    // hour scores enormous acceleration and outranks real markets. Require a
+    // token to be a real market before it can trend on 1H or 6H.
+    if(tf==="h1" || tf==="h6"){
+      var minLiq = (tf==="h1") ? 3000 : 5000;
+      var minVol = (tf==="h1") ? 500  : 2000;
+      if((p.liq||0) < minLiq) continue;
+      if(vol < minVol) continue;
+      // volume must be plausible against the pool that supposedly produced it
+      if((p.liq||0) > 0 && vol/(p.liq||1) > 150) continue;
+      var tk = p.txns && p.txns[tf];
+      if(tk && ((tk.b||0)+(tk.s||0)) < 8) continue;
+    }
     var sc = isD30 ? vol : ((p[scoreKey]||0) > 0 ? p[scoreKey] : Math.sqrt(vol||0));
     out.push({ p:p, sc:sc, vol:vol, liq:p.liq||0, id:p.baseToken||p.pool||"" });
   }
@@ -3319,7 +3351,8 @@ function snapshotPv(){
 // is bucketed into OHLC candles so intraday swings are visible, with a range
 // selector and pinch/drag zoom. Rendered as inline SVG — no chart library, no
 // extra payload.
-var pvZoom = { span: null, offset: 0 };     // span = candles visible, null = all
+var pvZoom = { span: null, offset: 0 };
+var pvView=[], pvBucketMs=0;     // span = candles visible, null = all
 // Timeframes match the trending board so the whole app speaks one language.
 // Each is a CANDLE size, and the window shown scales with it.
 var PV_RANGES = [
@@ -3352,97 +3385,111 @@ function pvBuckets(series, bucketMs){
 function renderPvChart(){
   var el=$("#pvChart"); if(!el) return;
   var se=load("hs_pv",[]);
+
+  var head = '<div class="pvhead">'
+    + '<div id="pvReadout"></div>'
+    + '<div class="pvrng">'+PV_RANGES.map(function(r){
+        return '<button data-action="pvrange" data-r="'+r.id+'"'+(r.id===pvRange?' class="on"':'')+'>'+r.id+'</button>';
+      }).join("")+'</div>'
+    + '</div>';
+
   if(se.length<2){
-    el.innerHTML='<div class="empty" style="padding:24px">Value history builds as you use the portfolio — check back soon.</div>';
+    el.innerHTML=head+'<div class="pvempty">Your value history starts building as soon as you hold something.<br>'
+      +'<span style="font-size:11px">Points are recorded every minute while the app is open.</span></div>';
+    paintReadout(null,null);
     return;
   }
+
   var cfg=PV_RANGES.find(function(r){return r.id===pvRange}) || PV_RANGES[0];
   var now=Date.now();
   var win = cfg.span ? se.filter(function(p){ return now-p.t <= cfg.span; }) : se.slice();
-  // If the chosen window is empty because history is short, show what exists
-  // rather than an empty chart.
   if(win.length<2) win=se.slice();
 
   var bucket=cfg.bucket;
   var candles=pvBuckets(win, bucket);
   if(candles.length<2){
-    // History is younger than one candle — drop to a finer bucket so there is
-    // still something to read.
     var finer=[5*60e3, 60e3, 15e3];
-    for(var fi=0; fi<finer.length && candles.length<2; fi++){
+    for(var fi=0; fi<finer.length && candles.length<2; fi++)
       if(finer[fi]<bucket){ bucket=finer[fi]; candles=pvBuckets(win, bucket); }
-    }
   }
-  if(candles.length<2)
-    candles=win.map(function(p){ return {t:p.t,o:p.v,h:p.v,l:p.v,c:p.v}; });
+  if(candles.length<2){
+    el.innerHTML=head+'<div class="pvempty">Not enough history for '+pvRange+' candles yet.<br>'
+      +'<span style="font-size:11px">Try a shorter timeframe, or come back later.</span></div>';
+    paintReadout(se[se.length-1].v, se[0].v);
+    return;
+  }
 
-  // zoom: keep the most recent N candles
-  if(pvZoom.span && pvZoom.span < candles.length){
-    var endIdx=Math.max(pvZoom.span, candles.length - pvZoom.offset);
+  // zoom window
+  var total=candles.length;
+  if(pvZoom.span && pvZoom.span<total){
+    var endIdx=Math.max(pvZoom.span, total - pvZoom.offset);
     candles=candles.slice(Math.max(0,endIdx-pvZoom.span), endIdx);
   }
+  pvView=candles; pvBucketMs=bucket;
 
-  var W=640, H=210, PADL=6, PADR=54, PADT=12, PADB=26;
+  var W=680, H=200, PADL=8, PADR=58, PADT=14, PADB=24;
   var lo=Infinity, hi=-Infinity;
   candles.forEach(function(c){ lo=Math.min(lo,c.l); hi=Math.max(hi,c.h); });
-  if(!(hi>lo)) { hi=lo+Math.max(1, Math.abs(lo)*0.02); }
-  var pad=(hi-lo)*0.12; lo-=pad; hi+=pad;
+  if(!(hi>lo)) hi=lo+Math.max(0.01, Math.abs(lo)*0.02);
+  var pad=(hi-lo)*0.14; lo-=pad; hi+=pad;
   var iw=W-PADL-PADR, ih=H-PADT-PADB;
   var y=function(v){ return PADT + ih*(1-(v-lo)/(hi-lo)); };
-  var cw=Math.max(1.5, Math.min(16, iw/candles.length*0.66));
   var step=iw/candles.length;
+  var cw=Math.max(1.5, Math.min(14, step*0.62));
 
-  var first=candles[0].o, last=candles[candles.length-1].c;
-  var netUp = last>=first;
-
-  var body="", grid="";
-  // horizontal guides + right-side labels
+  var grid="", body="", axis="";
   for(var g=0; g<=3; g++){
     var gv=lo+(hi-lo)*(g/3), gy=y(gv);
-    grid+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".5"/>'
-       +'<text x="'+(W-PADR+6)+'" y="'+(gy+3.5).toFixed(1)+'" fill="var(--mute)" font-size="10" font-family="var(--mono)">$'+fmtUsdShort(gv)+'</text>';
+    grid+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".45"/>'
+       +'<text x="'+(W-PADR+7)+'" y="'+(gy+3.5).toFixed(1)+'" fill="var(--mute)" font-size="10" font-family="var(--mono)">$'+fmtUsdShort(gv)+'</text>';
   }
-  var axis="";
   candles.forEach(function(c,i){
     var cx=PADL + step*i + step/2;
-    var up=c.c>=c.o;
-    var col=up? "var(--green)" : "var(--red)";
+    var up=c.c>=c.o, col=up?"var(--green)":"var(--red)";
     var yo=y(c.o), yc=y(c.c), yh=y(c.h), yl=y(c.l);
-    var top=Math.min(yo,yc), hgt=Math.max(1.5, Math.abs(yc-yo));
-    // hollow bodies on up candles read cleaner at small sizes
+    var top=Math.min(yo,yc), hgt=Math.max(1.2, Math.abs(yc-yo));
     body+='<line x1="'+cx.toFixed(1)+'" y1="'+yh.toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+yl.toFixed(1)+'" stroke="'+col+'" stroke-width="1.1"/>'
        +'<rect x="'+(cx-cw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+hgt.toFixed(1)+'" '
-       +(up? 'fill="none" stroke="'+col+'" stroke-width="1.2"' : 'fill="'+col+'"')+' rx="1"/>';
+       +(up?'fill="none" stroke="'+col+'" stroke-width="1.3"':'fill="'+col+'"')+' rx="1"/>';
   });
-  // time axis — a few evenly spaced labels
   var ticks=Math.min(4, candles.length);
   for(var ti=0; ti<ticks; ti++){
     var idx=Math.round(ti*(candles.length-1)/Math.max(1,ticks-1));
     var tx=PADL + step*idx + step/2;
-    axis+='<text x="'+tx.toFixed(1)+'" y="'+(H-8)+'" fill="var(--mute)" font-size="9" font-family="var(--mono)" text-anchor="middle">'
+    axis+='<text x="'+tx.toFixed(1)+'" y="'+(H-7)+'" fill="var(--mute)" font-size="9" font-family="var(--mono)" text-anchor="middle">'
       +tsLabel(candles[idx].t, bucket)+'</text>';
   }
-  // last-price marker
-  var ly=y(last);
-  body+='<line x1="'+PADL+'" y1="'+ly.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+ly.toFixed(1)+'" stroke="'+(netUp?"var(--green)":"var(--red)")+'" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>';
+  var last=candles[candles.length-1].c, first=candles[0].o;
+  var lY=y(last);
+  body+='<line x1="'+PADL+'" y1="'+lY.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+lY.toFixed(1)+'" stroke="'+(last>=first?"var(--green)":"var(--red)")+'" stroke-width="1" stroke-dasharray="3 3" opacity=".65"/>';
 
-  var chg = first!==0 ? ((last-first)/Math.abs(first))*100 : 0;
-  el.innerHTML=
-    '<div class="pvhead">'
-      +'<div><b>$'+last.toLocaleString(undefined,{maximumFractionDigits:2})+'</b>'
-      +'<span class="'+(netUp?"up":"dn")+'">'+(netUp?"▲":"▼")+' '+Math.abs(chg).toFixed(2)+'%</span></div>'
-      +'<div class="pvrng">'+PV_RANGES.map(function(r){
-          return '<button data-action="pvrange" data-r="'+r.id+'"'+(r.id===pvRange?' class="on"':'')+'>'+r.id+'</button>';
-        }).join("")+'</div>'
-    +'</div>'
-    +'<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="width:100%;height:200px;touch-action:none">'
-      +grid+body+axis
-    +'</svg>'
-    +'<div class="pvfoot"><span>'+candles.length+' candles · '+bucketLabel(bucket)+'</span>'
-      +'<span>'+(pvZoom.span?'<button data-action="pvreset">RESET ZOOM</button>':'pinch or scroll to zoom')+'</span></div>';
+  el.innerHTML = head
+    + '<div class="pvwrap">'
+      + '<svg id="pvSvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="height:200px;touch-action:none">'
+        + grid + body + axis
+        + '<line id="pvCross" x1="0" y1="'+PADT+'" x2="0" y2="'+(H-PADB)+'" stroke="var(--mute)" stroke-width="1" opacity="0"/>'
+      + '</svg>'
+      + '<div class="pvtip" id="pvTip"></div>'
+    + '</div>'
+    + '<div class="pvfoot"><span>'+candles.length+' × '+bucketLabel(bucket)
+      +(pvZoom.span?' · zoomed':'')+'</span>'
+      +'<span>'+(pvZoom.span?'<button data-action="pvreset">RESET</button>':'drag or pinch to zoom')+'</span></div>';
 
-  bindPvZoom(candles.length);
+  paintReadout(last, first);
+  bindPvZoom(total, {W:W,PADL:PADL,step:step,PADT:PADT,PADB:PADB,H:H});
 }
+
+// The big number lives outside the SVG so it can update on hover without a
+// full re-render.
+function paintReadout(last, first){
+  var r=$("#pvReadout"); if(!r) return;
+  if(last==null){ r.innerHTML='<b>$0.00</b>'; return; }
+  var chg = first ? ((last-first)/Math.abs(first))*100 : 0;
+  var up = last>=first;
+  r.innerHTML='<b>$'+last.toLocaleString(undefined,{maximumFractionDigits:2})+'</b>'
+    +'<span class="'+(up?"up":"dn")+'">'+(up?"▲":"▼")+' '+Math.abs(chg).toFixed(2)+'%</span>';
+}
+
 function tsLabel(t, bucket){
   var d=new Date(t);
   if(bucket >= 24*3600e3) return (d.getMonth()+1)+"/"+d.getDate();
@@ -3461,45 +3508,103 @@ function fmtUsdShort(v){
   return v.toFixed(a<10?2:0);
 }
 // Pinch on touch, wheel on desktop, drag to pan.
-function bindPvZoom(total){
+function bindPvZoom(total, geo){
   var svg=$("#pvSvg"); if(!svg) return;
-  var pointers={}, startDist=0, startSpan=0, dragX=null, startOffset=0;
-  function span(){ return pvZoom.span || total; }
+  var tip=$("#pvTip"), cross=$("#pvCross"), wrap=svg.parentNode;
+  var pointers={}, pinchStart=0, spanStart=0, dragX=null, offStart=0, moved=false;
+
+  function curSpan(){ return pvZoom.span || total; }
   function apply(newSpan, newOffset){
-    pvZoom.span=Math.max(5, Math.min(total, Math.round(newSpan)));
-    if(pvZoom.span>=total) pvZoom.span=null;
-    pvZoom.offset=Math.max(0, Math.min(total-(pvZoom.span||total), Math.round(newOffset||0)));
+    var sp=Math.max(6, Math.min(total, Math.round(newSpan)));
+    pvZoom.span = (sp>=total) ? null : sp;
+    var maxOff = total - (pvZoom.span||total);
+    pvZoom.offset = Math.max(0, Math.min(maxOff, Math.round(newOffset||0)));
     renderPvChart();
   }
+
+  // ---- hover / touch readout ----
+  function idxAt(clientX){
+    var r=svg.getBoundingClientRect();
+    var xInView = (clientX - r.left) / r.width * geo.W;
+    var i = Math.floor((xInView - geo.PADL) / geo.step);
+    return Math.max(0, Math.min(pvView.length-1, i));
+  }
+  function showAt(clientX){
+    if(!pvView.length) return;
+    var i=idxAt(clientX), c=pvView[i];
+    var r=svg.getBoundingClientRect();
+    var cx=geo.PADL + geo.step*i + geo.step/2;
+    var px=cx/geo.W*r.width;
+    if(cross){ cross.setAttribute("x1",cx); cross.setAttribute("x2",cx); cross.setAttribute("opacity",".45"); }
+    if(tip){
+      var up=c.c>=c.o;
+      tip.innerHTML='<span class="'+(up?"u":"d")+'">'+tsLabel(c.t,pvBucketMs)+'</span>'
+        +'  O '+fmtUsdShort(c.o)+'  H '+fmtUsdShort(c.h)+'  L '+fmtUsdShort(c.l)+'  C '+fmtUsdShort(c.c);
+      tip.classList.add("on");
+      var tw=tip.offsetWidth||140;
+      tip.style.left=Math.max(0, Math.min(r.width-tw, px-tw/2))+"px";
+      tip.style.top="2px";
+    }
+    paintReadout(c.c, pvView[0].o);
+  }
+  function hide(){
+    if(cross) cross.setAttribute("opacity","0");
+    if(tip) tip.classList.remove("on");
+    if(pvView.length) paintReadout(pvView[pvView.length-1].c, pvView[0].o);
+  }
+
   svg.addEventListener("wheel", function(e){
     e.preventDefault();
-    apply(span()*(e.deltaY>0?1.2:0.83), pvZoom.offset);
+    apply(curSpan()*(e.deltaY>0?1.25:0.8), pvZoom.offset);
   }, {passive:false});
+
   svg.addEventListener("pointerdown", function(e){
     pointers[e.pointerId]={x:e.clientX};
-    svg.setPointerCapture(e.pointerId);
+    try{ svg.setPointerCapture(e.pointerId); }catch(_){}
     var ids=Object.keys(pointers);
+    moved=false;
     if(ids.length===2){
-      startDist=Math.abs(pointers[ids[0]].x-pointers[ids[1]].x)||1;
-      startSpan=span();
-    }else{ dragX=e.clientX; startOffset=pvZoom.offset; }
-  });
-  svg.addEventListener("pointermove", function(e){
-    if(!pointers[e.pointerId]) return;
-    pointers[e.pointerId].x=e.clientX;
-    var ids=Object.keys(pointers);
-    if(ids.length===2 && startDist){
-      var d=Math.abs(pointers[ids[0]].x-pointers[ids[1]].x)||1;
-      apply(startSpan*(startDist/d), pvZoom.offset);
-    }else if(dragX!=null && pvZoom.span){
-      var dx=e.clientX-dragX;
-      var perCandle=svg.clientWidth/Math.max(1,pvZoom.span);
-      apply(pvZoom.span, startOffset + dx/perCandle);
+      pinchStart=Math.abs(pointers[ids[0]].x-pointers[ids[1]].x)||1;
+      spanStart=curSpan();
+    }else{
+      dragX=e.clientX; offStart=pvZoom.offset;
+      showAt(e.clientX);
     }
   });
-  ["pointerup","pointercancel","pointerleave"].forEach(function(ev){
-    svg.addEventListener(ev, function(e){ delete pointers[e.pointerId]; startDist=0; dragX=null; });
+
+  svg.addEventListener("pointermove", function(e){
+    if(!pointers[e.pointerId]){
+      if(e.pointerType==="mouse") showAt(e.clientX);   // hover readout
+      return;
+    }
+    pointers[e.pointerId].x=e.clientX;
+    var ids=Object.keys(pointers);
+    if(ids.length===2 && pinchStart){
+      var d=Math.abs(pointers[ids[0]].x-pointers[ids[1]].x)||1;
+      apply(spanStart*(pinchStart/d), pvZoom.offset);
+      return;
+    }
+    if(dragX!=null){
+      var dx=e.clientX-dragX;
+      if(Math.abs(dx)>4) moved=true;
+      if(moved && pvZoom.span){
+        var r=svg.getBoundingClientRect();
+        var perCandle=r.width/Math.max(1,pvZoom.span);
+        apply(pvZoom.span, offStart + dx/perCandle);
+      }else{
+        showAt(e.clientX);
+      }
+    }
   });
+
+  ["pointerup","pointercancel","pointerleave"].forEach(function(ev){
+    svg.addEventListener(ev, function(e){
+      delete pointers[e.pointerId];
+      pinchStart=0; dragX=null;
+      if(ev!=="pointermove") setTimeout(hide, 900);
+    });
+  });
+  svg.addEventListener("mouseleave", hide);
 }
 
 // Every snipe and loose, newest first, with links to the transaction.
