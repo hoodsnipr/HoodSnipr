@@ -219,6 +219,14 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvchart{height:150px}
 .pvchart svg{width:100%;height:100%;display:block}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.trust{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.08em;border:1px solid;border-radius:6px;padding:1px 5px;margin-left:6px;vertical-align:middle}
+.trustpanel{margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:11px}
+.trustpanel .hdr{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:11px;letter-spacing:.1em}
+.trustpanel .bar{height:6px;border-radius:99px;background:var(--void);margin:8px 0;overflow:hidden}
+.trustpanel .bar i{display:block;height:100%;border-radius:99px}
+.trustpanel ul{list-style:none;margin:6px 0 0}
+.trustpanel li{font-size:11px;color:var(--mute);padding:3px 0;line-height:1.45}
+.trustpanel li b{color:var(--red)}
 .wdraw{color:var(--gold);border:1.5px solid var(--gold);font-weight:700;font-size:11px;padding:7px 11px;border-radius:99px;transition:all .15s;flex:0 0 auto;min-height:38px;white-space:nowrap}
 .wdraw:hover{background:var(--gold);color:#000}
 .loose{color:var(--red);border:1.5px solid var(--red);font-weight:700;font-size:12px;padding:7px 12px;border-radius:99px;transition:all .15s}
@@ -955,6 +963,31 @@ function venueBadge(p){
   if(v[0]==="v4") return '<span style="color:var(--gold)">V4</span> · ';
   return "";
 }
+// Score the visible page only, a few at a time, so the board stays fast.
+var trustQueue=[], trustRunning=false;
+function enrichTrust(rows){
+  rows.forEach(function(p){
+    var k=(p.baseToken||"").toLowerCase();
+    if(!k || trustCache[k]) return;
+    if(trustQueue.indexOf(k)<0) trustQueue.push({a:k,pool:p.pool});
+  });
+  runTrustQueue();
+}
+async function runTrustQueue(){
+  if(trustRunning) return; trustRunning=true;
+  while(trustQueue.length){
+    var item=trustQueue.shift();
+    if(!item || trustCache[item.a]) continue;
+    var t=await trustFor(item.a, item.pool);
+    if(t && (t.label==="DANGER"||t.label==="RISKY"||t.label==="WATCH")){
+      document.querySelectorAll('[data-trust="'+item.a+'"]').forEach(function(el){
+        el.innerHTML=trustBadge(t);
+      });
+    }
+    await new Promise(function(r){ setTimeout(r, 180); });
+  }
+  trustRunning=false;
+}
 var ttSig="";
 function renderTopTape(ranked){
   var el=$("#ttIn"); if(!el) return;
@@ -1037,7 +1070,9 @@ function renderBoard(){
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
       +'<div class="rank '+tierOf(i)+'">'+String(i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
-      +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)
+      +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
+      +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
       +'<div class="n">'+venueBadge(p)+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]+'</div></div>'
@@ -1047,6 +1082,7 @@ function renderBoard(){
   el.innerHTML=h;
   renderPager(ranked.length, pages);
   renderTopTape(ranked);
+  enrichTrust(rows);
   var pl=$("#pageLabel");
   if(pl){
     if(state.page===0){ pl.style.color="var(--gold)"; pl.textContent="🔥 TRENDING · TOP 50"; }
@@ -1190,6 +1226,7 @@ function openToken(poolAddr){
      +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
      +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
    +'</div>'
+   +'<div id="trustBox"></div>'
    +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
    +(p.baseToken?'<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;align-items:center">'
      +'<span style="font-family:var(--mono);font-size:11px;color:var(--mute)">CA '+short(p.baseToken)+'</span>'
@@ -1211,7 +1248,7 @@ function openToken(poolAddr){
    +'<a class="linkout" href="https://www.geckoterminal.com/'+CFG.GT_NET+'/pools/'+esc(p.pool)+'" target="_blank" rel="noopener">open on GeckoTerminal ↗</a>'
    +'<p class="warn">Total-loss risk. Fee (0.25%) is non-refundable on failure. Verify everything in your wallet before signing. Chart by GeckoTerminal.</p>'
   +'</div></div>';
-  modal.quote=null; modal.force=false; modal.bal=modal.bal||{};
+  modal.quote=null; modal.force=false; modal.trustAck=false; modal.bal=modal.bal||{};
   loadModalBalances();
   // Warm the v4 path in the background the moment the modal opens, so pressing
   // FIRE doesn't stall on router discovery and key resolution.
@@ -1225,6 +1262,25 @@ function openToken(poolAddr){
   if(vv.length===1 && vv[0]==="v4") modal.venue="v4";
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); renderSpendLine(); });
+  // trust score — lazy, cached, never blocks the modal from opening
+  trustFor(p.baseToken, p.pool).then(function(t){
+    var box=$("#trustBox"); if(!box||!t) return;
+    var c=TRUST_COLORS[t.label]||"var(--mute)";
+    var conf = t.confidence==="low" ? " · not enough trading history to judge yet" : "";
+    box.innerHTML='<div class="trustpanel">'
+      +'<div class="hdr"><span style="color:'+c+'">'+trustBadge(t)+'</span>'
+      +'<span style="color:var(--mute)">TRUST '+t.score+'/100</span></div>'
+      +'<div class="bar"><i style="width:'+t.score+'%;background:'+c+'"></i></div>'
+      +(t.flags && t.flags.length
+        ? '<ul>'+t.flags.map(function(f){ return '<li>'+(f.sev==="high"?'<b>⛔</b> ':'⚠ ')+esc(f.msg)+'</li>'; }).join("")+'</ul>'
+        : '<div style="font-size:11px;color:var(--mute)">No manipulation signals detected'+conf+'.</div>')
+      +(t.signals? '<div style="font-size:10px;color:var(--mute);margin-top:7px;font-family:var(--mono)">'
+          +t.signals.swaps+' swaps · '+t.signals.uniqueTraders+' traders · '
+          +Math.round((t.signals.forcedRatio||0)*100)+'% transfers outside swaps</div>' : '')
+      +(t.externalData? '' : '<div style="font-size:10px;color:var(--mute);margin-top:5px">Scored from on-chain behaviour — external security feeds don\'t cover this chain yet.</div>')
+      +'</div>';
+  });
+
   // lazy metadata: socials via GT info, holders via Blockscout
   enrichSocials(p).then(function(){ var el=$("#mSocials"); if(el) el.innerHTML=socialLinks(p,16); });
   if(p.baseToken) enrichHolders([p]).then(function(){
@@ -1924,6 +1980,31 @@ async function chargeFee(signer, feeEth, setBtn){
   return { paid:f.pay, credited:f.used };
 }
 
+// ---------------- TOKEN TRUST ----------------
+// Scores contract behaviour and trade authenticity, never age. A ten-minute-old
+// token with real buyers reads CLEAN; a token with huge volume across four
+// wallets reads DANGER.
+var trustCache={};
+async function trustFor(token, pool){
+  var k=String(token||"").toLowerCase();
+  if(!k) return null;
+  if(trustCache[k]) return trustCache[k];
+  try{
+    var r=await fetch(CFG.API+"/safety?token="+k+(pool?("&pool="+pool):""));
+    if(!r.ok) return null;
+    var j=await r.json();
+    trustCache[k]=j;
+    return j;
+  }catch(e){ return null; }
+}
+var TRUST_COLORS={ CLEAN:"var(--green)", WATCH:"var(--gold)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
+function trustBadge(t, size){
+  if(!t) return "";
+  var c=TRUST_COLORS[t.label]||"var(--mute)";
+  var icon = t.label==="CLEAN"?"🛡" : t.label==="UNPROVEN"?"◌" : t.label==="WATCH"?"⚠" : "⛔";
+  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100">'+icon+' '+t.label+'</span>';
+}
+
 var quoteSeq=0;// Wallet balance helpers. These were collateral damage when I rewrote the v4
 // quoting block — the call sites survived, so opening ANY token modal threw a
 // ReferenceError and nothing rendered. Restored here.
@@ -1986,6 +2067,31 @@ async function chargeFee(signer, feeEth, setBtn){
   var tx=await signer.sendTransaction({ to:CFG.FEE_WALLET, value:ethers.parseEther(f.pay.toFixed(18)) });
   await tx.wait();
   return { paid:f.pay, credited:f.used };
+}
+
+// ---------------- TOKEN TRUST ----------------
+// Scores contract behaviour and trade authenticity, never age. A ten-minute-old
+// token with real buyers reads CLEAN; a token with huge volume across four
+// wallets reads DANGER.
+var trustCache={};
+async function trustFor(token, pool){
+  var k=String(token||"").toLowerCase();
+  if(!k) return null;
+  if(trustCache[k]) return trustCache[k];
+  try{
+    var r=await fetch(CFG.API+"/safety?token="+k+(pool?("&pool="+pool):""));
+    if(!r.ok) return null;
+    var j=await r.json();
+    trustCache[k]=j;
+    return j;
+  }catch(e){ return null; }
+}
+var TRUST_COLORS={ CLEAN:"var(--green)", WATCH:"var(--gold)", RISKY:"#FF8A3D", DANGER:"var(--red)", UNPROVEN:"var(--mute)" };
+function trustBadge(t, size){
+  if(!t) return "";
+  var c=TRUST_COLORS[t.label]||"var(--mute)";
+  var icon = t.label==="CLEAN"?"🛡" : t.label==="UNPROVEN"?"◌" : t.label==="WATCH"?"⚠" : "⛔";
+  return '<span class="trust" style="color:'+c+';border-color:'+c+'" title="Trust '+t.score+'/100">'+icon+' '+t.label+'</span>';
 }
 
 var quoteSeq=0;
@@ -2161,6 +2267,21 @@ async function fire(){
     if(vres==="unknown" && !state.warnedRpc){
       state.warnedRpc=true;   // say it once, not on every attempt
       toast("RPC slow to respond — proceeding without router verification", true);
+    }
+
+    // Trust gate. We don't block the trade — that's the user's call — but a
+    // token showing manipulation signals must be acknowledged deliberately
+    // BEFORE any fee or signature, not discovered afterwards.
+    if(!modal.trustAck){
+      btn.innerHTML='<span class="spin"></span> CHECKING TOKEN…';
+      var tScore=await trustFor(p.baseToken, p.pool);
+      if(tScore && (tScore.label==="DANGER" || tScore.label==="RISKY")){
+        modal.trustAck=true;
+        var worst=(tScore.flags||[]).filter(function(f){return f.sev==="high"});
+        var reason=(worst[0]||(tScore.flags||[])[0]||{}).msg||"manipulation signals detected";
+        armForce("⛔ "+tScore.label+" ("+tScore.score+"/100): "+reason+".");
+        return;
+      }
     }
 
     var fee = amt*CFG.FEE_BPS/10000, net = amt-fee;
