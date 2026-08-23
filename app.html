@@ -1155,9 +1155,20 @@ function rankFor(tf, washTf){
     // of inside the comparator
     // 30D now arrives with the board payload; the per-pool client fetch only
     // fills gaps for anything the indexer hasn't reached yet.
-    var vol = isD30
-      ? (p.d30!=null ? p.d30 : (d30[(p.pool||"").toLowerCase()]||0))
-      : (p[tf]||0);
+    var vol;
+    if(isD30){
+      // 30D comes from daily OHLCV, which the indexer fills progressively.
+      // Showing "$0" for a token we simply haven't measured yet is a lie — it
+      // reads as "no trading" when it means "not computed". Unknown tokens are
+      // held back from the 30D board until a real figure exists.
+      var cached=d30[(p.pool||"").toLowerCase()];
+      var known = (p.d30!=null) ? p.d30 : (cached!=null ? cached : null);
+      if(known==null) continue;
+      if(known<=0) continue;                 // genuinely no 30-day trading
+      vol=known;
+    }else{
+      vol=p[tf]||0;
+    }
     if(!isD30 && !(vol>0 || (p.liq||0)>=1000)) continue;
 
     // The short-window boards were full of junk: a $300 pool doing $900 in an
@@ -1255,9 +1266,14 @@ function renderBoard(){
       tn.innerHTML='<span style="color:var(--gold)">⚙️ Loading trending tokens…</span>';
     }else{
       var hidden = washTf ? state.pools.filter(function(x){return x.wash}).length : 0;
+      var pending30 = state.tf==="d30"
+        ? state.pools.filter(function(x){
+            return x.d30==null && state.d30[(x.pool||"").toLowerCase()]==null; }).length
+        : 0;
       tn.textContent = "Showing "+ranked.length.toLocaleString()+" trending tokens on Robinhood Chain"
         + " · ranked by "+TF_LABEL[state.tf]+" volume"
         + (hidden? " · "+hidden+" wash-trade suspect"+(hidden>1?"s":"")+" hidden" : "")
+        + (pending30? " · "+pending30+" awaiting 30D data" : "")
         + " · DexScreener + GeckoTerminal";
     }
   }
