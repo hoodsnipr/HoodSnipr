@@ -3,6 +3,7 @@
 import { rebuild } from "./_board.mjs";
 import { scanV4, learnHooks } from "./v4pools.mjs";
 import { indexLaunches, hydrate } from "./_pons.mjs";
+import { fillVol30 } from "./_vol30.mjs";
 
 export default async () => {
   const deep = new Date().getMinutes() % 5 === 0;
@@ -16,13 +17,17 @@ export default async () => {
   // pons launches first — catching a token at birth is the highest-value work
   const pons = await indexLaunches(5000).catch(e => ({ error: e.message }));
   await hydrate(3000, 30).catch(() => {});
-  const hooks = await learnHooks(3000).catch(e => ({ error: e.message }));
+  // top up 30D volume coverage every run — this is what makes the 30D board
+  // meaningful below the top 20
+  const v30 = await fillVol30(out.rows || [], { budgetMs: 4000, max: 12 }).catch(e => ({ error: e.message }));
+  const hooks = await learnHooks(2500).catch(e => ({ error: e.message }));
   const v4 = await scanV4(2000).catch(e => ({ error: e.message }));
   return new Response(JSON.stringify({
     ok: !out.error, deep,
     rows: out.rows?.length ?? 0,
     universe: out.stats?.universeTokens ?? 0,
     pons: { tokens: pons.totalTokens, found: pons.found, caughtUp: pons.caughtUp },
+    vol30: v30,
     v4: { manager: v4.manager || hooks.manager, tokens: v4.tokens,
           hooks: (hooks.hooks || []).length, done: v4.backfillDone, cursor: v4.cursor },
     error: out.error

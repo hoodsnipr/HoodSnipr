@@ -9,6 +9,7 @@ import { fetchUniverse, refreshKnown, dsSlug } from "./_feeds.mjs";
 import { ponsMap } from "./_pons.mjs";
 import { isDenied, normSym } from "./_denylist.mjs";
 import { getBans } from "./banlist.mjs";
+import { vol30Map } from "./_vol30.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
@@ -384,6 +385,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
   } catch (e) {}
 
   // DANGER verdicts from the on-chain safety analysis, cached from earlier runs
+  let out30 = null;
   let blocked = {};
   try {
     const sf = await store.get("safety", { type: "json" });
@@ -395,6 +397,17 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
 
   const bans = await getBans().catch(() => ({}));
   const rows = buildBoard(known.t, holders, blocked, bans);
+
+  // attach server-side 30D volume so the client never has to fetch per pool
+  try {
+    const v30 = await vol30Map();
+    let have = 0;
+    for (const r of rows) {
+      const v = v30[String(r.p || "").toLowerCase()];
+      if (v != null) { r.d30 = v; have++; }
+    }
+    out30 = { attached: have, total: rows.length };
+  } catch (e) {}
   let vol24 = 0, liq = 0;
   for (const r of rows) { vol24 += r.h24 || 0; liq += r.liq || 0; }
 
@@ -407,6 +420,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       washFiltered: rows.filter(r => r.wash).length,
       blockedByScore: Object.keys(blocked).length,
       bannedTokens: Object.keys(bans || {}).length,
+      vol30Coverage: out30,
       hiddenSample: hiddenLog.slice(0, 25),
       hiddenCount: hiddenLog.length,
       ponsTokens: ponsTagged,
