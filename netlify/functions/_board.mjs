@@ -173,53 +173,92 @@ export function washSuspect(row) {
 //
 // Each rule below describes something that cannot be true of an honest market,
 // and each is checked against data we already hold, so the gate costs nothing.
+// CREDIBILITY GATE — v2
+//
+// v1 hid real tokens like $CASHCAT. The reason: volume is aggregated across
+// every pool a token trades in, while `liq` is whatever one pool the feed
+// reported. Any ratio built on those two numbers is therefore unreliable, and
+// ratio rules fired hardest on the deepest, most-traded tokens — the opposite
+// of the intent.
+//
+// The rebuild inverts the logic. Instead of hunting for reasons to hide, we
+// first look for evidence a token is REAL. Real markets leave traces that are
+// expensive or impossible to fake in volume: a broad holder base, a long tail
+// of transactions, sustained age, a paid profile. If any solid evidence of
+// legitimacy exists, automated rules never hide the token — only the manual
+// denylist can. Hiding is reserved for tokens with a manipulation signature AND
+// no supporting evidence at all.
+export function legitimacy(t, holders) {
+  const h = (holders && holders[t.a] && holders[t.a].h != null) ? holders[t.a].h : null;
+  const tx = t.txns && t.txns.h24 ? t.txns.h24 : null;
+  const tx24 = tx ? ((tx.b || 0) + (tx.s || 0)) : null;
+  const ageH = t.cr ? (Date.now() - t.cr) / 3600e3 : null;
+  const ev = [];
+
+  // Evidence must be EXPENSIVE to fake. Transaction count deliberately isn't
+  // here: cycling bots manufacture transactions cheaply, and counting them as
+  // legitimacy let a wash-trading token exempt itself from the very rule
+  // designed to catch it.
+  if (h != null && h >= 100) ev.push("holders:" + h);
+  if ((+t.liq || 0) >= 50000) ev.push("liquidity");
+  if ((+t.mc || 0) >= 250000) ev.push("marketcap");
+  if (ageH != null && ageH >= 24 && (+t.h24 || 0) > 1000) ev.push("age");
+  if (t.boosts > 0) ev.push("boosted");
+  if (t.hasProfile || t.tw || t.site) ev.push("profile");
+  if (t.pons) ev.push("pons-launch");
+  // many traders AND a real holder base together are hard to fake at once
+  if (h != null && h >= 40 && tx24 != null && tx24 >= 100) ev.push("distribution");
+  return ev;
+}
+
 export function credibility(t, holders) {
   const liq = +t.liq || 0;
   const vol = +t.h24 || 0;
   const h = (holders && holders[t.a] && holders[t.a].h != null) ? holders[t.a].h : null;
   const tx = t.txns && t.txns.h24 ? t.txns.h24 : null;
   const tx24 = tx ? ((tx.b || 0) + (tx.s || 0)) : null;
-  const severe = [], soft = [];
 
-  // A pons launch is legitimate from block one with no volume at all, so the
-  // depth and volume rules don't apply until it actually starts trading.
-  const infant = !!t.pons && vol < 1000;
+  const evidence = legitimacy(t, holders);
+  const severe = [];
 
-  // --- individually impossible in an honest market ---
+  // Signals that describe trade STRUCTURE rather than data ratios. These don't
+  // depend on liquidity being reported correctly, which is what broke v1.
 
-  // Each trade larger than the entire pool. The pool physically cannot absorb
-  // that, so the "volume" is not passing through this liquidity.
-  if (!infant && tx24 && tx24 > 0 && liq > 0) {
-    const avgTrade = vol / tx24;
-    if (avgTrade > liq * 0.5)
-      severe.push(`average trade $${Math.round(avgTrade).toLocaleString()} against a $${Math.round(liq).toLocaleString()} pool`);
-  }
-  // Turnover no real market sustains.
-  if (!infant && liq > 0 && vol / liq > 200)
-    severe.push(`volume ${Math.round(vol / liq)}x pool depth`);
-  // Serious money, almost nobody holding it.
-  if (h != null && h < 20 && vol > 50000)
-    severe.push(`$${Math.round(vol/1000)}k volume across only ${h} holders`);
-  // Serious money, almost no trades — a few enormous prints.
-  if (tx24 != null && tx24 < 15 && vol > 50000)
-    severe.push(`only ${tx24} trades behind $${Math.round(vol/1000)}k of volume`);
-  // Entirely one-sided flow.
-  if (tx24 != null && tx24 >= 40 && tx && (tx.b === 0 || tx.s === 0))
+  // Entirely one-sided flow over a meaningful sample: nobody is selling, or
+  // nobody is buying, yet volume accrues.
+  if (tx24 != null && tx24 >= 50 && tx && (tx.b === 0 || tx.s === 0))
     severe.push("every trade in the same direction");
-  // Buys and sells matched to the trade — the cycling signature.
-  if (tx24 != null && tx24 >= 60 && tx && vol > 50000 &&
-      Math.abs((tx.b || 0) - (tx.s || 0)) / tx24 < 0.02)
-    severe.push("buys and sells perfectly matched — cycling pattern");
 
-  // --- weaker signals: need corroboration ---
-  if (!infant && liq < 1000) soft.push("liquidity under $1k");
-  if (h != null && h < 10 && vol > 5000) soft.push(`only ${h} holders`);
+  // Buys and sells matched to within 1% over a large sample is a cycle, not a
+  // market. Real order flow is never that symmetrical.
+  if (tx24 != null && tx24 >= 100 && tx && vol > 50000 &&
+      Math.abs((tx.b || 0) - (tx.s || 0)) / tx24 < 0.01)
+    severe.push("buys and sells matched to within 1% — cycling pattern");
 
-  return { severe, soft, hide: severe.length >= 1 || soft.length >= 2,
-           reasons: severe.concat(soft) };
+  // Big money, essentially no holders. Distribution cannot lag volume this far.
+  if (h != null && h < 10 && vol > 100000)
+    severe.push(`$${Math.round(vol/1000)}k volume across only ${h} holders`);
+
+  // Big money, a handful of trades — a few enormous prints, not a market.
+  if (tx24 != null && tx24 < 10 && vol > 100000)
+    severe.push(`only ${tx24} trades behind $${Math.round(vol/1000)}k of volume`);
+
+  // Dust pool with no trading at all and no legitimacy evidence.
+  const dead = liq > 0 && liq < 500 && vol < 100 && !t.pons;
+
+  // THE RULE: evidence of legitimacy overrides every automated signal.
+  const hide = evidence.length === 0 && (severe.length >= 1 || dead);
+
+  return {
+    severe, evidence, hide,
+    reasons: severe,
+    warn: severe.length && !hide ? severe[0] : null
+  };
 }
 
+export const hiddenLog = [];
 export function buildBoard(tokens, holders, blocked) {
+  hiddenLog.length = 0;
   const byTicker = {};
   for (const addr of Object.keys(tokens)) {
     const t = tokens[addr];
@@ -230,13 +269,14 @@ export function buildBoard(tokens, holders, blocked) {
     // manual override — human judgement beats any heuristic
     if (isDenied(addr, t.s)) continue;
 
-    // cached DANGER verdicts from the deeper on-chain analysis
-    if (blocked && blocked[addr]) continue;
+    // Cached DANGER verdicts from the deeper on-chain analysis — but only when
+    // the token has no independent evidence of being real.
+    if (blocked && blocked[addr] && legitimacy(t, holders).length === 0) continue;
 
     // credibility gate: two independent impossibilities means it isn't a market
     const cred = credibility(t, holders);
-    if (cred.hide) continue;
-    t._credWarn = cred.soft.length === 1 ? cred.soft[0] : null;
+    if (cred.hide) { hiddenLog.push({ s: t.s, a: addr, why: cred.reasons[0] || "no market" }); continue; }
+    t._credWarn = cred.warn;
     // A pons launch is legitimate from block one, even before any volume
     // exists. Requiring volume would hide exactly the launches a sniper wants.
     const hasMarket = (t.h24 > 0 || t.h6 > 0 || t.h1 > 0 || t.m5 > 0) && (t.liq || 0) >= 200;
@@ -362,6 +402,8 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       vol24, liq,
       washFiltered: rows.filter(r => r.wash).length,
       blockedByScore: Object.keys(blocked).length,
+      hiddenSample: hiddenLog.slice(0, 25),
+      hiddenCount: hiddenLog.length,
       ponsTokens: ponsTagged,
       feedPage: page,
       errors: errors.slice(0, 3)

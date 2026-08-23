@@ -9,16 +9,20 @@
 // words "coin"/"token" stripped), so "$TRUTH coin", "TRUTHCOIN" and "Truth"
 // collapse to the same key.
 
+// PREFERRED: exact contract addresses. Unspoofable, and they can never hit an
+// innocent token that happens to share a ticker.
+//   "0x1234…abcd",   // $SCAM — force-send exploit, reported 2026-08-22
 export const DENY_ADDRESSES = new Set([
-  // "0xabc…": exact token contracts to hide
 ].map(a => String(a).toLowerCase()));
 
-// Exact normalised symbols to hide chain-wide.
+// Symbol bans are BLUNT — a legitimate token can share a ticker with a scam,
+// and symbols are the easiest thing in the world to spoof. Prefer addresses.
+// Anything listed here is hidden chain-wide regardless of its metrics, so keep
+// the list short and deliberate.
 export const DENY_SYMBOLS = new Set([
+  // reported exploiting the force-send pattern:
   "truth",
   "truthcoin",
-  "mow",
-  "bunny",
   "www"
 ]);
 
