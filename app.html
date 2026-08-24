@@ -661,7 +661,7 @@ function boardRowToPool(r){
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
     pons:!!r.pons, ponsBlock:r.ponsBlock||null, restrictionsEndBlock:r.restrictionsEndBlock||null,
-    cc:!!r.cc,
+    cc:!!r.cc, lc:!!r.lc,
     d30:(r.d30!=null? r.d30 : null),        // server-computed, whole board
     ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
     holders:r.h!=null?r.h:null, wash:!!r.wash,
@@ -1151,8 +1151,10 @@ function noLogoMark(p){
   return '<span class="nologo" title="No logo yet — this token will not appear in Trending until its metadata is filled in">no logo</span> ';
 }
 function letscashBadge(p){
-  if(!p.cc) return "";
-  return '<span class="lcash" title="Launched on letscash.fun">cc</span> ';
+  // `lc` means the pool's hook confirmed it; `cc` alone is just an address
+  // suffix and could be coincidence.
+  if(!p.lc) return "";
+  return '<span class="lcash" title="Launched on letscash.fun — trades on Uniswap v4 with a launch-set trading tax">letscash</span> ';
 }
 function ponsBadge(p){
   if(!p.pons) return "";
@@ -1660,7 +1662,7 @@ function openToken(poolAddr){
 
   // letscash context: the trading tax and the pool's quote asset both change
   // what a trade actually costs, so they belong on screen before FIRE.
-  if(p.cc){
+  if(p.cc || p.lc){
     letscashInfo(p.baseToken).then(function(lc){
       var box=$("#lcBox"); if(!box || !lc) return;
       box.innerHTML='<div class="lcbox">'
