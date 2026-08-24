@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>HoodSnipr — Every trending token. One arrow away.</title>
 <meta name="description" content="Snipe trending tokens on Robinhood Chain. 0.25% fee. $QUIVR powered.">
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
@@ -21,9 +21,24 @@
   --disp:'Unbounded',sans-serif; --body:'Space Grotesk',sans-serif; --mono:'DM Mono',monospace;
 }
 *{margin:0;padding:0;box-sizing:border-box}
+
+/* NO HORIZONTAL SCROLL, ANYWHERE
+   overflow-x:hidden on <body> alone doesn't do it: the page can still be wider
+   than the viewport, and mobile browsers pan to reveal the excess. The fix
+   needs the constraint on <html> as well, plus min-width:0 so grid and flex
+   children are allowed to shrink below their content width — that is the usual
+   cause of a stubborn few pixels of drift. */
+html{overflow-x:clip;max-width:100%}
+body{overflow-x:clip;max-width:100%;width:100%;position:relative;overscroll-behavior-x:none}
+@supports not (overflow:clip){ html,body{overflow-x:hidden} }
+img,svg,video,canvas,iframe,table{max-width:100%}
+section,header,footer,main,div{min-width:0}
+/* Long unbroken strings (contract addresses, URLs) are a classic overflow
+   source on narrow screens. */
+p,li,h1,h2,h3,h4,td,span{overflow-wrap:anywhere}
 html{scroll-behavior:smooth}
 body{
-  background:var(--void);color:var(--bone);font-family:var(--body);overflow-x:hidden;
+  background:var(--void);color:var(--bone);font-family:var(--body);
   padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
 }
 ::selection{background:var(--green);color:#000}
@@ -159,8 +174,9 @@ section{max-width:1020px;margin:0 auto;padding:110px 20px}
 .acq.locked .ck{opacity:1}
 .acq.locked .c1{top:-6px;left:-6px}.acq.locked .c2{top:-6px;right:-6px}
 .acq.locked .c3{bottom:-6px;left:-6px}.acq.locked .c4{bottom:-6px;right:-6px}
+.acq{position:relative;overflow:visible;margin:0 8px}   /* room for the corners */
 .acq .tag{
-  position:absolute;top:-22px;right:-8px;font-family:var(--mono);font-size:9px;color:var(--green);
+  position:absolute;top:-22px;right:0;font-family:var(--mono);font-size:9px;color:var(--green);
   letter-spacing:.2em;opacity:0;transition:opacity .4s .3s;
 }
 .acq.locked .tag{opacity:1}
@@ -248,6 +264,21 @@ input[type=range]{width:100%;margin:18px 0 26px;accent-color:var(--green);height
 
 /* ===== quivr band ===== */
 .quivr{background:radial-gradient(ellipse 90% 70% at 50% 0%, rgba(0,200,5,.09), transparent 65%)}
+/* ===== the tally ===== */
+.tally{padding:64px 18px;max-width:1000px;margin:0 auto}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-top:34px}
+.tcard{border:1px solid var(--line);border-radius:16px;padding:22px 18px;background:var(--panel);
+  position:relative;overflow:hidden;text-align:center}
+.tcard::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(120% 90% at 50% -20%, var(--green-dim), transparent 60%)}
+.tk{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--mute)}
+.tv{font-family:var(--disp);font-weight:800;font-size:clamp(26px,6vw,40px);letter-spacing:-.02em;
+  color:var(--green);margin:10px 0 6px;font-variant-numeric:tabular-nums;line-height:1.05}
+.tn{font-size:11px;color:var(--mute);line-height:1.5}
+.tverify{margin-top:20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--mute)}
+.tverify a{color:var(--green);text-decoration:none;margin-left:8px;border-bottom:1px solid transparent}
+.tverify a:hover{border-bottom-color:var(--green)}
+@media(max-width:520px){ .tally{padding:48px 14px} .tcard{padding:18px 14px} }
 .qstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:40px}
 .qs{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
 .qs .k{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.16em}
@@ -257,13 +288,13 @@ input[type=range]{width:100%;margin:18px 0 26px;accent-color:var(--green);height
 /* ===== roadmap = range markers ===== */
 .range{margin-top:50px;position:relative;padding-left:34px}
 .range::before{content:"";position:absolute;left:10px;top:6px;bottom:6px;width:2px;background:linear-gradient(var(--green),var(--line))}
-.rm{position:relative;padding:0 0 40px}
+.rm{position:relative;padding:0 0 40px;padding-left:44px}
 
 /* Range markers are shot out as you scroll: an empty ring becomes a punched
    bullet hole with torn edges and a muzzle flash. The current objective pulses
    under a live crosshair instead. */
 .rm .mark{
-  position:absolute;left:-38px;top:0;width:30px;height:30px;
+  position:absolute;left:0;top:0;width:30px;height:30px;
   display:grid;place-items:center;pointer-events:none;
 }
 .rm .mark svg{width:30px;height:30px;overflow:visible}
@@ -362,6 +393,7 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
       Hood<span>Snipr</span>
     </div>
     <a href="#hunt">THE HUNT</a>
+    <a href="#tally">TALLY</a>
     <a href="#fee">FEE</a>
     <a href="#quivr">$QUIVR</a>
     <a href="#range">RANGE</a>
@@ -458,6 +490,36 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
 </section>
 
 <!-- ============ QUIVR ============ -->
+<section id="tally" class="tally reveal">
+  <h2 class="rt">THE TALLY</h2>
+  <p class="sub">Every snipe pays 0.25% to one frozen address. That address is the ledger —
+    these figures are read from it, not reported by us.</p>
+
+  <div class="tgrid">
+    <div class="tcard">
+      <div class="tk">TOTAL SNIPES</div>
+      <div class="tv" id="tSnipes">—</div>
+      <div class="tn">fee payments settled on chain</div>
+    </div>
+    <div class="tcard">
+      <div class="tk">VOLUME SNIPED</div>
+      <div class="tv" id="tVolume">—</div>
+      <div class="tn" id="tVolumeSub">the trades those fees were charged on</div>
+    </div>
+    <div class="tcard">
+      <div class="tk">FEES COLLECTED</div>
+      <div class="tv" id="tFees">—</div>
+      <div class="tn" id="tFeesSub">0.25% per trade, no exceptions</div>
+    </div>
+  </div>
+
+  <p class="tverify">
+    <span id="tNote">Reading the chain…</span>
+    <a id="tLink" href="https://robinhoodchain.blockscout.com/address/0xb67cBE7fD1258108fE214bA0138d89FC0772791d"
+       target="_blank" rel="noopener">verify on Blockscout ↗</a>
+  </p>
+</section>
+
 <section id="quivr" class="quivr">
   <div class="eyebrow">// 03 · AMMUNITION</div>
   <div class="acq"><h2>$QUIVR — THE QUIVER<br>HOLDS THE ARROWS</h2>
@@ -891,6 +953,61 @@ footer .disc{font-size:10px;color:#4a5350;max-width:640px;margin:26px auto 0;lin
         scrollTrigger: { trigger: el, start: 'top 85%' } });
     });
   }
+
+/* ---------- the tally: real numbers, read from the fee wallet ---------- */
+(function loadTally(){
+  var fmtN=function(n){ return (+n).toLocaleString(undefined,{maximumFractionDigits:0}); };
+  var fmtUsd=function(n){
+    if(n==null) return null;
+    var a=Math.abs(n);
+    if(a>=1e9) return "$"+(n/1e9).toFixed(2)+"B";
+    if(a>=1e6) return "$"+(n/1e6).toFixed(2)+"M";
+    if(a>=1e3) return "$"+(n/1e3).toFixed(1)+"K";
+    return "$"+n.toFixed(2);
+  };
+  // count up rather than snapping, but only once and only if motion is welcome
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function put(id, target, render){
+    var el=document.getElementById(id); if(!el) return;
+    if(reduce || !(target>0)){ el.textContent=render(target); return; }
+    var t0=performance.now(), dur=900;
+    (function step(now){
+      var p=Math.min(1,(now-t0)/dur);
+      var eased=1-Math.pow(1-p,3);
+      el.textContent=render(target*eased);
+      if(p<1) requestAnimationFrame(step);
+    })(t0);
+  }
+  fetch("/.netlify/functions/platformstats")
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(!j || j.error) throw new Error("no stats");
+      put("tSnipes", j.snipes, function(v){ return fmtN(v); });
+      put("tVolume", j.volumeUsd!=null? j.volumeUsd : j.volumeEth, function(v){
+        return j.volumeUsd!=null ? fmtUsd(v) : (v.toFixed(2)+" ETH");
+      });
+      put("tFees", j.feesUsd!=null? j.feesUsd : j.feesEth, function(v){
+        return j.feesUsd!=null ? fmtUsd(v) : (v.toFixed(4)+" ETH");
+      });
+      var vs=document.getElementById("tVolumeSub");
+      if(vs && j.volumeEth) vs.textContent=j.volumeEth.toLocaleString(undefined,{maximumFractionDigits:2})+" ETH sniped through the terminal";
+      var fs=document.getElementById("tFeesSub");
+      if(fs && j.feesEth) fs.textContent=j.feesEth.toFixed(4)+" ETH · 0.25% per trade, no exceptions";
+      var note=document.getElementById("tNote");
+      if(note) note.textContent = j.partial
+        ? "Counted from the most recent fee payments — totals grow as older pages are read."
+        : "Counted from every fee payment ever made to the frozen fee address.";
+      if(j.explorer){ var a=document.getElementById("tLink"); if(a) a.href=j.explorer; }
+    })
+    .catch(function(){
+      var note=document.getElementById("tNote");
+      if(note) note.textContent="Live figures are unavailable right now — check the fee address directly.";
+      ["tSnipes","tVolume","tFees"].forEach(function(id){
+        var el=document.getElementById(id); if(el) el.textContent="—";
+      });
+    });
+})();
+
 })();
 </script>
 </body>
