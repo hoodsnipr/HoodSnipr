@@ -1,7 +1,8 @@
 // /letscash            -> what we know about the launchpad on this chain
 // /letscash?token=0x…  -> classification for one token
 import { store as _store } from "./_store.mjs";
-import { LETSCASH, hasCcStamp, learnLetscashHooks, letscashHookSet, classify } from "./_letscash.mjs";
+import { LETSCASH, hasCcStamp, learnLetscashHooks, letscashHookSet, classify,
+         scanLetscash, findToken, hydrateTokens, letscashMap, normalizeLogo } from "./_letscash.mjs";
 
 const WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
 const json = (c, b) => new Response(JSON.stringify(b), {
@@ -23,6 +24,33 @@ export default async (req) => {
     const url = new URL(req.url);
     const store = await _store("hoodsnipr-cache");
     const v4 = (await store.get("v4pools", { type: "json" }).catch(() => null)) || { keys: {} };
+
+    // ?scan=1 — advance the full launchpad sweep
+    if (url.searchParams.get("scan") === "1") {
+      const sweep = await scanLetscash(8000);
+      const all = await letscashMap();
+      const hyd = await hydrateTokens(Object.keys(all), { budgetMs: 4000, limit: 40 });
+      return json(200, { sweep, hydrated: hyd.hydrated, total: Object.keys(all).length });
+    }
+
+    // ?find=0x… — locate one token immediately, no waiting for the sweep
+    const find = url.searchParams.get("find");
+    if (find) {
+      const r = await findToken(find);
+      if (r.ok) await hydrateTokens([String(find).toLowerCase()], { budgetMs: 3000, limit: 1 });
+      const all = await letscashMap();
+      return json(200, { ...r, meta: all[String(find).toLowerCase()] || null });
+    }
+
+    // ?list=1 — everything enumerated so far
+    if (url.searchParams.get("list") === "1") {
+      const all = await letscashMap();
+      const rows = Object.values(all).map(t => ({
+        token: t.token, sym: t.sym || null, name: t.name || null,
+        logo: normalizeLogo(t.logo) || null, hooks: t.hooks || null
+      }));
+      return json(200, { total: rows.length, withMetadata: rows.filter(r => r.sym).length, tokens: rows.slice(0, 200) });
+    }
 
     if (url.searchParams.get("learn") === "1") {
       const st = await learnLetscashHooks(v4.keys || {});

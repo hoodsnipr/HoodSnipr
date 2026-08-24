@@ -4,7 +4,7 @@ import { rebuild } from "./_board.mjs";
 import { scanV4, learnHooks } from "./v4pools.mjs";
 import { indexLaunches, hydrate } from "./_pons.mjs";
 import { fillVol30 } from "./_vol30.mjs";
-import { learnLetscashHooks, letscashHookSet, discoverTokens, hydrateTokens } from "./_letscash.mjs";
+import { learnLetscashHooks, letscashHookSet, discoverTokens, hydrateTokens, scanLetscash } from "./_letscash.mjs";
 
 export default async () => {
   const deep = new Date().getMinutes() % 5 === 0;
@@ -29,16 +29,17 @@ export default async () => {
       const s2 = await store("hoodsnipr-cache");
       const v4s = await s2.get("v4pools", { type: "json" });
       const keys = (v4s && v4s.keys) || {};
-      const learned = await learnLetscashHooks(keys);
-      const hookSet = await letscashHookSet();
-      // find every token trading under a letscash hook, then read its onchain
-      // metadata so it can pass the logo requirement on its own merits
-      const found = await discoverTokens(keys, hookSet);
-      const hyd = await hydrateTokens(Object.keys(found), { budgetMs: 4000, limit: 30 });
+      await learnLetscashHooks(keys);
+      // Enumerate the launchpad end to end from PoolManager Initialize logs,
+      // the same way pons is enumerated from its factory. This is what makes
+      // established tokens appear rather than only ones we happened to index.
+      const sweep = await scanLetscash(4000);
+      const { letscashMap } = await import("./_letscash.mjs");
+      const all = await letscashMap();
+      const hyd = await hydrateTokens(Object.keys(all), { budgetMs: 3500, limit: 30 });
       return {
-        hooks: Object.keys(learned.hooks || {}).length,
-        confirmedHooks: hookSet.size,
-        tokens: Object.keys(found).length,
+        tokens: sweep.tokens, foundThisRun: sweep.found,
+        sweepDone: sweep.done, cursor: sweep.cursor,
         hydrated: hyd.hydrated
       };
     } catch (e) { return { error: e.message }; }

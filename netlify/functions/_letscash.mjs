@@ -19,7 +19,7 @@
 // The hook set is learned from the chain: a hook shared by many "cc" tokens is
 // the launchpad's fee engine.
 import { store as _store } from "./_store.mjs";
-import { rpcBatch, decodeStr } from "./_rpc.mjs";
+import { rpc, rpcBatch, getLogs, decodeStr, addrFromTopic, words } from "./_rpc.mjs";
 
 export const LETSCASH = {
   site: "https://www.letscash.fun",
@@ -217,4 +217,133 @@ export function parseSocials(raw) {
     if (h) out.tw = "https://x.com/" + h[1];
   }
   return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// COMPLETE ENUMERATION
+//
+// Deriving the token list from pools we happened to have indexed was never
+// going to be complete — a token only entered that index if something looked it
+// up first, so established coins like $INTERN were simply absent. pons works
+// because we walk its factory events end to end; letscash needs the same.
+//
+// We don't need their factory address to do it. Every letscash token address
+// ends in "cc", enforced by the factory, and every letscash pool is a Uniswap
+// v4 pool — so walking the PoolManager's Initialize events and keeping the
+// currencies that carry the stamp enumerates the whole launchpad. The onchain
+// logo() call then confirms each one, because an ordinary ERC-20 doesn't
+// implement it.
+const INIT_TOPICS = [
+  "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438",
+  "0x3fd553db44f207b1f41348cfc4d251860814af9eadc470e8e7895e4d120511f4",
+  "0x9e5fdb1dbcd8227784f3a3765e991e72fd8e71bfc967286dcf973ff804adc183"
+];
+const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+
+export async function scanLetscash(budgetMs = 7000) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("letscash", { type: "json" }).catch(() => null))
+    || { hooks: {}, tokens: {} };
+  st.tokens = st.tokens || {};
+  st.scan = st.scan || { lo: null, chunk: 40000, done: false };
+
+  const v4 = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+  const manager = v4.manager;
+  if (!manager) return { ok: false, error: "PoolManager unknown — run v4pools?findmanager=1" };
+  const topics = (v4.topics && v4.topics.length) ? v4.topics : INIT_TOPICS;
+
+  let head;
+  try { head = Number(BigInt(await rpc("eth_blockNumber", []))); }
+  catch (e) { return { ok: false, error: "rpc: " + e.message }; }
+  if (st.scan.lo == null) st.scan.lo = head;
+
+  let found = 0, scanned = 0;
+  while (Date.now() - t0 < budgetMs - 1200 && !st.scan.done && st.scan.lo > 0) {
+    const size = Math.max(4000, st.scan.chunk);
+    const from = Math.max(0, st.scan.lo - size), to = st.scan.lo;
+    try {
+      const logs = await getLogs(from, to, [topics], manager) || [];
+      for (const lg of logs) {
+        if (!lg.topics || lg.topics.length !== 4) continue;
+        const c0 = addrFromTopic(lg.topics[2]);
+        const c1 = addrFromTopic(lg.topics[3]);
+        const w = words(lg.data);
+        if (w.length < 3) continue;
+        const fee = Number(BigInt("0x" + w[0]));
+        let ts = BigInt("0x" + w[1]); if (ts >= (1n << 255n)) ts -= (1n << 256n);
+        const hooks = ("0x" + w[2].slice(24)).toLowerCase();
+
+        for (const side of [c0, c1]) {
+          if (!side || side === ZERO_ADDR) continue;
+          if (!hasCcStamp(side)) continue;
+          if (st.tokens[side]) continue;
+          st.tokens[side] = {
+            token: side, poolId: lg.topics[1], c0, c1,
+            fee, ts: Number(ts), hooks,
+            block: Number(BigInt(lg.blockNumber)), seen: Date.now()
+          };
+          if (hooks && hooks !== ZERO_ADDR) st.hooks[hooks] = (st.hooks[hooks] || 0) + 1;
+          found++;
+        }
+      }
+      scanned += (to - from);
+      st.scan.lo = from;
+      if (st.scan.chunk < 40000) st.scan.chunk = Math.min(40000, st.scan.chunk * 2);
+      if (from === 0) st.scan.done = true;
+    } catch (e) {
+      st.scan.chunk = Math.max(2000, Math.floor(st.scan.chunk / 3));
+      if (st.scan.chunk <= 2000) st.scan.lo = from;
+    }
+    await store.setJSON("letscash", st).catch(() => {});
+  }
+
+  return {
+    ok: true, found, scanned, cursor: st.scan.lo, done: st.scan.done,
+    tokens: Object.keys(st.tokens).length
+  };
+}
+
+// Find one token now, without waiting for the sweep. Initialize indexes both
+// currencies, so a direct filter answers immediately.
+export async function findToken(token) {
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { hooks: {}, tokens: {} };
+  st.tokens = st.tokens || {};
+  const t = String(token || "").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(t)) return { ok: false, error: "bad token" };
+  if (st.tokens[t]) return { ok: true, cached: true, rec: st.tokens[t] };
+
+  const v4 = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
+  const manager = v4.manager;
+  if (!manager) return { ok: false, error: "PoolManager unknown" };
+  const topics = (v4.topics && v4.topics.length) ? v4.topics : INIT_TOPICS;
+  const pad = "0x" + t.replace(/^0x/, "").padStart(64, "0");
+
+  for (const slot of [2, 3]) {
+    const filter = [topics, null, null, null];
+    filter[slot] = pad;
+    try {
+      const logs = await rpc("eth_getLogs", [{
+        fromBlock: "0x0", toBlock: "latest", address: manager, topics: filter
+      }]);
+      for (const lg of (logs || [])) {
+        if (!lg.topics || lg.topics.length !== 4) continue;
+        const w = words(lg.data);
+        if (w.length < 3) continue;
+        let ts = BigInt("0x" + w[1]); if (ts >= (1n << 255n)) ts -= (1n << 256n);
+        st.tokens[t] = {
+          token: t, poolId: lg.topics[1],
+          c0: addrFromTopic(lg.topics[2]), c1: addrFromTopic(lg.topics[3]),
+          fee: Number(BigInt("0x" + w[0])), ts: Number(ts),
+          hooks: ("0x" + w[2].slice(24)).toLowerCase(),
+          block: Number(BigInt(lg.blockNumber)), seen: Date.now()
+        };
+        await store.setJSON("letscash", st).catch(() => {});
+        return { ok: true, rec: st.tokens[t] };
+      }
+    } catch (e) {}
+  }
+  return { ok: false, error: "no v4 Initialize log found for that token" };
 }
