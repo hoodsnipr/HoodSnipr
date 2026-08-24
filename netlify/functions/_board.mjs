@@ -155,10 +155,11 @@ const BS_API = "https://robinhoodchain.blockscout.com/api/v2";
 export async function fetchHolders(store, addrs, { calls = 40, deadline = 0 } = {}) {
   const cache = (await store.get("holders", { type: "json" }).catch(() => null)) || { d: {}, cursor: 0 };
   const now = Date.now();
-  const stale = addrs.filter(a => {
-    const rec = cache.d[a];
-    return !rec || (now - rec.t) > 30 * 60e3;     // refresh every 30 min
-  });
+  // Unchecked tokens come first — one pass over everything matters more than
+  // keeping the top of the board perfectly fresh.
+  const unchecked = addrs.filter(a => !cache.d[a]);
+  const aging = addrs.filter(a => cache.d[a] && (now - cache.d[a].t) > 30 * 60e3);
+  const stale = unchecked.concat(aging);
   let done = 0;
   for (const a of stale) {
     if (done >= calls) break;
@@ -169,11 +170,15 @@ export async function fetchHolders(store, addrs, { calls = 40, deadline = 0 } = 
         const j = await r.json();
         const raw = j.holders_count != null ? j.holders_count : j.holders;
         const n = parseInt(String(raw).replace(/[^0-9]/g, ""), 10);
-        cache.d[a] = { h: isNaN(n) ? null : n, t: now };
+        // Blockscout returns icon_url in this same response and we were
+        // discarding it. It's a third logo source, already paid for — and
+        // logo coverage, not scam prevalence, is what was emptying the board.
+        const icon = (j.icon_url && /^https?:\/\//i.test(j.icon_url)) ? j.icon_url : null;
+        cache.d[a] = { h: isNaN(n) ? null : n, t: now, icon, checked: true };
       } else {
-        cache.d[a] = { h: null, t: now };
+        cache.d[a] = { h: null, t: now, checked: true };
       }
-    } catch (e) { cache.d[a] = { h: null, t: now }; }
+    } catch (e) { cache.d[a] = { h: null, t: now, checked: false }; }
     done++;
   }
   // keep the blob bounded
@@ -266,7 +271,11 @@ export function credibility(t, holders) {
   // Fresh launches are still discoverable — the New tab is deliberately not
   // filtered this way, so a genuine launch is visible there until its image
   // gets indexed and it graduates onto trending.
-  if (!meta.img)
+  // Only remove a token whose logo we have genuinely LOOKED FOR across every
+  // source. Removing on absence-of-data rather than absence-of-logo is what
+  // collapsed the board from thousands of tokens to a few hundred: most rows
+  // simply hadn't been checked yet.
+  if (!meta.img && t.imgChecked)
     severe.push("no token logo — metadata was never filled in");
   else if (meta.socials === 0 && vol >= 100000)
     severe.push(`$${Math.round(vol/1000)}k volume with no website or socials`);
@@ -435,13 +444,27 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
   // them being consistent with each other.
   finalizeTokens(known.t);
 
+  // Fold in any logo Blockscout gave us while we were fetching holder counts.
+  try {
+    const hcache = (await store.get("holders", { type: "json" }).catch(() => null)) || { d: {} };
+    for (const a of Object.keys(hcache.d || {})) {
+      const rec = hcache.d[a], t = known.t[a];
+      if (!t) continue;
+      if (!t.img && rec && rec.icon) t.img = rec.icon;
+      if (rec && rec.checked) t.imgChecked = true;
+    }
+  } catch (e) {}
+
   // Prioritise holder lookups for the high-volume tokens — those are the ones
   // where the wash-trading test actually matters.
+  // This lookup now does double duty — holder counts AND the Blockscout icon
+  // that decides whether a token can trend. Coverage therefore has to reach the
+  // whole board over time, not just the top 150, so the queue rotates.
   const hot = Object.keys(known.t)
     .sort((a, b) => (known.t[b].h24 || 0) - (known.t[a].h24 || 0))
-    .slice(0, 150);
+    .slice(0, 600);
   const holders = await fetchHolders(store, hot, {
-    calls: deep ? 60 : 30, deadline: Date.now() + Math.min(5000, timeLeft() - 1500)
+    calls: deep ? 120 : 60, deadline: Date.now() + Math.min(6000, timeLeft() - 1200)
   }).catch(() => ({}));
 
   // pons launches are indexed straight from its factory events, so a token

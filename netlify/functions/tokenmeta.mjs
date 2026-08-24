@@ -25,7 +25,14 @@ export default async (req) => {
       if (needH) {
         try {
           const r = await fetch(`${BS}/tokens/${a}`);
-          if (r.ok) { const t = await r.json(); const h = parseInt(t.holders_count != null ? t.holders_count : t.holders, 10); m.h = isNaN(h) ? null : h; }
+          if (r.ok) {
+            const t = await r.json();
+            const h = parseInt(t.holders_count != null ? t.holders_count : t.holders, 10);
+            m.h = isNaN(h) ? null : h;
+            // same response carries the token icon — a logo source we were
+            // discarding while paying for the request anyway
+            if (t.icon_url && /^https?:\/\//i.test(t.icon_url)) m.img = t.icon_url;
+          }
           m.hT = now;
         } catch (e) {}
       }
