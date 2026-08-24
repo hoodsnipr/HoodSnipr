@@ -229,6 +229,12 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvempty{padding:26px 14px;text-align:center;color:var(--mute);font-size:13px;
   border:1px dashed var(--line);border-radius:12px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.lcash{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#00C805;
+  border:1px solid #00C805;border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.85}
+.lcbox{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:11px;font-size:12px}
+.lcbox .r{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;
+  letter-spacing:.08em;color:var(--mute);margin-bottom:6px}
+.lcbox .tax{color:var(--gold);font-weight:700}
 .pons{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#8B5CF6;border:1px solid #8B5CF6;border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle}
 .gradbar{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:11px}
 .gradbar .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--mute)}
@@ -636,6 +642,7 @@ function boardRowToPool(r){
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
     pons:!!r.pons, ponsBlock:r.ponsBlock||null, restrictionsEndBlock:r.restrictionsEndBlock||null,
+    cc:!!r.cc,
     d30:(r.d30!=null? r.d30 : null),        // server-computed, whole board
     ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
     holders:r.h!=null?r.h:null, wash:!!r.wash,
@@ -1090,6 +1097,25 @@ function holdersCell(p){
   var col = thin? ' style="color:var(--gold)"' : '';
   return '<span data-holders="'+k+'"'+col+'>👥 '+h.toLocaleString()+(thin?' ⚠':'')+'</span>';
 }
+// letscash tokens all carry a trailing "cc" in the address. The badge only
+// appears once the pool's hook confirms it, so a coincidental address can't
+// wear someone else's branding.
+var lcCache={};
+async function letscashInfo(token){
+  var k=String(token||"").toLowerCase();
+  if(lcCache[k]!==undefined) return lcCache[k];
+  try{
+    var r=await fetch(CFG.API+"/letscash?token="+k);
+    if(!r.ok) return null;
+    var j=await r.json();
+    lcCache[k]=j && j.isLetscash ? j : null;
+    return lcCache[k];
+  }catch(e){ return null; }
+}
+function letscashBadge(p){
+  if(!p.cc) return "";
+  return '<span class="lcash" title="Launched on letscash.fun">cc</span> ';
+}
 function ponsBadge(p){
   if(!p.pons) return "";
   return '<span class="pons" title="Launched on pons — Uniswap V3, 1% pool, liquidity locked at launch">pons</span> ';
@@ -1284,7 +1310,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]
         +(p._d30est&&state.tf==="d30"?' <span style="color:var(--gold)">EST</span>':'')+'</div></div>'
@@ -1448,6 +1474,7 @@ function openToken(poolAddr){
      +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
      +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
    +'</div>'
+   +'<div id="lcBox"></div>'
    +'<div id="ponsBox"></div>'
    +'<div id="trustBox"></div>'
    +'<div id="mSocials" style="margin-top:10px;text-align:center;font-size:15px">'+socialLinks(p,16)+'</div>'
@@ -1486,6 +1513,24 @@ function openToken(poolAddr){
   if(vv.length===1 && vv[0]==="v4") modal.venue="v4";
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); renderSpendLine(); });
+  // letscash context: the trading tax and the pool's quote asset both change
+  // what a trade actually costs, so they belong on screen before FIRE.
+  if(p.cc){
+    letscashInfo(p.baseToken).then(function(lc){
+      var box=$("#lcBox"); if(!box || !lc) return;
+      box.innerHTML='<div class="lcbox">'
+        +'<div class="r"><span>LETSCASH.FUN</span><span>QUOTED IN '+esc(lc.quote||"—")+'</span></div>'
+        +'<div style="color:var(--mute);line-height:1.55">'
+        +'This pool charges a <span class="tax">trading tax on every buy and sell</span>, set at launch '
+        +'(1%, 3%, 5% or 10%) and taken in '+esc(lc.quote==="USDG"?"USDG":"ETH")+' — never in the token. '
+        +'It is already reflected in the quote above.'
+        +(lc.routable ? '' : ' <span style="color:var(--red)">This pool is priced in USDG, which HoodSnipr can\'t route yet — trade it on letscash.</span>')
+        +'</div>'
+        +'<div style="margin-top:7px"><a href="'+esc(lc.tokenUrl)+'" target="_blank" rel="noopener" data-action="ext" style="color:var(--green);font-size:11px">view on letscash.fun ↗</a></div>'
+        +'</div>';
+    }).catch(function(){});
+  }
+
   // pons context: graduation progress and the launch-protection window
   if(p.pons){
     fetch(CFG.API+"/pons?token="+String(p.baseToken).toLowerCase())
@@ -2604,6 +2649,12 @@ async function fire(){
       var key=bestPool.key, leg=bestPool.leg, qOut=bestPool.out;
       var minOut4=qOut - (qOut*BigInt(modal.slip)/10000n);
       if(minOut4<1n) minOut4=1n;
+      // A letscash pool taxes up to 10% inside the swap. The quoter accounts
+      // for it, but a tight slippage band leaves no room for the price to move
+      // at all — and its docs are explicit that a partial fill reverts rather
+      // than overtaxing, so an under-set band fails outright.
+      if(p.cc && modal.slip < 300)
+        toast("This is a taxed letscash pool — 3% slippage or more is recommended", true);
 
       var enc4=encodeV4Buy(key, p.baseToken, netWei, minOut4);
       var dl4=BigInt(Math.floor(Date.now()/1000)+300);
