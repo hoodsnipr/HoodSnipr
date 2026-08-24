@@ -34,7 +34,9 @@ export default async () => {
       // the same way pons is enumerated from its factory. This is what makes
       // established tokens appear rather than only ones we happened to index.
       await pruneStore();                       // drop anything not cc-stamped
-      const sweep = await scanLetscash(4000);
+      // Bigger slice per run: the backward walk was only a few hundred tokens
+      // deep after hours of uptime, which left established coins unindexed.
+      const sweep = await scanLetscash(5000);
       const { letscashMap } = await import("./_letscash.mjs");
       const all = await letscashMap();
       const hyd = await hydrateTokens(Object.keys(all), { budgetMs: 4000, limit: 60 });

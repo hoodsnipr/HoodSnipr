@@ -53,10 +53,24 @@ export default async (req) => {
         });
       }
 
-      const r = await findToken(q);
-      if (r.ok) await hydrateTokens([q], { budgetMs: 3000, limit: 1 });
+      // Adopt from the token contract first — it works even when the sweep
+      // hasn't reached this token yet, which is the common case for an
+      // established coin.
+      const { adoptToken } = await import("./_letscash.mjs");
+      const adopted = await adoptToken(q);
+      const r = adopted.ok ? { ok: true, adopted: true } : await findToken(q);
       const all = await letscashMap();
-      return json(200, { ...r, meta: all[q] || null });
+      return json(200, { ...r, adoption: adopted, meta: all[q] || null });
+    }
+
+    // ?adopt=0x…,0x… — pull specific tokens in immediately
+    const adopt = url.searchParams.get("adopt");
+    if (adopt) {
+      const { adoptToken } = await import("./_letscash.mjs");
+      const list = adopt.split(",").map(x => x.trim()).filter(Boolean).slice(0, 20);
+      const results = [];
+      for (const a of list) results.push(await adoptToken(a));
+      return json(200, { requested: list.length, adopted: results.filter(r => r.ok).length, results });
     }
 
     // ?prune=1 — drop anything that isn't cc-stamped
@@ -74,11 +88,17 @@ export default async (req) => {
       }));
       const withMeta = rows.filter(r => r.sym);
       const withLogo = rows.filter(r => r.logo);
+      const stAll = await store.get("letscash", { type: "json" }).catch(() => null);
       return json(200, {
         total: rows.length,
         withMetadata: withMeta.length,
         withLogo: withLogo.length,
         awaitingHydration: rows.length - withMeta.length,
+        sweep: stAll && stAll.scan
+          ? { cursor: stAll.scan.lo, complete: !!stAll.scan.done,
+              note: stAll.scan.done ? "full history scanned"
+                                    : "still walking back — older tokens may not be indexed yet" }
+          : null,
         tokens: rows.slice(0, 200)
       });
     }

@@ -274,7 +274,8 @@ export async function scanLetscash(budgetMs = 7000) {
   const st = (await store.get("letscash", { type: "json" }).catch(() => null))
     || { hooks: {}, tokens: {} };
   st.tokens = st.tokens || {};
-  st.scan = st.scan || { lo: null, chunk: 40000, done: false };
+  st.scan = st.scan || { lo: null, chunk: 120000, done: false };
+  if (st.scan.chunk < 20000) st.scan.chunk = 20000;
 
   const v4 = (await store.get("v4pools", { type: "json" }).catch(() => null)) || {};
   const manager = v4.manager;
@@ -287,8 +288,8 @@ export async function scanLetscash(budgetMs = 7000) {
   if (st.scan.lo == null) st.scan.lo = head;
 
   let found = 0, scanned = 0;
-  while (Date.now() - t0 < budgetMs - 1200 && !st.scan.done && st.scan.lo > 0) {
-    const size = Math.max(4000, st.scan.chunk);
+  while (Date.now() - t0 < budgetMs - 800 && !st.scan.done && st.scan.lo > 0) {
+    const size = Math.max(20000, st.scan.chunk);
     const from = Math.max(0, st.scan.lo - size), to = st.scan.lo;
     try {
       const logs = await getLogs(from, to, [topics], manager) || [];
@@ -317,7 +318,7 @@ export async function scanLetscash(budgetMs = 7000) {
       }
       scanned += (to - from);
       st.scan.lo = from;
-      if (st.scan.chunk < 40000) st.scan.chunk = Math.min(40000, st.scan.chunk * 2);
+      if (st.scan.chunk < 120000) st.scan.chunk = Math.min(120000, st.scan.chunk * 2);
       if (from === 0) st.scan.done = true;
     } catch (e) {
       st.scan.chunk = Math.max(2000, Math.floor(st.scan.chunk / 3));
@@ -373,4 +374,68 @@ export async function findToken(token) {
     } catch (e) {}
   }
   return { ok: false, error: "no v4 Initialize log found for that token" };
+}
+
+
+// ---------------------------------------------------------------------------
+// DIRECT ADOPTION
+//
+// $INTERN (0x3aE3faCC…39cc) is cc-stamped and real, yet the sweep hadn't
+// reached it — the backward walk through Initialize logs is resumable and was
+// still only a few hundred tokens deep. Waiting for a full-history sweep to
+// surface an established token is the wrong dependency.
+//
+// A letscash token can be verified from the token contract ALONE: it answers
+// logo() and carries the cc stamp. Neither is true of an ordinary ERC-20. So
+// adoption needs no pool discovery, no factory, and no sweep progress.
+export async function adoptToken(addr) {
+  const a = String(addr || "").trim().toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(a)) return { ok: false, error: "not an address" };
+  if (!hasCcStamp(a)) return { ok: false, error: "not cc-stamped — cannot be a letscash token" };
+
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { hooks: {}, tokens: {} };
+  st.tokens = st.tokens || {};
+
+  const calls = [
+    { method: "eth_call", params: [{ to: a, data: META_SEL.symbol }, "latest"] },
+    { method: "eth_call", params: [{ to: a, data: META_SEL.name }, "latest"] },
+    { method: "eth_call", params: [{ to: a, data: META_SEL.logo }, "latest"] },
+    { method: "eth_call", params: [{ to: a, data: META_SEL.image }, "latest"] },
+    { method: "eth_call", params: [{ to: a, data: META_SEL.socials }, "latest"] },
+    { method: "eth_call", params: [{ to: a, data: META_SEL.decimals }, "latest"] }
+  ];
+  let res;
+  try { res = await rpcBatch(calls); }
+  catch (e) { return { ok: false, error: "rpc: " + String(e.message).slice(0, 80) }; }
+
+  const sym = decodeStr(res[0]);
+  const name = decodeStr(res[1]);
+  const logoRaw = decodeStr(res[2]) || decodeStr(res[3]);
+  const socials = decodeStr(res[4]);
+  if (!sym) return { ok: false, error: "contract did not answer symbol() — not a token?" };
+
+  const rec = st.tokens[a] || (st.tokens[a] = { token: a });
+  rec.sym = sym; if (name) rec.name = name;
+  if (logoRaw) rec.logo = logoRaw;
+  if (socials) rec.socials = socials.slice(0, 300);
+  rec.adopted = true; rec.t = Date.now();
+
+  // pool key is a bonus, not a requirement — try, but don't fail without it
+  if (!rec.poolId) {
+    try {
+      const f = await findToken(a);
+      if (f.ok && f.rec) Object.assign(rec, f.rec, { sym: rec.sym, name: rec.name, logo: rec.logo });
+    } catch (e) {}
+  }
+  await store.setJSON("letscash", st).catch(() => {});
+  return {
+    ok: true, token: a, sym: rec.sym, name: rec.name || null,
+    logo: normalizeLogo(rec.logo) || null,
+    hasOnchainLogo: !!rec.logo,
+    poolId: rec.poolId || null,
+    note: rec.logo
+      ? "verified: cc-stamped and answers logo() on chain"
+      : "cc-stamped, but no onchain logo — will still list if a screener has one"
+  };
 }
