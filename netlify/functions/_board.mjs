@@ -10,7 +10,7 @@ import { ponsMap } from "./_pons.mjs";
 import { isDenied, normSym } from "./_denylist.mjs";
 import { getBans } from "./banlist.mjs";
 import { vol30Map } from "./_vol30.mjs";
-import { hasCcStamp } from "./_letscash.mjs";
+import { hasCcStamp, letscashMap, normalizeLogo, parseSocials } from "./_letscash.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
@@ -374,7 +374,7 @@ export function buildBoard(tokens, holders, blocked, bans) {
     // letscash stamps every token address with a trailing "cc". On its own
     // that's weak evidence, so the client confirms against the pool's hook
     // before showing the badge.
-    cc: hasCcStamp(t.a),
+    cc: hasCcStamp(t.a), lc: !!t.letscash,
     pons: !!t.pons, ponsBlock: t.ponsBlock || null,
     restrictionsEndBlock: t.restrictionsEndBlock || null,
     a: t.a, p: t.pool, s: String(t.s || "").replace(/^\$+/, ""), n: t.n,
@@ -486,6 +486,41 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
   } catch (e) {}
 
   const bans = await getBans().catch(() => ({}));
+  // letscash tokens carry their logo, name and socials ON CHAIN. The screener
+  // feeds often don't have the image, and with the logo filter in place that
+  // was silently removing the entire launchpad from trending. Merge the onchain
+  // metadata in first so those tokens are judged on what they actually have.
+  let lcMerged = 0;
+  try {
+    const lc = await letscashMap();
+    for (const addr of Object.keys(lc)) {
+      const rec = lc[addr];
+      const ex = known.t[addr];
+      const logo = normalizeLogo(rec.logo);
+      const soc = parseSocials(rec.socials);
+      if (ex) {
+        if (!ex.img && logo) ex.img = logo;
+        if ((!ex.s || ex.s === "?") && rec.sym) ex.s = rec.sym;
+        if (!ex.n && rec.name) ex.n = rec.name;
+        if (!ex.tw && soc.tw) ex.tw = soc.tw;
+        if (!ex.tg && soc.tg) ex.tg = soc.tg;
+        if (!ex.site && soc.site) ex.site = soc.site;
+        ex.letscash = true;
+        lcMerged++;
+      } else if (rec.sym && logo) {
+        // a launch no feed has picked up yet — same treatment as a pons launch
+        known.t[addr] = {
+          a: addr, pool: rec.pool || null, s: rec.sym, n: rec.name || "",
+          img: logo, px: null, liq: 0, mc: null,
+          m5: 0, h1: 0, h6: 0, h24: 0, cm5: 0, c1: 0, c6: 0, c24: 0,
+          tw: soc.tw, tg: soc.tg, site: soc.site,
+          cr: null, ver: "v4", src: "letscash", letscash: true, t: Date.now()
+        };
+        lcMerged++;
+      }
+    }
+  } catch (e) {}
+
   const rows = buildBoard(known.t, holders, blocked, bans);
 
   // attach server-side 30D volume so the client never has to fetch per pool
@@ -540,6 +575,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       hiddenSample: hiddenLog.slice(0, 25),
       hiddenCount: hiddenLog.length,
       ponsTokens: ponsTagged,
+      letscashTokens: lcMerged,
       feedPage: page,
       errors: errors.slice(0, 3)
     }

@@ -19,6 +19,7 @@
 // The hook set is learned from the chain: a hook shared by many "cc" tokens is
 // the launchpad's fee engine.
 import { store as _store } from "./_store.mjs";
+import { rpcBatch, decodeStr } from "./_rpc.mjs";
 
 export const LETSCASH = {
   site: "https://www.letscash.fun",
@@ -94,4 +95,126 @@ export function classify(token, poolKeys, hookSet, wethAddr, usdgAddr) {
     };
   }
   return null;
+}
+
+
+// ---------------------------------------------------------------------------
+// DISCOVERY
+//
+// Tagging tokens the screener feeds already knew about was not enough: the
+// feeds do not always carry a letscash token's image, and with the logo filter
+// in place those tokens were being dropped from trending entirely. Their docs
+// are explicit that a token stores "its logo, description, and socials on
+// chain" — so we read the metadata from the contract instead of waiting for a
+// screener to index it, exactly as we do for pons.
+//
+// Discovery needs no factory address. Every letscash pool is a v4 pool whose
+// hook is the launchpad's fee engine, and we already index v4 pool keys. So the
+// token list falls out of data we hold.
+const META_SEL = {
+  symbol: "0x95d89b41", name: "0x06fdde03", decimals: "0x313ce567",
+  logo: "0xfb7f21eb",                 // logo()
+  image: "0xf3ccaac0",                // image() — fallback naming
+  description: "0x7284e416",
+  socials: "0x53cd512a"
+};
+
+// Every token that has a v4 pool under a known letscash hook.
+export async function discoverTokens(v4Keys, hookSet) {
+  const out = {};
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  for (const token of Object.keys(v4Keys || {})) {
+    for (const k of (v4Keys[token] || [])) {
+      const h = String(k.hooks || "").toLowerCase();
+      if (!h || h === ZERO) continue;
+      if (!hookSet.has(h)) continue;
+      out[token] = { token, pool: k.id || null, hook: h, fee: k.fee, ts: k.ts, c0: k.c0, c1: k.c1 };
+      break;
+    }
+  }
+  return out;
+}
+
+// Pull symbol / name / logo straight off the contract. Batched, and cached so a
+// token is only read once.
+export async function hydrateTokens(addrs, { budgetMs = 6000, limit = 30 } = {}) {
+  const t0 = Date.now();
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { hooks: {}, tokens: {} };
+  st.tokens = st.tokens || {};
+
+  const need = addrs.filter(a => !st.tokens[a] || !st.tokens[a].sym).slice(0, limit);
+  let done = 0;
+  for (let i = 0; i < need.length && Date.now() - t0 < budgetMs - 800; i += 6) {
+    const slice = need.slice(i, i + 6);
+    const calls = [];
+    for (const a of slice) {
+      calls.push({ method: "eth_call", params: [{ to: a, data: META_SEL.symbol }, "latest"] });
+      calls.push({ method: "eth_call", params: [{ to: a, data: META_SEL.name }, "latest"] });
+      calls.push({ method: "eth_call", params: [{ to: a, data: META_SEL.logo }, "latest"] });
+      calls.push({ method: "eth_call", params: [{ to: a, data: META_SEL.image }, "latest"] });
+      calls.push({ method: "eth_call", params: [{ to: a, data: META_SEL.socials }, "latest"] });
+    }
+    const res = await rpcBatch(calls).catch(() => []);
+    slice.forEach((a, n) => {
+      const b = n * 5;
+      const rec = st.tokens[a] || (st.tokens[a] = { token: a });
+      rec.sym = decodeStr(res[b]) || rec.sym || null;
+      rec.name = decodeStr(res[b + 1]) || rec.name || null;
+      const logo = decodeStr(res[b + 2]) || decodeStr(res[b + 3]);
+      if (logo && /^(https?:\/\/|ipfs:\/\/|data:image)/i.test(logo)) rec.logo = logo;
+      const soc = decodeStr(res[b + 4]);
+      if (soc) rec.socials = soc.slice(0, 300);
+      rec.t = Date.now();
+      done++;
+    });
+  }
+  await store.setJSON("letscash", st).catch(() => {});
+  return { hydrated: done, total: Object.keys(st.tokens).length };
+}
+
+// ipfs:// won't render in an <img>; normalise to a gateway.
+export function normalizeLogo(u) {
+  if (!u) return null;
+  const s2 = String(u).trim();
+  if (/^ipfs:\/\//i.test(s2)) return "https://ipfs.io/ipfs/" + s2.replace(/^ipfs:\/\//i, "").replace(/^ipfs\//, "");
+  if (/^(https?:\/\/|data:image)/i.test(s2)) return s2;
+  return null;
+}
+
+// Everything we know, keyed by token address, for the board to merge.
+export async function letscashMap() {
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { tokens: {} };
+  return st.tokens || {};
+}
+
+
+// The socials field is a free-form string on chain — sometimes JSON, sometimes
+// a delimited list. Pull whatever URLs are in it and sort them into the fields
+// the board already understands.
+export function parseSocials(raw) {
+  const out = { tw: null, tg: null, site: null };
+  if (!raw) return out;
+  let text = String(raw);
+  try {
+    const j = JSON.parse(text);
+    if (j && typeof j === "object") {
+      text = Object.values(j).filter(v => typeof v === "string").join(" ");
+    }
+  } catch (e) { /* not JSON, treat as text */ }
+
+  const urls = text.match(/(https?:\/\/[^\s",'\]}]+)/gi) || [];
+  for (const u of urls) {
+    const l = u.toLowerCase();
+    if (!out.tw && /(twitter\.com|x\.com)/.test(l)) out.tw = u;
+    else if (!out.tg && /t\.me/.test(l)) out.tg = u;
+    else if (!out.site) out.site = u;
+  }
+  // bare handles are common too
+  if (!out.tw) {
+    const h = text.match(/(?:^|[\s,"])@([A-Za-z0-9_]{2,15})/);
+    if (h) out.tw = "https://x.com/" + h[1];
+  }
+  return out;
 }

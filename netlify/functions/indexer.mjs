@@ -4,7 +4,7 @@ import { rebuild } from "./_board.mjs";
 import { scanV4, learnHooks } from "./v4pools.mjs";
 import { indexLaunches, hydrate } from "./_pons.mjs";
 import { fillVol30 } from "./_vol30.mjs";
-import { learnLetscashHooks } from "./_letscash.mjs";
+import { learnLetscashHooks, letscashHookSet, discoverTokens, hydrateTokens } from "./_letscash.mjs";
 
 export default async () => {
   const deep = new Date().getMinutes() % 5 === 0;
@@ -28,8 +28,19 @@ export default async () => {
       const { store } = await import("./_store.mjs");
       const s2 = await store("hoodsnipr-cache");
       const v4s = await s2.get("v4pools", { type: "json" });
-      const r = await learnLetscashHooks((v4s && v4s.keys) || {});
-      return { hooks: Object.keys(r.hooks || {}).length };
+      const keys = (v4s && v4s.keys) || {};
+      const learned = await learnLetscashHooks(keys);
+      const hookSet = await letscashHookSet();
+      // find every token trading under a letscash hook, then read its onchain
+      // metadata so it can pass the logo requirement on its own merits
+      const found = await discoverTokens(keys, hookSet);
+      const hyd = await hydrateTokens(Object.keys(found), { budgetMs: 4000, limit: 30 });
+      return {
+        hooks: Object.keys(learned.hooks || {}).length,
+        confirmedHooks: hookSet.size,
+        tokens: Object.keys(found).length,
+        hydrated: hyd.hydrated
+      };
     } catch (e) { return { error: e.message }; }
   })();
   const v4 = await scanV4(2000).catch(e => ({ error: e.message }));
