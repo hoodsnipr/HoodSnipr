@@ -635,6 +635,18 @@ var proxyDown=false;
 // The board endpoint returns the ENTIRE filtered/sorted token list in one shot,
 // already merged server-side — so the list paints instantly instead of
 // assembling itself over several polls.
+// Paint the last good board immediately so the first frame is real data rather
+// than a skeleton that later rearranges.
+(function primeBoard(){
+  try{
+    var c=JSON.parse(localStorage.getItem("hs_board")||"null");
+    if(c && c.rows && c.rows.length){
+      state.pools=c.rows.map(boardRowToPool);
+      state.chain=c.stats||{};
+      state.lastUpdate=c.ts||0;
+    }
+  }catch(e){}
+})();
 function boardRowToPool(r){
   return {
     pool:r.p, baseToken:r.a, sym:r.s, tokenName:r.n, fullName:r.n||r.s,
@@ -679,7 +691,16 @@ function paintCachedBoard(){
     if(!pools) return false;
     var uni=state.universe={};
     pools.forEach(function(p){ var k=(p.baseToken||p.pool||"").toLowerCase(); if(k){ p.seen=Date.now(); uni[k]=p; } });
-    state.pools=Object.keys(uni).map(function(k){return uni[k]});
+    var next=Object.keys(uni).map(function(k){return uni[k]});
+
+    // Never let a thin payload replace a fuller one on screen. A partial sweep
+    // reaching the client shows as good tokens being swapped for junk, then
+    // repaired a minute later — which is exactly the flicker being reported.
+    if(state.pools && state.pools.length >= 25 && next.length < state.pools.length*0.6){
+      state.lastThin={ got:next.length, kept:state.pools.length, t:Date.now() };
+      return true;                      // keep what we have; try again next tick
+    }
+    state.pools=next;
     invalidateRanks();                  // fresh data means the ranking is stale
     state.lastUpdate=pay.ts;
     renderChainBar(); renderBoard();
