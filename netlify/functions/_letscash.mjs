@@ -21,6 +21,14 @@
 import { store as _store } from "./_store.mjs";
 import { rpc, rpcBatch, getLogs, decodeStr, addrFromTopic, words } from "./_rpc.mjs";
 
+// CONFIRMED FROM LIVE CHAIN DATA: this hook appears on dozens of cc-stamped
+// tokens carrying ipfs logos (Turbine, DENS, CATEYES, CRYCAT, CASHDEPT, …).
+// Note that plenty of genuine letscash tokens have NO hook at all — Pibble,
+// GATO, LEVCAT, FOMEOW, SIMBA — so the hook confirms a token, it never gates it.
+export const KNOWN_HOOKS = new Set([
+  "0x75a54357d9c78a2db19004a5fdc76c50f9242aec"
+]);
+
 export const LETSCASH = {
   site: "https://www.letscash.fun",
   legacy: "https://legacy.letscash.fun",
@@ -58,7 +66,7 @@ export async function learnLetscashHooks(v4Keys) {
 export async function letscashHookSet(min = 2) {
   const store = await _store("hoodsnipr-cache");
   const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { hooks: {} };
-  const set = new Set();
+  const set = new Set(KNOWN_HOOKS);
   for (const h of Object.keys(st.hooks || {})) if (st.hooks[h] >= min) set.add(h);
   return set;
 }
@@ -143,7 +151,11 @@ export async function hydrateTokens(addrs, { budgetMs = 6000, limit = 30 } = {})
   const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { hooks: {}, tokens: {} };
   st.tokens = st.tokens || {};
 
-  const need = addrs.filter(a => !st.tokens[a] || !st.tokens[a].sym).slice(0, limit);
+  // Hard guard: only cc-stamped addresses can ever enter this store.
+  const need = addrs
+    .filter(a => hasCcStamp(a))
+    .filter(a => !st.tokens[a] || !st.tokens[a].sym)
+    .slice(0, limit);
   let done = 0;
   for (let i = 0; i < need.length && Date.now() - t0 < budgetMs - 800; i += 6) {
     const slice = need.slice(i, i + 6);
@@ -180,6 +192,21 @@ export function normalizeLogo(u) {
   if (/^ipfs:\/\//i.test(s2)) return "https://ipfs.io/ipfs/" + s2.replace(/^ipfs:\/\//i, "").replace(/^ipfs\//, "");
   if (/^(https?:\/\/|data:image)/i.test(s2)) return s2;
   return null;
+}
+
+// The store had picked up WETH, USDG, Robinhood stock tokens and ~150 unrelated
+// addresses, because an early hydrate call was handed too broad a list. They
+// can't be letscash tokens — the factory stamps every one with a trailing "cc"
+// — and they were eating the hydration budget that real tokens needed.
+export async function pruneStore() {
+  const store = await _store("hoodsnipr-cache");
+  const st = (await store.get("letscash", { type: "json" }).catch(() => null)) || { tokens: {} };
+  const before = Object.keys(st.tokens || {}).length;
+  const kept = {};
+  for (const a of Object.keys(st.tokens || {})) if (hasCcStamp(a)) kept[a] = st.tokens[a];
+  st.tokens = kept;
+  await store.setJSON("letscash", st).catch(() => {});
+  return { before, after: Object.keys(kept).length, removed: before - Object.keys(kept).length };
 }
 
 // Everything we know, keyed by token address, for the board to merge.

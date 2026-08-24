@@ -4,7 +4,7 @@ import { rebuild } from "./_board.mjs";
 import { scanV4, learnHooks } from "./v4pools.mjs";
 import { indexLaunches, hydrate } from "./_pons.mjs";
 import { fillVol30 } from "./_vol30.mjs";
-import { learnLetscashHooks, letscashHookSet, discoverTokens, hydrateTokens, scanLetscash } from "./_letscash.mjs";
+import { learnLetscashHooks, letscashHookSet, discoverTokens, hydrateTokens, scanLetscash, pruneStore } from "./_letscash.mjs";
 
 export default async () => {
   const deep = new Date().getMinutes() % 5 === 0;
@@ -33,10 +33,11 @@ export default async () => {
       // Enumerate the launchpad end to end from PoolManager Initialize logs,
       // the same way pons is enumerated from its factory. This is what makes
       // established tokens appear rather than only ones we happened to index.
+      await pruneStore();                       // drop anything not cc-stamped
       const sweep = await scanLetscash(4000);
       const { letscashMap } = await import("./_letscash.mjs");
       const all = await letscashMap();
-      const hyd = await hydrateTokens(Object.keys(all), { budgetMs: 3500, limit: 30 });
+      const hyd = await hydrateTokens(Object.keys(all), { budgetMs: 4000, limit: 60 });
       return {
         tokens: sweep.tokens, foundThisRun: sweep.found,
         sweepDone: sweep.done, cursor: sweep.cursor,

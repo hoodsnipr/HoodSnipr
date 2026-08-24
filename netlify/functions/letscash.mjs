@@ -36,10 +36,33 @@ export default async (req) => {
     // ?find=0x… — locate one token immediately, no waiting for the sweep
     const find = url.searchParams.get("find");
     if (find) {
-      const r = await findToken(find);
-      if (r.ok) await hydrateTokens([String(find).toLowerCase()], { budgetMs: 3000, limit: 1 });
+      const q = String(find).trim().toLowerCase().replace(/^\$/, "");
+      const all0 = await letscashMap();
+
+      // A symbol is far easier to paste than an address, so accept either.
+      if (!/^0x[0-9a-f]{40}$/.test(q)) {
+        const hits = Object.values(all0).filter(t =>
+          String(t.sym || "").toLowerCase() === q ||
+          String(t.name || "").toLowerCase().includes(q));
+        if (hits.length) return json(200, { ok: true, matchedBy: "symbol", count: hits.length, tokens: hits.slice(0, 10) });
+        return json(200, {
+          ok: false,
+          error: `no indexed letscash token matches "${find}"`,
+          hint: "pass the contract address instead, or hit ?scan=1 a few times — the sweep may not have reached it yet",
+          indexed: Object.keys(all0).length
+        });
+      }
+
+      const r = await findToken(q);
+      if (r.ok) await hydrateTokens([q], { budgetMs: 3000, limit: 1 });
       const all = await letscashMap();
-      return json(200, { ...r, meta: all[String(find).toLowerCase()] || null });
+      return json(200, { ...r, meta: all[q] || null });
+    }
+
+    // ?prune=1 — drop anything that isn't cc-stamped
+    if (url.searchParams.get("prune") === "1") {
+      const { pruneStore } = await import("./_letscash.mjs");
+      return json(200, await pruneStore());
     }
 
     // ?list=1 — everything enumerated so far
@@ -49,7 +72,15 @@ export default async (req) => {
         token: t.token, sym: t.sym || null, name: t.name || null,
         logo: normalizeLogo(t.logo) || null, hooks: t.hooks || null
       }));
-      return json(200, { total: rows.length, withMetadata: rows.filter(r => r.sym).length, tokens: rows.slice(0, 200) });
+      const withMeta = rows.filter(r => r.sym);
+      const withLogo = rows.filter(r => r.logo);
+      return json(200, {
+        total: rows.length,
+        withMetadata: withMeta.length,
+        withLogo: withLogo.length,
+        awaitingHydration: rows.length - withMeta.length,
+        tokens: rows.slice(0, 200)
+      });
     }
 
     if (url.searchParams.get("learn") === "1") {

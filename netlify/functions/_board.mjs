@@ -507,10 +507,10 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
         if (!ex.site && soc.site) ex.site = soc.site;
         ex.letscash = true;
         lcMerged++;
-      } else if (rec.sym && logo) {
+      } else if (rec.sym) {
         // a launch no feed has picked up yet — same treatment as a pons launch
         known.t[addr] = {
-          a: addr, pool: rec.pool || null, s: rec.sym, n: rec.name || "",
+          a: addr, pool: rec.pool || rec.poolId || null, s: rec.sym, n: rec.name || "",
           img: logo, px: null, liq: 0, mc: null,
           m5: 0, h1: 0, h6: 0, h24: 0, cm5: 0, c1: 0, c6: 0, c24: 0,
           tw: soc.tw, tg: soc.tg, site: soc.site,
