@@ -251,6 +251,9 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvrng button{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--mute);
   border:1px solid var(--line);border-radius:7px;padding:4px 9px;background:transparent}
 .pvrng button.on{color:var(--green);border-color:var(--green);background:var(--green-dim)}
+.pager{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:12px}
+.pager .pgi{font-family:var(--mono);font-size:11px;color:var(--mute)}
+.pager button[disabled]{opacity:.35}
 .pvbar{display:flex;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap}
 .pvbar .grp{display:flex;gap:5px}
 .pvbar button{font-family:var(--mono);font-size:11px;color:var(--text);background:var(--panel2);
@@ -349,9 +352,11 @@ canvas.share{display:none}
 
   <!-- ============ NEW LAUNCHES ============ -->
   <div id="v-new" style="display:none">
-    <div class="tfbar"><div class="src">LAUNCHED IN THE LAST HOUR · ROBINHOOD CHAIN</div><div class="src" id="newAge"></div></div>
+    <div class="tfbar"><div class="src">LAUNCHED IN THE LAST 12 HOURS · CATCHING VOLUME</div><div class="src" id="newAge"></div></div>
+    <div class="src" id="newMeta" style="padding:0 2px 8px"></div>
     <div class="board" id="newBoard"></div>
-    <div class="note">Fresh pools from GeckoTerminal, same stock/stable/ETH filters. Tokens without a logo appear here but are kept out of Trending until their metadata is filled in — on this chain, missing metadata alongside real volume is the most reliable scam tell there is. Brand-new tokens are the highest-risk trades anywhere: most go to zero, many are rugs. Snipe accordingly.</div>
+    <div class="pager" id="newPager"></div>
+    <div class="note">Launches are ranked by how hard they are trading <b>right now</b>, not by age — a token climbs this list as volume builds. Everything here has cleared $35k traded, 50+ holders, a $25k market cap and a real logo, which removes almost all of the empty-pool noise. It does not make any of them safe: brand-new tokens are the highest-risk trades on any chain, most go to zero, and some are rugs. Snipe accordingly.</div>
   </div>
 
   <!-- ============ PORTFOLIO ============ -->
@@ -1386,19 +1391,40 @@ function renderBoard(){
 }
 
 // ================= NEW LAUNCHES =================
-state.newPools=[]; state.newLoading=false; state.newTs=0;
+//
+// This tab answers one question: which just-launched tokens are actually
+// catching a bid right now? A raw feed of every new pool is mostly noise —
+// dozens of empty pools a minute — so a launch has to clear a real bar before
+// it appears:
+//
+//   • created in the last 12 hours
+//   • $35k+ traded
+//   • market cap above $25k
+//   • more than 50 holders
+//   • a token logo
+//
+// Holder counts aren't in the pool feed, so they're fetched only for tokens
+// that already clear the cheap filters — usually a few dozen, not hundreds.
+state.newPools=[]; state.newLoading=false; state.newTs=0; state.newPage=0;
+var NEW_FILTERS = { maxAgeH:12, minVol:35000, minHolders:50, minMcap:25000, needLogo:true };
+var NEW_PER_PAGE = 50, NEW_MAX = 100;
+
 async function refreshNew(force){
   if(state.newLoading) return;
   if(!force && Date.now()-state.newTs<25000){ renderNew(); return; }
   state.newLoading=true;
-  var nb=$("#newBoard"); if(nb && !state.newPools.length) nb.innerHTML='<div class="skel"></div>'.repeat(5);
+  var nb=$("#newBoard");
+  if(nb && !state.newPools.length) nb.innerHTML='<div class="skel"></div>'.repeat(5);
   try{
     var got=[], seen={};
-    for(var page=1;page<=2;page++){
+    // A 12-hour window needs more of the feed than a 1-hour one did.
+    for(var page=1;page<=6;page++){
       var j=await gt("/networks/"+CFG.GT_NET+"/new_pools?page="+page+"&include=base_token");
       var inc={};
       (j.included||[]).forEach(function(t){ if(t.type==="token") inc[t.id]={img:(t.attributes||{}).image_url||null,sym:(t.attributes||{}).symbol||null,name:(t.attributes||{}).name||null}; });
-      (j.data||[]).forEach(function(pp){
+      var rows=(j.data||[]);
+      if(!rows.length) break;
+      rows.forEach(function(pp){
         var a=pp.attributes||{}, id=(a.address||"").toLowerCase();
         if(!id||seen[id])return; seen[id]=1;
         var rel=pp.relationships||{}, btId=rel.base_token&&rel.base_token.data?rel.base_token.data.id:null;
@@ -1416,44 +1442,109 @@ async function refreshNew(force){
           created:a.pool_created_at||null,
           src:"GT", dex:rel.dex&&rel.dex.data?rel.dex.data.id:"", dsUrl:null });
       });
+      // the feed is newest-first, so stop once a page is entirely too old
+      var oldest=rows[rows.length-1];
+      var oa=oldest && oldest.attributes && oldest.attributes.pool_created_at;
+      if(oa && Date.now()-new Date(oa).getTime() > NEW_FILTERS.maxAgeH*3600e3) break;
     }
-    var hourAgo=Date.now()-3600e3;
-    state.newPools=got
-      .filter(function(p){return p.created && new Date(p.created).getTime()>=hourAgo})
-      .filter(function(p){return !isStable(p)&&!isStock(p)&&!isEthLike(p)})
-      .sort(function(a,b){return new Date(b.created)-new Date(a.created)});
+
+    var cutoff=Date.now()-NEW_FILTERS.maxAgeH*3600e3;
+    // Cheap filters first — no network cost.
+    var shortlist=got.filter(function(p){
+      if(!p.created || new Date(p.created).getTime() < cutoff) return false;
+      if(isStable(p)||isStock(p)||isEthLike(p)) return false;
+      if(NEW_FILTERS.needLogo && !p.img) return false;
+      var vol=Math.max(p.h24||0, p.h6||0);
+      if(vol < NEW_FILTERS.minVol) return false;
+      if((p.mcap||0) < NEW_FILTERS.minMcap) return false;
+      if(isBanned(p.baseToken) || isHiddenAddr(p.baseToken)) return false;
+      return true;
+    });
+
+    // Holder counts only for what survived — and only the top candidates, so a
+    // busy hour doesn't turn into hundreds of lookups.
+    shortlist.sort(function(a,b){ return (b.h24||0)-(a.h24||0); });
+    var probe=shortlist.slice(0, 60);
+    await enrichMeta(probe);
+
+    state.newPools=probe.filter(function(p){
+      var m=meta[(p.baseToken||"").toLowerCase()];
+      var h=m && m.h!=null ? m.h : null;
+      p.holders=h;
+      if(h==null) return false;             // unverified holder count — hold back
+      return h > NEW_FILTERS.minHolders;
+    }).sort(function(a,b){
+      // "picking up volume" means recent momentum, not lifetime total
+      var av=(a.h1||0)*6 + (a.h6||0), bv=(b.h1||0)*6 + (b.h6||0);
+      if(bv!==av) return bv-av;
+      return new Date(b.created)-new Date(a.created);
+    }).slice(0, NEW_MAX);
+
     state.newTs=Date.now();
+    if(state.newPage*NEW_PER_PAGE >= state.newPools.length) state.newPage=0;
   }catch(e){}
   state.newLoading=false;
   renderNew();
 }
+
 function ageStr(iso){
   var m=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/60000));
   return m<1?"just now":m+"m ago";
 }
 function renderNew(){
   var el=$("#newBoard"); if(!el)return;
-  if(!state.newPools.length){
-    el.innerHTML='<div class="empty">'+(state.newLoading?"Scanning fresh pools…":"Nothing launched in the last hour that survives the filters. The chain naps too.")+'</div>';
+  var all=state.newPools||[];
+
+  if(!all.length){
+    el.innerHTML='<div class="empty">'+(state.newLoading
+      ? "Scanning fresh pools…"
+      : "No launch in the last 12 hours clears the bar yet — $35k traded, 50+ holders, $25k cap, logo set. "
+        +"Quiet stretches are normal; this refreshes every 25 seconds.")+'</div>';
+    var mt=$("#newMeta"); if(mt) mt.textContent="";
     return;
   }
+
+  var pages=Math.max(1, Math.ceil(all.length/NEW_PER_PAGE));
+  if(state.newPage>=pages) state.newPage=0;
+  var from=state.newPage*NEW_PER_PAGE;
+  var rows=all.slice(from, from+NEW_PER_PAGE);
+
   var h="";
-  state.newPools.slice(0,25).forEach(function(p,i){
-    var c=p.cm5||p.ch1, up=c>=0;
+  rows.forEach(function(p,i){
+    var c=p.ch1||p.cm5, up=c>=0;
+    var mom=(p.h1||0);
     h+='<div class="row" data-action="open" data-pool="'+esc(p.pool)+'">'
-      +'<div class="rank">'+String(i+1).padStart(2,"0")+'</div>'
+      +'<div class="rank">'+String(from+i+1).padStart(2,"0")+'</div>'
       +'<img class="timg" alt="" loading="lazy" data-sym="'+esc(p.sym)+'" src="'+(p.img?esc(p.img):letterAvatar(p.sym))+'">'
-      +'<div class="tok"><div class="s">$'+esc(p.sym)+'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">🐣 '+ageStr(p.created)+' · MC '+fmtUsd(p.mcap)+' · LIQ '+fmtUsd(p.liq)+'</div></div>'
+      +'<div class="tok"><div class="s">$'+esc(p.sym)
+        +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
+      +'<div class="n">🐣 '+ageStr(p.created)+' · MC '+fmtUsd(p.mcap)
+        +(p.holders!=null?' · 👥 '+p.holders.toLocaleString():'')+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
-      +'<div class="vl"><div class="v">'+fmtUsd(p.h1)+'</div><div class="k">VOL 1H</div></div>'
+      +'<div class="vl"><div class="v">'+fmtUsd(mom)+'</div><div class="k">VOL 1H</div></div>'
       +'<button class="snp" data-action="open" data-pool="'+esc(p.pool)+'">SNIPE</button>'
       +'</div>';
   });
   el.innerHTML=h;
-  var na=$("#newAge"); if(na) na.textContent=state.newTs? Math.round((Date.now()-state.newTs)/1000)+"s ago":"";
-  enrichHolders(state.newPools.slice(0,25));
+
+  var meta$=$("#newMeta");
+  if(meta$){
+    meta$.textContent = all.length+" launch"+(all.length===1?"":"es")+" in the last 12h clearing "
+      +"$"+(NEW_FILTERS.minVol/1000)+"k volume · "+NEW_FILTERS.minHolders+"+ holders · "
+      +"$"+(NEW_FILTERS.minMcap/1000)+"k cap · logo required";
+  }
+
+  var pg=$("#newPager");
+  if(pg){
+    if(pages<2){ pg.innerHTML=""; }
+    else{
+      pg.innerHTML='<button class="obtn" data-action="newpage" data-d="-1"'+(state.newPage===0?' disabled':'')+'>‹ PREV</button>'
+        +'<span class="pgi">'+(from+1)+'–'+Math.min(all.length,from+NEW_PER_PAGE)+' of '+all.length+'</span>'
+        +'<button class="obtn" data-action="newpage" data-d="1"'+(state.newPage>=pages-1?' disabled':'')+'>NEXT ›</button>';
+    }
+  }
 }
+
 
 // ================= TOKEN MODAL + SNIPE =================
 var modal={ pool:null, mode:"wallet", slip:CFG.UNI.defaultSlippageBps, quote:null };
@@ -4305,6 +4396,13 @@ document.addEventListener("click", function(e){
       var b=$("#board"); if(b) b.scrollIntoView({behavior:"smooth",block:"start"});
     }
   else if(a==="foot-tab"){ e.preventDefault(); showTab(el.getAttribute("data-tab")); window.scrollTo({top:0,behavior:"smooth"}); }
+  else if(a==="newpage"){
+      var d=parseInt(el.getAttribute("data-d"),10);
+      var pages=Math.max(1, Math.ceil((state.newPools||[]).length/NEW_PER_PAGE));
+      state.newPage=Math.max(0, Math.min(pages-1, state.newPage+d));
+      renderNew();
+      var nbEl=$("#v-new"); if(nbEl) nbEl.scrollIntoView({behavior:"smooth",block:"start"});
+    }
   else if(a==="pvrange"){ pvRange=el.getAttribute("data-r"); save("hs_pvrange",pvRange); pvZoom={span:null,offset:0}; renderPvChart(); }
   else if(a==="pvreset"){ pvZoom={span:null,offset:0}; pvHeightIdx=2; save("hs_pvh",2); renderPvChart(); }
   else if(a==="pvzoom"){
