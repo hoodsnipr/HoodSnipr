@@ -310,6 +310,24 @@ export function credibility(t, holders) {
 }
 
 export const hiddenLog = [];
+// Fields that describe WHAT a token is, rather than how it is trading. These
+// are carried forward when a refresh omits them.
+const STICKY = ["img", "tw", "tg", "site", "n", "cr", "pons", "ponsPool", "ponsBlock",
+                "restrictionsEndBlock", "boosts", "hasProfile", "dec"];
+export function mergeToken(oldT, newT) {
+  if (!oldT) return newT;
+  if (!newT) return oldT;
+  const out = { ...newT };
+  for (const k of STICKY) {
+    const fresh = out[k];
+    const missing = fresh == null || fresh === "" || fresh === false;
+    if (missing && oldT[k] != null && oldT[k] !== "" && oldT[k] !== false) out[k] = oldT[k];
+  }
+  // never let a known symbol be replaced by a placeholder
+  if ((!out.s || out.s === "?") && oldT.s) out.s = oldT.s;
+  return out;
+}
+
 export function buildBoard(tokens, holders, blocked, bans) {
   hiddenLog.length = 0;
   const byTicker = {};
@@ -391,7 +409,19 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
   // scale the refresh to whatever time remains
   const refreshCalls = timeLeft() > 6000 ? 12 : (timeLeft() > 3000 ? 6 : 2);
   const fresh = await refreshKnown(store, stale, slug, { calls: refreshCalls }).catch(() => ({}));
-  for (const a of Object.keys(fresh)) known.t[a] = fresh[a];
+  // STICKY METADATA
+  //
+  // A refresh used to replace the stored record outright. But DexScreener does
+  // not always return info.imageUrl on every call, so a token that HAD a logo
+  // could come back without one — and with the logo filter in place that token
+  // silently vanished from trending, then reappeared on the next sweep when the
+  // field came back. That is the flip-flopping between real and junk data.
+  //
+  // Identity fields never regress now: once we have seen a logo, a name, a
+  // social link or a creation time, a later response that simply omits the
+  // field cannot erase it. Market data (price, volume, liquidity) always takes
+  // the fresh value, because that genuinely changes.
+  for (const a of Object.keys(fresh)) known.t[a] = mergeToken(known.t[a], fresh[a]);
 
   // forget tokens we haven't seen in any feed for 24h — they aren't trending
   const cutoff = Date.now() - 24 * 3600e3;
@@ -514,6 +544,25 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       errors: errors.slice(0, 3)
     }
   };
+  // PUBLISH GATE
+  //
+  // A feed sweep can come back partial — rate limited, a source down, a slow
+  // page. Publishing that build replaces a complete board with a thin one, and
+  // the user watches good tokens get swapped for junk until the next sweep
+  // repairs it. A build must be credibly complete to take over.
+  try {
+    const prevBoard = await store.get("board2", { type: "json" });
+    const prevRows = (prevBoard && prevBoard.rows && prevBoard.rows.length) || 0;
+    if (prevRows >= 25 && payload.rows.length < prevRows * 0.6) {
+      // keep serving the last good board; record why we held back
+      payload.heldBack = { reason: "partial sweep", built: payload.rows.length, kept: prevRows };
+      await store.setJSON("boardRejected", {
+        t: Date.now(), built: payload.rows.length, previous: prevRows
+      }).catch(() => {});
+      return { rows: prevBoard.rows, stats: prevBoard.stats, heldBack: payload.heldBack };
+    }
+  } catch (e) {}
+
   await store.setJSON("board2", payload).catch(() => {});
   return payload;
 }
