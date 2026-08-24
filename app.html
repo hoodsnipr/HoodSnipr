@@ -351,7 +351,7 @@ canvas.share{display:none}
   <div id="v-new" style="display:none">
     <div class="tfbar"><div class="src">LAUNCHED IN THE LAST HOUR · ROBINHOOD CHAIN</div><div class="src" id="newAge"></div></div>
     <div class="board" id="newBoard"></div>
-    <div class="note">Fresh pools from GeckoTerminal, same stock/stable/ETH filters. Brand-new tokens are the highest-risk trades on any chain — most go to zero, many are rugs. Snipe accordingly.</div>
+    <div class="note">Fresh pools from GeckoTerminal, same stock/stable/ETH filters. Tokens without a logo appear here but are kept out of Trending until their metadata is filled in — on this chain, missing metadata alongside real volume is the most reliable scam tell there is. Brand-new tokens are the highest-risk trades anywhere: most go to zero, many are rugs. Snipe accordingly.</div>
   </div>
 
   <!-- ============ PORTFOLIO ============ -->
@@ -1117,11 +1117,12 @@ async function letscashInfo(token){
 // A token with no logo isn't hidden below the volume thresholds, but it is
 // worth marking — the letter avatar looks like a logo at a glance, so without
 // this the absence is invisible.
+// Trending no longer carries logo-less tokens at all, so this mark now only
+// ever appears in the New tab — where fresh launches are still shown before
+// their metadata is indexed.
 function noLogoMark(p){
   if(p.img) return "";
-  var vol=p.h24||0;
-  if(vol < 5000) return "";                  // too quiet to be a signal
-  return '<span class="nologo" title="No token logo set — the project never filled in its metadata">no logo</span> ';
+  return '<span class="nologo" title="No logo yet — this token will not appear in Trending until its metadata is filled in">no logo</span> ';
 }
 function letscashBadge(p){
   if(!p.cc) return "";
@@ -1354,6 +1355,7 @@ function renderBoard(){
         + " · ranked by "+TF_LABEL[state.tf]+" volume"
         + (hidden? " · "+hidden+" wash-trade suspect"+(hidden>1?"s":"")+" hidden" : "")
         + (pending30? " · "+pending30+" awaiting 30D data" : "")
+        + " · logo required"
         + " · DexScreener + GeckoTerminal";
     }
   }
