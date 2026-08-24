@@ -229,6 +229,8 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvempty{padding:26px 14px;text-align:center;color:var(--mute);font-size:13px;
   border:1px dashed var(--line);border-radius:12px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.nologo{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--gold);
+  border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.9}
 .lcash{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#00C805;
   border:1px solid #00C805;border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.85}
 .lcbox{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:11px;font-size:12px}
@@ -1112,6 +1114,15 @@ async function letscashInfo(token){
     return lcCache[k];
   }catch(e){ return null; }
 }
+// A token with no logo isn't hidden below the volume thresholds, but it is
+// worth marking — the letter avatar looks like a logo at a glance, so without
+// this the absence is invisible.
+function noLogoMark(p){
+  if(p.img) return "";
+  var vol=p.h24||0;
+  if(vol < 5000) return "";                  // too quiet to be a signal
+  return '<span class="nologo" title="No token logo set — the project never filled in its metadata">no logo</span> ';
+}
 function letscashBadge(p){
   if(!p.cc) return "";
   return '<span class="lcash" title="Launched on letscash.fun">cc</span> ';
@@ -1310,7 +1321,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]
         +(p._d30est&&state.tf==="d30"?' <span style="color:var(--gold)">EST</span>':'')+'</div></div>'
@@ -1474,6 +1485,7 @@ function openToken(poolAddr){
      +'<div class="ms"><div class="k">VOL 1H</div><div class="v">'+fmtUsd(p.h1)+'</div></div>'
      +'<div class="ms"><div class="k">VOL 24H</div><div class="v">'+fmtUsd(p.h24)+'</div></div>'
    +'</div>'
+   +'<div id="metaBox"></div>'
    +'<div id="lcBox"></div>'
    +'<div id="ponsBox"></div>'
    +'<div id="trustBox"></div>'
@@ -1513,6 +1525,25 @@ function openToken(poolAddr){
   if(vv.length===1 && vv[0]==="v4") modal.venue="v4";
   updFees();
   $("#snipeAmt").addEventListener("input", function(){ modal.quote=null; modal.force=false; updFees(); renderSpendLine(); });
+  // Metadata completeness, stated plainly in the token view.
+  (function(){
+    var box=$("#metaBox"); if(!box) return;
+    var socials=[p.tw,p.tg,p.site].filter(Boolean).length;
+    if(p.img && socials>0) return;           // nothing worth saying
+    var bits=[];
+    if(!p.img) bits.push("no token logo");
+    if(socials===0) bits.push("no website or socials");
+    if(!bits.length) return;
+    var vol=p.h24||0;
+    box.innerHTML='<div class="lcbox" style="border-color:var(--gold)">'
+      +'<div class="r"><span style="color:var(--gold)">INCOMPLETE METADATA</span></div>'
+      +'<div style="color:var(--mute);line-height:1.55">This token has '+bits.join(" and ")+'. '
+      +(vol>=100000
+        ? 'A project doing '+fmtUsd(vol)+' in a day has had every reason to add them — treat the volume with suspicion.'
+        : 'Common for a fresh launch, but worth knowing before you buy.')
+      +'</div></div>';
+  })();
+
   // letscash context: the trading tax and the pool's quote asset both change
   // what a trade actually costs, so they belong on screen before FIRE.
   if(p.cc){
