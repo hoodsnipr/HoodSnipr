@@ -10,6 +10,7 @@ import { ponsMap } from "./_pons.mjs";
 import { isDenied, normSym } from "./_denylist.mjs";
 import { getBans } from "./banlist.mjs";
 import { vol30Map } from "./_vol30.mjs";
+import { hasCcStamp } from "./_letscash.mjs";
 
 const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 
@@ -302,6 +303,10 @@ export function buildBoard(tokens, holders, blocked, bans) {
     ts5: trendScore(t, "m5"), ts1: trendScore(t, "h1"),
     ts6: trendScore(t, "h6"), ts24: trendScore(t, "h24"),
     txns: t.txns || null, pools: t.poolCount || 1,
+    // letscash stamps every token address with a trailing "cc". On its own
+    // that's weak evidence, so the client confirms against the pool's hook
+    // before showing the badge.
+    cc: hasCcStamp(t.a),
     pons: !!t.pons, ponsBlock: t.ponsBlock || null,
     restrictionsEndBlock: t.restrictionsEndBlock || null,
     a: t.a, p: t.pool, s: String(t.s || "").replace(/^\$+/, ""), n: t.n,

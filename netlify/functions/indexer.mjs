@@ -4,6 +4,7 @@ import { rebuild } from "./_board.mjs";
 import { scanV4, learnHooks } from "./v4pools.mjs";
 import { indexLaunches, hydrate } from "./_pons.mjs";
 import { fillVol30 } from "./_vol30.mjs";
+import { learnLetscashHooks } from "./_letscash.mjs";
 
 export default async () => {
   const deep = new Date().getMinutes() % 5 === 0;
@@ -21,13 +22,23 @@ export default async () => {
   // meaningful below the top 20
   const v30 = await fillVol30(out.rows || [], { budgetMs: 4000, max: 12 }).catch(e => ({ error: e.message }));
   const hooks = await learnHooks(2500).catch(e => ({ error: e.message }));
+  // cheap: reads the v4 key index we already hold, no RPC
+  const lc = await (async () => {
+    try {
+      const { store } = await import("./_store.mjs");
+      const s2 = await store("hoodsnipr-cache");
+      const v4s = await s2.get("v4pools", { type: "json" });
+      const r = await learnLetscashHooks((v4s && v4s.keys) || {});
+      return { hooks: Object.keys(r.hooks || {}).length };
+    } catch (e) { return { error: e.message }; }
+  })();
   const v4 = await scanV4(2000).catch(e => ({ error: e.message }));
   return new Response(JSON.stringify({
     ok: !out.error, deep,
     rows: out.rows?.length ?? 0,
     universe: out.stats?.universeTokens ?? 0,
     pons: { tokens: pons.totalTokens, found: pons.found, caughtUp: pons.caughtUp },
-    vol30: v30,
+    vol30: v30, letscash: lc,
     v4: { manager: v4.manager || hooks.manager, tokens: v4.tokens,
           hooks: (hooks.hooks || []).length, done: v4.backfillDone, cursor: v4.cursor },
     error: out.error
