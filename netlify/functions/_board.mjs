@@ -113,15 +113,9 @@ function metaFactor(t) {
   const m = metaProfile(t);
   const vol = +t.h24 || 0;
   let f = 1;
-  if (!m.img) {
-    // the more volume claimed without a logo, the less it should be believed
-    if (vol >= 1e6) f *= 0.25;
-    else if (vol >= 250000) f *= 0.4;
-    else if (vol >= 50000) f *= 0.65;
-    else f *= 0.85;
-  } else {
-    f *= 1.08;
-  }
+  // Logo-less tokens are removed outright by the credibility gate, so this only
+  // still matters for anything that reaches scoring by another path.
+  if (!m.img) f *= 0.3;
   if (m.socials >= 2) f *= 1.06;
   else if (m.socials === 0) f *= 0.9;
   return f;
@@ -262,20 +256,20 @@ export function credibility(t, holders) {
   const severe = [];
   const meta = metaProfile(t);
 
-  // A screener can take a little while to index a brand-new token's image, so
-  // a genuine hot launch gets a short grace period at the lower thresholds.
-  // It does NOT get one at the top: nothing legitimate does seven figures of
-  // volume in its first two hours without a picture.
-  const ageH = t.cr ? (Date.now() - t.cr) / 3600e3 : null;
-  const veryNew = ageH != null && ageH < 2;
-
-  if (!meta.img && vol >= 1000000)
-    severe.push(`$${Math.round(vol/1000)}k volume with no token logo`);
-  else if (!meta.img && vol >= 100000 && !veryNew)
-    severe.push(`$${Math.round(vol/1000)}k volume with no token logo`);
-  // Lower bar when there are no socials either — nothing has been filled in.
-  else if (!meta.img && meta.socials === 0 && vol >= 25000 && !veryNew)
-    severe.push(`$${Math.round(vol/1000)}k volume with no logo and no socials`);
+  // NO LOGO, NO LISTING.
+  //
+  // A token with no logo has not had its metadata filled in, and on this chain
+  // that has turned out to be the single most reliable scam tell. There is no
+  // volume threshold and no grace period: trending is a curated surface, and a
+  // project that hasn't spent two minutes on a picture doesn't belong on it.
+  //
+  // Fresh launches are still discoverable — the New tab is deliberately not
+  // filtered this way, so a genuine launch is visible there until its image
+  // gets indexed and it graduates onto trending.
+  if (!meta.img)
+    severe.push("no token logo — metadata was never filled in");
+  else if (meta.socials === 0 && vol >= 100000)
+    severe.push(`$${Math.round(vol/1000)}k volume with no website or socials`);
 
   // Signals that describe trade STRUCTURE rather than data ratios. These don't
   // depend on liquidity being reported correctly, which is what broke v1.
@@ -305,7 +299,7 @@ export function credibility(t, holders) {
   // THE RULE: evidence of legitimacy overrides every automated signal.
   // Missing-metadata findings are NOT waived by legitimacy evidence: a token
   // with a big market cap and no logo is exactly the case being targeted.
-  const metaFail = severe.some(r => /no token logo|no logo and no socials/.test(r));
+  const metaFail = severe.some(r => /no token logo|no website or socials/.test(r));
   const hide = metaFail || (evidence.length === 0 && (severe.length >= 1 || dead));
 
   return {
