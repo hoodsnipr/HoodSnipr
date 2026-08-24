@@ -90,6 +90,43 @@ function depthFactor(liq) {
 // A paid boost or a completed profile costs money and takes effort. Neither
 // proves a token is good, but both are things wash-trade bots almost never do,
 // so they earn a modest lift — never enough to outrank genuine volume.
+// METADATA COMPLETENESS
+//
+// Filling in a logo and socials costs a few minutes and is the first thing a
+// real project does. A token doing millions in volume with no logo at all has
+// had time and money flowing through it but nobody bothered — which in practice
+// means the volume is manufactured and nobody expects a community to look.
+//
+// The logo is weighted hardest because it's the single most consistent tell.
+// Socials matter but are softer: plenty of honest tokens launch with just an X
+// account, and some launch with none for the first hour.
+export function metaProfile(t) {
+  const img = !!(t.img && String(t.img).length > 8);
+  const socials = [t.tw, t.tg, t.site].filter(Boolean).length;
+  const named = !!(t.n && String(t.n).trim().length > 1 && String(t.n) !== String(t.s));
+  return { img, socials, named, score: (img ? 2 : 0) + Math.min(2, socials) + (named ? 1 : 0) };
+}
+
+// Ranking weight: complete metadata is a mild lift, a missing logo is a real
+// drag that scales with how much volume is claimed.
+function metaFactor(t) {
+  const m = metaProfile(t);
+  const vol = +t.h24 || 0;
+  let f = 1;
+  if (!m.img) {
+    // the more volume claimed without a logo, the less it should be believed
+    if (vol >= 1e6) f *= 0.25;
+    else if (vol >= 250000) f *= 0.4;
+    else if (vol >= 50000) f *= 0.65;
+    else f *= 0.85;
+  } else {
+    f *= 1.08;
+  }
+  if (m.socials >= 2) f *= 1.06;
+  else if (m.socials === 0) f *= 0.9;
+  return f;
+}
+
 function promoFactor(t) {
   let f = 1;
   if (t.boosts > 0) f *= Math.min(1.35, 1 + Math.log10(1 + t.boosts) * 0.25);
@@ -110,7 +147,7 @@ export function trendScore(t, tf) {
   if (vol <= 0) return 0;
   // sqrt keeps a whale trade from dominating outright
   return Math.sqrt(vol) * accelFactor(t, tf) * buyFactor(t, tf)
-       * depthFactor(t.liq) * txFactor(t, tf) * promoFactor(t);
+       * depthFactor(t.liq) * txFactor(t, tf) * promoFactor(t) * metaFactor(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +260,22 @@ export function credibility(t, holders) {
 
   const evidence = legitimacy(t, holders);
   const severe = [];
+  const meta = metaProfile(t);
+
+  // A screener can take a little while to index a brand-new token's image, so
+  // a genuine hot launch gets a short grace period at the lower thresholds.
+  // It does NOT get one at the top: nothing legitimate does seven figures of
+  // volume in its first two hours without a picture.
+  const ageH = t.cr ? (Date.now() - t.cr) / 3600e3 : null;
+  const veryNew = ageH != null && ageH < 2;
+
+  if (!meta.img && vol >= 1000000)
+    severe.push(`$${Math.round(vol/1000)}k volume with no token logo`);
+  else if (!meta.img && vol >= 100000 && !veryNew)
+    severe.push(`$${Math.round(vol/1000)}k volume with no token logo`);
+  // Lower bar when there are no socials either — nothing has been filled in.
+  else if (!meta.img && meta.socials === 0 && vol >= 25000 && !veryNew)
+    severe.push(`$${Math.round(vol/1000)}k volume with no logo and no socials`);
 
   // Signals that describe trade STRUCTURE rather than data ratios. These don't
   // depend on liquidity being reported correctly, which is what broke v1.
@@ -250,7 +303,10 @@ export function credibility(t, holders) {
   const dead = liq > 0 && liq < 500 && vol < 100 && !t.pons;
 
   // THE RULE: evidence of legitimacy overrides every automated signal.
-  const hide = evidence.length === 0 && (severe.length >= 1 || dead);
+  // Missing-metadata findings are NOT waived by legitimacy evidence: a token
+  // with a big market cap and no logo is exactly the case being targeted.
+  const metaFail = severe.some(r => /no token logo|no logo and no socials/.test(r));
+  const hide = metaFail || (evidence.length === 0 && (severe.length >= 1 || dead));
 
   return {
     severe, evidence, hide,
