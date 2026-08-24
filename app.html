@@ -1147,6 +1147,11 @@ async function letscashInfo(token){
 // ever appears in the New tab — where fresh launches are still shown before
 // their metadata is indexed.
 function noLogoMark(p){
+  // a logo can arrive from the lazy metadata call after the row first painted
+  if(!p.img){
+    var mm=meta[(p.baseToken||"").toLowerCase()];
+    if(mm && mm.img) p.img=mm.img;
+  }
   if(p.img) return "";
   return '<span class="nologo" title="No logo yet — this token will not appear in Trending until its metadata is filled in">no logo</span> ';
 }
