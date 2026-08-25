@@ -40,6 +40,17 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
 .item .a{color:var(--text);word-break:break-all}
 .item .m{color:var(--mute);font-size:10px}
 .item button{width:auto;padding:6px 11px;font-size:10px;min-height:0}
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tabs .tab{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--mute);
+  border-radius:10px;padding:11px 8px;font-size:11px;letter-spacing:.1em}
+.tabs .tab.on{color:var(--green);border-color:var(--green);background:var(--green-dim)}
+.note{font-size:12px;color:var(--mute);line-height:1.55;margin-bottom:14px;
+  border-left:2px solid var(--green);padding-left:10px}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:11px}
+.kv .k{color:var(--mute)} .kv .v{color:var(--text);text-align:right;word-break:break-all}
+.tools a{display:block;font-family:var(--mono);font-size:11px;color:var(--green);
+  text-decoration:none;padding:7px 0;border-top:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -52,6 +63,13 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
     <button class="ghost" id="connect">CONNECT WALLET</button>
   </div>
 
+  <div class="tabs">
+    <button class="tab on" data-panel="bans">BANS</button>
+    <button class="tab" data-panel="allows">WHITELIST</button>
+    <button class="tab" data-panel="status">STATUS</button>
+  </div>
+
+  <div class="panel" id="p-bans">
   <div class="card">
     <label>TOKEN CONTRACT ADDRESS</label>
     <input id="token" placeholder="0x…" autocomplete="off" spellcheck="false">
@@ -69,6 +87,42 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
   <div class="card">
     <label>CURRENT BANS</label>
     <div class="list" id="list"><div class="item"><span class="m">loading…</span></div></div>
+  </div>
+  </div><!-- /bans -->
+
+  <div class="panel" id="p-allows" hidden>
+    <div class="card">
+      <p class="note">A whitelisted token appears in Trending regardless of logo,
+        holder count, credibility score or wash heuristics. Use it when the filters
+        are wrong. A ban always beats a whitelist.</p>
+      <label>TOKEN CONTRACT ADDRESS</label>
+      <input id="wToken" placeholder="0x…" autocomplete="off" spellcheck="false">
+      <label>SYMBOL (optional)</label>
+      <input id="wSym" placeholder="INTERN" autocomplete="off">
+      <label>REASON (optional)</label>
+      <input id="wReason" placeholder="filters wrongly excluded it" autocomplete="off">
+      <div class="row">
+        <button class="ok" id="allow">WHITELIST TOKEN</button>
+        <button class="ghost" id="unallow">REMOVE</button>
+      </div>
+      <div class="msg" id="wmsg"></div>
+    </div>
+    <div class="card">
+      <label>WHITELISTED TOKENS</label>
+      <div class="list" id="wlist"><div class="item"><span class="m">loading…</span></div></div>
+    </div>
+  </div>
+
+  <div class="panel" id="p-status" hidden>
+    <div class="card">
+      <label>INDEXER STATUS</label>
+      <div class="list" id="stat"><div class="item"><span class="m">loading…</span></div></div>
+      <button class="ghost" id="refreshStat" style="margin-top:10px">REFRESH</button>
+    </div>
+    <div class="card">
+      <label>QUICK ACTIONS</label>
+      <div class="list" id="tools"></div>
+    </div>
   </div>
 </div>
 
@@ -158,6 +212,107 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
   }
   $("#ban").addEventListener("click", function(){ submit("ban"); });
   $("#unban").addEventListener("click", function(){ submit("unban"); });
+
+  // ---------- tabs ----------
+  document.querySelectorAll(".tab").forEach(function(b){
+    b.addEventListener("click", function(){
+      document.querySelectorAll(".tab").forEach(function(x){ x.classList.toggle("on", x===b); });
+      var want=b.getAttribute("data-panel");
+      ["bans","allows","status"].forEach(function(p){
+        var el=document.getElementById("p-"+p);
+        if(el) el.hidden = (p!==want);
+      });
+      if(want==="allows") loadAllows();
+      if(want==="status") loadStatus();
+    });
+  });
+
+  function sayW(t, bad){
+    var m=$("#wmsg"); m.textContent=t; m.className="msg show "+(bad?"err":"good");
+  }
+
+  // ---------- whitelist ----------
+  async function submitAllow(action){
+    if(!signer){ sayW("Connect the owner wallet first.", true); return; }
+    var token=($("#wToken").value||"").trim().toLowerCase();
+    if(!/^0x[0-9a-f]{40}$/.test(token)){ sayW("Enter a valid contract address.", true); return; }
+    var ts=Date.now();
+    try{
+      var sig=await signer.signMessage(msgFor(action, token, ts));
+      var r=await fetch(API+"/banlist",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({ action:action, token:token, ts:ts, signature:sig,
+          sym:($("#wSym").value||"").trim(), reason:($("#wReason").value||"").trim() })});
+      var j=await r.json();
+      if(!r.ok){ sayW((j.error||"rejected")+(j.signer?("\nrecovered: "+j.signer):""), true); return; }
+      sayW(action==="allow"
+        ? ("Whitelisted "+token+"\nIt will appear in Trending on the next board build (about a minute).")
+        : ("Removed "+token+" from the whitelist"));
+      $("#wToken").value=""; $("#wSym").value=""; $("#wReason").value="";
+      loadAllows();
+    }catch(e){ sayW(e.shortMessage||e.message||"Failed", true); }
+  }
+  $("#allow").addEventListener("click", function(){ submitAllow("allow"); });
+  $("#unallow").addEventListener("click", function(){ submitAllow("unallow"); });
+
+  async function loadAllows(){
+    try{
+      var r=await fetch(API+"/banlist?list=allows");
+      var j=await r.json();
+      var el=$("#wlist");
+      if(!j.allows || !j.allows.length){ el.innerHTML='<div class="item"><span class="m">Nothing whitelisted.</span></div>'; return; }
+      el.innerHTML=j.allows.map(function(b){
+        return '<div class="item"><div><div class="a">'+(b.sym?("$"+b.sym+" · "):"")+b.token+'</div>'
+          +'<div class="m">'+new Date(b.at).toLocaleString()+(b.reason?" · "+b.reason:"")+'</div></div>'
+          +'<button class="ghost" data-un="'+b.token+'">REMOVE</button></div>';
+      }).join("");
+      el.querySelectorAll("[data-un]").forEach(function(btn){
+        btn.addEventListener("click", function(){ $("#wToken").value=btn.getAttribute("data-un"); submitAllow("unallow"); });
+      });
+    }catch(e){ $("#wlist").innerHTML='<div class="item"><span class="m">Could not load.</span></div>'; }
+  }
+
+  // ---------- status ----------
+  async function loadStatus(){
+    var el=$("#stat");
+    el.innerHTML='<div class="item"><span class="m">reading…</span></div>';
+    try{
+      var r=await fetch(API+"/status");
+      var j=await r.json();
+      var rows=[
+        ["board rows", j.rows!=null?j.rows:(j.stats&&j.stats.tokensTradeable)],
+        ["universe", j.stats&&j.stats.universeTokens],
+        ["banned", j.stats&&j.stats.bannedTokens],
+        ["whitelisted", j.stats&&j.stats.whitelistedTokens],
+        ["hidden by filters", j.stats&&j.stats.hiddenCount],
+        ["wash suspects", j.stats&&j.stats.washFiltered],
+        ["pons tokens", j.stats&&j.stats.ponsTokens],
+        ["letscash tokens", j.stats&&j.stats.letscashTokens],
+        ["30D coverage", j.stats&&j.stats.vol30Coverage&&(j.stats.vol30Coverage.attached+"/"+j.stats.vol30Coverage.total)],
+        ["liquidity outliers", j.stats&&j.stats.liqOutlierCount],
+        ["store", j.storeMode]
+      ];
+      el.innerHTML=rows.filter(function(x){ return x[1]!=null; })
+        .map(function(x){ return '<div class="kv"><span class="k">'+x[0]+'</span><span class="v">'+x[1]+'</span></div>'; }).join("")
+        || '<div class="item"><span class="m">no data</span></div>';
+    }catch(e){ el.innerHTML='<div class="item"><span class="m">Could not read status.</span></div>'; }
+  }
+  $("#refreshStat").addEventListener("click", loadStatus);
+
+  (function tools(){
+    var el=$("#tools"); if(!el) return;
+    var links=[
+      ["Force board rebuild", "/status?run=1"],
+      ["Advance letscash sweep", "/letscash?scan=1"],
+      ["letscash token list", "/letscash?list=1"],
+      ["v4 router check", "/v4pools?boot=1"],
+      ["Platform tally", "/platformstats?fresh=1"],
+      ["Prune letscash store", "/letscash?prune=1"]
+    ];
+    el.className="list tools";
+    el.innerHTML=links.map(function(l){
+      return '<a href="'+API+l[1]+'" target="_blank" rel="noopener">'+l[0]+' ↗</a>';
+    }).join("");
+  })();
 
   async function loadBans(){
     try{
