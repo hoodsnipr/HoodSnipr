@@ -36,3 +36,12 @@
   for = "/favicon.svg"
   [headers.values]
     Cache-Control = "public, max-age=604800"
+
+
+# The control panel must never be served from cache — a stale copy hides newly
+# added tabs and makes the panel look broken.
+[[headers]]
+  for = "/sn1pr-ctrl-9f4b2e.html"
+  [headers.values]
+    Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+    X-Robots-Tag = "noindex, nofollow, noarchive"
