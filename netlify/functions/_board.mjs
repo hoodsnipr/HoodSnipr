@@ -348,15 +348,19 @@ export function buildBoard(tokens, holders, blocked, bans, allows) {
   for (const addr of Object.keys(tokens)) {
     const t = tokens[addr];
     if (!t || addr === WETH) continue;
-    if (excluded(t.s, t.n)) continue;
-    if (looksFake(t)) continue;
 
-    // WHITELIST: an owner-signed allow bypasses every automated filter below.
-    // A ban still wins — the ban handler deletes any allow entry, so the two
-    // lists can never disagree.
+    // The whitelist has to be evaluated FIRST. It was being checked after the
+    // stock/stable and fake-token screens, so an owner-signed override could
+    // still be discarded before it was ever consulted — which is why a
+    // whitelisted token never appeared.
     const whitelisted = !!(allows && allows[addr]);
     if (whitelisted) t.whitelisted = true;
 
+    if (!whitelisted && excluded(t.s, t.n)) continue;
+    if (!whitelisted && looksFake(t)) continue;
+
+    // A ban still wins — the ban handler deletes any allow entry, so the two
+    // lists can never disagree.
     // manual override — human judgement beats any heuristic
     if (!whitelisted && isDenied(addr, t.s)) continue;
     // owner-signed bans: absolute, no evidence test, no exemption
@@ -379,6 +383,10 @@ export function buildBoard(tokens, holders, blocked, bans, allows) {
     if (!k) continue;
     const cur = byTicker[k];
     if (!cur) { byTicker[k] = t; continue; }
+    // An override outranks a same-ticker rival regardless of volume, otherwise
+    // a squatter with more volume would quietly bury the token you asked for.
+    if (t.whitelisted && !cur.whitelisted) { byTicker[k] = t; continue; }
+    if (cur.whitelisted && !t.whitelisted) continue;
     // Highest 24h volume is the one a screener surfaces for that ticker.
     const better = (t.h24 || 0) > (cur.h24 || 0) ||
       ((t.h24 || 0) === (cur.h24 || 0) && (t.liq || 0) > (cur.liq || 0));
