@@ -271,11 +271,16 @@ export function credibility(t, holders) {
   // Fresh launches are still discoverable — the New tab is deliberately not
   // filtered this way, so a genuine launch is visible there until its image
   // gets indexed and it graduates onto trending.
-  // Only remove a token whose logo we have genuinely LOOKED FOR across every
-  // source. Removing on absence-of-data rather than absence-of-logo is what
-  // collapsed the board from thousands of tokens to a few hundred: most rows
-  // simply hadn't been checked yet.
-  if (!meta.img && t.imgChecked)
+  // NO LOGO, NO LISTING — unconditional.
+  //
+  // A token without a logo never reaches Trending, whatever its volume, age or
+  // market cap. Note this now fires whether or not we have finished checking
+  // every logo source for that token, so board size depends on how far logo
+  // coverage has got. That is a deliberate trade: a clean board matters more
+  // than a complete one, and the four sources below fill in within minutes.
+  //   GeckoTerminal image · DexScreener info.imageUrl ·
+  //   Blockscout icon_url · onchain logo() for pons and letscash
+  if (!meta.img)
     severe.push("no token logo — metadata was never filled in");
   else if (meta.socials === 0 && vol >= 100000)
     severe.push(`$${Math.round(vol/1000)}k volume with no website or socials`);
