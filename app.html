@@ -226,8 +226,10 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
   white-space:nowrap;opacity:0;transition:opacity .12s;z-index:3;box-shadow:0 6px 18px rgba(0,0,0,.45)}
 .pvtip.on{opacity:1}
 .pvtip .u{color:var(--green)} .pvtip .d{color:var(--red)}
-.pvempty{padding:26px 14px;text-align:center;color:var(--mute);font-size:13px;
-  border:1px dashed var(--line);border-radius:12px}
+.pvempty{padding:28px 14px;text-align:center;color:var(--mute);font-size:13px;
+  border:1px dashed var(--line);border-radius:12px;line-height:1.6}
+.pvbig{font-family:var(--disp);font-weight:800;font-size:30px;color:var(--text);
+  letter-spacing:-.02em;margin-bottom:8px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
 .nologo{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--gold);
   border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.9}
@@ -1146,14 +1148,17 @@ async function letscashInfo(token){
 // Trending no longer carries logo-less tokens at all, so this mark now only
 // ever appears in the New tab — where fresh launches are still shown before
 // their metadata is indexed.
+// Trending no longer shows logo-less tokens at all, so this mark only ever
+// appears in the New tab, where fresh launches are visible before their
+// metadata lands. If a token later publishes a logo on chain, the next board
+// build picks it up and it returns to Trending on its own.
 function noLogoMark(p){
-  // a logo can arrive from the lazy metadata call after the row first painted
   if(!p.img){
     var mm=meta[(p.baseToken||"").toLowerCase()];
-    if(mm && mm.img) p.img=mm.img;
+    if(mm && mm.img){ p.img=mm.img; invalidateRanks(); }   // readmit it
   }
   if(p.img) return "";
-  return '<span class="nologo" title="No logo yet — this token will not appear in Trending until its metadata is filled in">no logo</span> ';
+  return '<span class="nologo" title="No logo yet — hidden from Trending until the token publishes one on chain">no logo</span> ';
 }
 function letscashBadge(p){
   // `lc` means the pool's hook confirmed it; `cc` alone is just an address
@@ -1252,6 +1257,11 @@ function rankFor(tf, washTf){
     var p=state.pools[i];
     if(isBanned(p.baseToken)) continue;
     if(isHidden(p)) continue;
+    // NO LOGO, NO BOARD. The server filters these out already; this is the
+    // client-side guarantee, so a cached payload or a slow rebuild can never
+    // surface one. A whitelisted token overrides it — that is what the
+    // whitelist is for.
+    if(!p.img && !p.wl) continue;
     if(washTf && p.wash) continue;
     // resolve volume once — the d30 lookup normalises the address here instead
     // of inside the comparator
@@ -1389,6 +1399,8 @@ function renderBoard(){
         + (hidden? " · "+hidden+" wash-trade suspect"+(hidden>1?"s":"")+" hidden" : "")
         + (pending30? " · "+pending30+" awaiting 30D data" : "")
         + " · logo required"
+        + (state.pools.filter(function(x){return !x.img && !x.wl}).length
+            ? " · "+state.pools.filter(function(x){return !x.img && !x.wl}).length+" without logos hidden" : "")
         + " · DexScreener + GeckoTerminal";
     }
   }
@@ -3610,17 +3622,19 @@ function priceForToken(addr){
 }
 // 5-minute candles need samples at least every minute, so the cadence is much
 // tighter than before — and the buffer is bigger so 30D history still fits.
-function snapshotPv(){
+function snapshotPv(minGapMs){
   if(!(port.totalUsd>0) && !(port.holdings||[]).length) return;
+  var gap = minGapMs || 60e3;
   var series=load("hs_pv",[]);
   var last=series[series.length-1], now=Date.now();
   var moved = last ? Math.abs(port.totalUsd-last.v) > Math.max(0.01, last.v*0.0015) : true;
-  if(!last || now-last.t > 60e3 || moved){
+  if(!last || now-last.t > gap || moved){
     series.push({t:now, v:+port.totalUsd.toFixed(2)});
     // thin the oldest samples rather than dropping history outright
-    if(series.length>3000){
-      var keep=series.slice(-1500);
-      var older=series.slice(0,-1500).filter(function(_,i){ return i%3===0; });
+    if(series.length>6000){
+      // thin the older half rather than dropping history outright
+      var keep=series.slice(-3000);
+      var older=series.slice(0,-3000).filter(function(_,i){ return i%3===0; });
       series=older.concat(keep);
     }
     save("hs_pv",series);
@@ -3641,14 +3655,35 @@ var pvHeightIdx=load("hs_pvh", 2);
 function pvHeight(){ return PV_HEIGHTS[Math.max(0,Math.min(PV_HEIGHTS.length-1,pvHeightIdx))]; }     // span = candles visible, null = all
 // Timeframes match the trending board so the whole app speaks one language.
 // Each is a CANDLE size, and the window shown scales with it.
+// PORTFOLIO CHART — timeframes are WINDOWS, not candle sizes.
+//
+// Previously each option set a candle size, so "30D" drew month-long candles
+// and the chart collapsed to one or two bars while "5M" drew hundreds. Every
+// view looked different and none of them read as a chart.
+//
+// Now each option is simply how far back you are looking, and the candle size
+// is derived so every view draws a similar number of bars. A chart should look
+// the same shape whichever window you pick.
 var PV_RANGES = [
-  { id:"5M",  bucket: 5*60e3,    span: 4*3600e3 },
-  { id:"1H",  bucket: 60*60e3,   span: 2*864e5 },
-  { id:"6H",  bucket: 6*3600e3,  span: 10*864e5 },
-  { id:"24H", bucket: 24*3600e3, span: 45*864e5 },
-  { id:"30D", bucket: 30*864e5,  span: null }
+  { id:"5M",  span: 5*60e3 },
+  { id:"1H",  span: 60*60e3 },
+  { id:"24H", span: 24*3600e3 },
+  { id:"30D", span: 30*864e5 },
+  { id:"ALL", span: null }
 ];
-var pvRange = load("hs_pvrange", "5M");
+var PV_TARGET_BARS = 40;              // aim for this many candles in any view
+var pvRange = load("hs_pvrange", "24H");   // a day is what people check first
+
+// Pick a candle size that lands near the target bar count, snapped to a round
+// interval so the time axis reads sensibly.
+var PV_STEPS = [10e3, 30e3, 60e3, 2*60e3, 5*60e3, 10*60e3, 15*60e3, 30*60e3,
+                60*60e3, 2*3600e3, 4*3600e3, 6*3600e3, 12*3600e3, 24*3600e3,
+                2*864e5, 3*864e5, 7*864e5];
+function pvBucketFor(spanMs){
+  var ideal = spanMs / PV_TARGET_BARS;
+  for (var i=0;i<PV_STEPS.length;i++) if (PV_STEPS[i] >= ideal) return PV_STEPS[i];
+  return PV_STEPS[PV_STEPS.length-1];
+}
 
 function pvBuckets(series, bucketMs){
   var out=[], cur=null;
@@ -3679,33 +3714,45 @@ function renderPvChart(){
       }).join("")+'</div>'
     + '</div>';
 
+  // Not enough history is a normal state, not an error — say so plainly and
+  // still show the number people came for.
   if(se.length<2){
-    el.innerHTML=head+'<div class="pvempty">Your value history starts building as soon as you hold something.<br>'
-      +'<span style="font-size:11px">Points are recorded every minute while the app is open.</span></div>';
+    var now0=(port.totalUsd||0);
+    el.innerHTML=head
+      + '<div class="pvempty"><div class="pvbig">$'+now0.toLocaleString(undefined,{maximumFractionDigits:2})+'</div>'
+      + '<div>Your portfolio chart starts drawing after a few minutes of tracking.</div></div>';
     paintReadout(null,null);
     return;
   }
 
-  var cfg=PV_RANGES.find(function(r){return r.id===pvRange}) || PV_RANGES[0];
+  var cfg=PV_RANGES.find(function(r){return r.id===pvRange}) || PV_RANGES[2];
   var now=Date.now();
-  var win = cfg.span ? se.filter(function(p){ return now-p.t <= cfg.span; }) : se.slice();
-  if(win.length<2) win=se.slice();
+  var oldest=se[0].t;
+  var span = cfg.span || Math.max(60e3, now-oldest);
 
-  var bucket=cfg.bucket;
+  // If history is shorter than the requested window, chart everything we have
+  // and label it, rather than drawing three lonely bars on an empty canvas.
+  var haveMs = now-oldest;
+  var truncated = false;
+  if(cfg.span && haveMs < cfg.span*0.5){ span=Math.max(60e3, haveMs); truncated=true; }
+
+  var from=now-span;
+  var win=se.filter(function(p){ return p.t>=from; });
+  if(win.length<2) win=se.slice(-Math.min(se.length, 60));
+
+  var bucket=pvBucketFor(span);
   var candles=pvBuckets(win, bucket);
+  // Very short history: step down until there is something to read.
+  var gi=PV_STEPS.indexOf(bucket);
+  while(candles.length<6 && gi>0){ gi--; bucket=PV_STEPS[gi]; candles=pvBuckets(win, bucket); }
   if(candles.length<2){
-    var finer=[5*60e3, 60e3, 15e3];
-    for(var fi=0; fi<finer.length && candles.length<2; fi++)
-      if(finer[fi]<bucket){ bucket=finer[fi]; candles=pvBuckets(win, bucket); }
-  }
-  if(candles.length<2){
-    el.innerHTML=head+'<div class="pvempty">Not enough history for '+pvRange+' candles yet.<br>'
-      +'<span style="font-size:11px">Try a shorter timeframe, or come back later.</span></div>';
+    el.innerHTML=head
+      + '<div class="pvempty"><div class="pvbig">$'+(port.totalUsd||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</div>'
+      + '<div>Collecting data for this timeframe — try a shorter one.</div></div>';
     paintReadout(se[se.length-1].v, se[0].v);
     return;
   }
 
-  // zoom window
   var total=candles.length;
   if(pvZoom.span && pvZoom.span<total){
     var endIdx=Math.max(pvZoom.span, total - pvZoom.offset);
@@ -3713,41 +3760,42 @@ function renderPvChart(){
   }
   pvView=candles; pvBucketMs=bucket; pvTotalCandles=total;
 
-  var W=680, H=200, PADL=8, PADR=58, PADT=14, PADB=24;
+  var W=680, H=200, PADL=8, PADR=62, PADT=16, PADB=26;
   var lo=Infinity, hi=-Infinity;
   candles.forEach(function(c){ lo=Math.min(lo,c.l); hi=Math.max(hi,c.h); });
-  if(!(hi>lo)) hi=lo+Math.max(0.01, Math.abs(lo)*0.02);
-  var pad=(hi-lo)*0.14; lo-=pad; hi+=pad;
+  // A flat portfolio would otherwise render as a zero-height band.
+  if(!(hi>lo)){ var mid=hi||1; hi=mid*1.02; lo=mid*0.98; }
+  var pad=(hi-lo)*0.18; lo-=pad; hi+=pad;
+
   var iw=W-PADL-PADR, ih=H-PADT-PADB;
   var y=function(v){ return PADT + ih*(1-(v-lo)/(hi-lo)); };
   var step=iw/candles.length;
-  var cw=Math.max(1.5, Math.min(14, step*0.62));
+  var cw=Math.max(2, Math.min(15, step*0.6));
 
   var grid="", body="", axis="";
   for(var g=0; g<=3; g++){
     var gv=lo+(hi-lo)*(g/3), gy=y(gv);
-    grid+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".45"/>'
-       +'<text x="'+(W-PADR+7)+'" y="'+(gy+3.5).toFixed(1)+'" fill="var(--mute)" font-size="10" font-family="var(--mono)">$'+fmtUsdShort(gv)+'</text>';
+    grid+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--line)" stroke-width="1" opacity=".4"/>'
+       +'<text x="'+(W-PADR+8)+'" y="'+(gy+3.5).toFixed(1)+'" fill="var(--mute)" font-size="11" font-family="var(--mono)">$'+fmtUsdShort(gv)+'</text>';
   }
   candles.forEach(function(c,i){
     var cx=PADL + step*i + step/2;
     var up=c.c>=c.o, col=up?"var(--green)":"var(--red)";
     var yo=y(c.o), yc=y(c.c), yh=y(c.h), yl=y(c.l);
-    var top=Math.min(yo,yc), hgt=Math.max(1.2, Math.abs(yc-yo));
-    body+='<line x1="'+cx.toFixed(1)+'" y1="'+yh.toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+yl.toFixed(1)+'" stroke="'+col+'" stroke-width="1.1"/>'
+    var top=Math.min(yo,yc), hgt=Math.max(2, Math.abs(yc-yo));
+    body+='<line x1="'+cx.toFixed(1)+'" y1="'+yh.toFixed(1)+'" x2="'+cx.toFixed(1)+'" y2="'+yl.toFixed(1)+'" stroke="'+col+'" stroke-width="1.2" opacity=".9"/>'
        +'<rect x="'+(cx-cw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+hgt.toFixed(1)+'" '
-       +(up?'fill="none" stroke="'+col+'" stroke-width="1.3"':'fill="'+col+'"')+' rx="1"/>';
+       +(up?'fill="none" stroke="'+col+'" stroke-width="1.4"':'fill="'+col+'"')+' rx="1.5"/>';
   });
   var ticks=Math.min(4, candles.length);
   for(var ti=0; ti<ticks; ti++){
     var idx=Math.round(ti*(candles.length-1)/Math.max(1,ticks-1));
     var tx=PADL + step*idx + step/2;
-    axis+='<text x="'+tx.toFixed(1)+'" y="'+(H-7)+'" fill="var(--mute)" font-size="9" font-family="var(--mono)" text-anchor="middle">'
+    axis+='<text x="'+tx.toFixed(1)+'" y="'+(H-8)+'" fill="var(--mute)" font-size="10" font-family="var(--mono)" text-anchor="middle">'
       +tsLabel(candles[idx].t, bucket)+'</text>';
   }
-  var last=candles[candles.length-1].c, first=candles[0].o;
-  var lY=y(last);
-  body+='<line x1="'+PADL+'" y1="'+lY.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+lY.toFixed(1)+'" stroke="'+(last>=first?"var(--green)":"var(--red)")+'" stroke-width="1" stroke-dasharray="3 3" opacity=".65"/>';
+  var last=candles[candles.length-1].c, first=candles[0].o, lY=y(last);
+  body+='<line x1="'+PADL+'" y1="'+lY.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+lY.toFixed(1)+'" stroke="'+(last>=first?"var(--green)":"var(--red)")+'" stroke-width="1" stroke-dasharray="4 3" opacity=".6"/>';
 
   el.innerHTML = head
     + '<div class="pvwrap">'
@@ -3765,14 +3813,14 @@ function renderPvChart(){
         + '<button data-action="pvpan" data-d="1" title="Newer"'+(pvZoom.span?'':' disabled')+'>›</button>'
       + '</div>'
       + '<div class="grp">'
-        + '<button data-action="pvsqueeze" data-d="-1" title="Shorter chart">⇕−</button>'
-        + '<button data-action="pvsqueeze" data-d="1" title="Taller chart">⇕+</button>'
-        + '<button data-action="pvreset" title="Reset view">RESET</button>'
+        + '<button data-action="pvsqueeze" data-d="-1" title="Shorter">⇕−</button>'
+        + '<button data-action="pvsqueeze" data-d="1" title="Taller">⇕+</button>'
+        + '<button data-action="pvreset" title="Reset">RESET</button>'
       + '</div>'
     + '</div>'
-    + '<div class="pvfoot"><span>'+candles.length+' × '+bucketLabel(bucket)
-      +(pvZoom.span?' · showing '+candles.length+' of '+total:' · full range')+'</span>'
-      +'<span>drag to pan · pinch or scroll to zoom</span></div>';
+    + '<div class="pvfoot"><span>'+bucketLabel(bucket)+' · '+candles.length+' bars'
+      +(truncated? ' · showing all history so far' : '')+'</span>'
+      +'<span>'+(pvZoom.span? 'zoomed' : 'tap a bar for detail')+'</span></div>';
 
   paintReadout(last, first);
   bindPvZoom(total, {W:W,PADL:PADL,step:step,PADT:PADT,PADB:PADB,H:H});
@@ -3791,14 +3839,18 @@ function paintReadout(last, first){
 
 function tsLabel(t, bucket){
   var d=new Date(t);
+  var hh=d.getHours(), mm=String(d.getMinutes()).padStart(2,"0");
+  if(bucket >= 7*864e5) return (d.getMonth()+1)+"/"+d.getDate();
   if(bucket >= 24*3600e3) return (d.getMonth()+1)+"/"+d.getDate();
-  if(bucket >= 3600e3) return d.getHours()+":00";
-  return d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
+  if(bucket >= 3600e3) return hh+":00";
+  if(bucket >= 60e3) return hh+":"+mm;
+  return hh+":"+mm+":"+String(d.getSeconds()).padStart(2,"0");
 }
 function bucketLabel(ms){
-  if(ms>=864e5) return Math.round(ms/864e5)+"d candles";
-  if(ms>=3600e3) return Math.round(ms/3600e3)+"h candles";
-  return Math.round(ms/60e3)+"m candles";
+  if(ms>=864e5) return Math.round(ms/864e5)+"-day bars";
+  if(ms>=3600e3) return Math.round(ms/3600e3)+"-hour bars";
+  if(ms>=60e3) return Math.round(ms/60e3)+"-minute bars";
+  return Math.round(ms/1000)+"-second bars";
 }
 function fmtUsdShort(v){
   var a=Math.abs(v);
@@ -4599,10 +4651,17 @@ setInterval(refreshBans, 120000);
 
 // Keep the value series ticking while the app is open so 5M candles have
 // something to draw, without forcing a network refresh each minute.
+// The 5M view can only be as detailed as the sampling behind it: at one point
+// a minute it drew five bars. Sampling every 20 seconds while the portfolio is
+// on screen costs nothing (it reuses prices already in memory) and makes the
+// short timeframes genuinely readable.
 setInterval(function(){
   if(document.hidden) return;
-  if(port.holdings && port.holdings.length) snapshotPv();
-}, 60000);
+  if(!(port.holdings && port.holdings.length)) return;
+  var vp=$("#v-port");
+  var watching = vp && vp.style.display!=="none";
+  snapshotPv(watching ? 20e3 : 60e3);
+}, 20000);
 
 // Holdings used to load only when the Portfolio tab was first opened, so there
 // was always a visible wait. Start the fetch as soon as we know an address —
