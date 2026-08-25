@@ -231,6 +231,7 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvbig{font-family:var(--disp);font-weight:800;font-size:30px;color:var(--text);
   letter-spacing:-.02em;margin-bottom:8px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
+.wlb{color:var(--gold);font-size:11px;vertical-align:middle}
 .nologo{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--gold);
   border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.9}
 .lcash{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#00C805;
@@ -1257,11 +1258,27 @@ function rankFor(tf, washTf){
     var p=state.pools[i];
     if(isBanned(p.baseToken)) continue;
     if(isHidden(p)) continue;
+
+    // AN OWNER-SIGNED WHITELIST SKIPS EVERY CLIENT FILTER TOO.
+    //
+    // The server was letting these through and the client was quietly dropping
+    // them again — on the no-logo rule, the wash filter, the volume floor and
+    // the 1H/6H quality gates. An override has to mean the same thing on both
+    // sides or it means nothing.
+    if(p.wl){
+      var wlVol = isD30
+        ? ((p.d30!=null && p.d30>0) ? p.d30 : (d30[(p.pool||"").toLowerCase()]||0) || (p.h24||0)*30)
+        : (p[tf]||0);
+      var wlScore = isD30 ? wlVol
+        : ((p[scoreKey]||0) > 0 ? p[scoreKey] : Math.sqrt(wlVol||0));
+      out.push({ p:p, sc:wlScore, vol:wlVol, liq:p.liq||0, id:p.baseToken||p.pool||"" });
+      continue;                      // ranked on its own volume, like everything else
+    }
+
     // NO LOGO, NO BOARD. The server filters these out already; this is the
     // client-side guarantee, so a cached payload or a slow rebuild can never
-    // surface one. A whitelisted token overrides it — that is what the
-    // whitelist is for.
-    if(!p.img && !p.wl) continue;
+    // surface one.
+    if(!p.img) continue;
     if(washTf && p.wash) continue;
     // resolve volume once — the d30 lookup normalises the address here instead
     // of inside the comparator
@@ -1365,7 +1382,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+(p.wl?'<span class="wlb" title="Whitelisted by the operator — shown regardless of the automated filters">★</span> ':'')+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]
         +(p._d30est&&state.tf==="d30"?' <span style="color:var(--gold)">EST</span>':'')+'</div></div>'
