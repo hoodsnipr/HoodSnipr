@@ -8,7 +8,7 @@ import { store as _store } from "./_store.mjs";
 import { fetchUniverse, refreshKnown, dsSlug, finalizeTokens } from "./_feeds.mjs";
 import { ponsMap } from "./_pons.mjs";
 import { isDenied, normSym } from "./_denylist.mjs";
-import { getBans } from "./banlist.mjs";
+import { getBans, getAllows } from "./banlist.mjs";
 import { vol30Map } from "./_vol30.mjs";
 import { hasCcStamp, letscashMap, normalizeLogo, parseSocials } from "./_letscash.mjs";
 
@@ -337,7 +337,7 @@ export function mergeToken(oldT, newT) {
   return out;
 }
 
-export function buildBoard(tokens, holders, blocked, bans) {
+export function buildBoard(tokens, holders, blocked, bans, allows) {
   hiddenLog.length = 0;
   const byTicker = {};
   for (const addr of Object.keys(tokens)) {
@@ -346,23 +346,29 @@ export function buildBoard(tokens, holders, blocked, bans) {
     if (excluded(t.s, t.n)) continue;
     if (looksFake(t)) continue;
 
+    // WHITELIST: an owner-signed allow bypasses every automated filter below.
+    // A ban still wins — the ban handler deletes any allow entry, so the two
+    // lists can never disagree.
+    const whitelisted = !!(allows && allows[addr]);
+    if (whitelisted) t.whitelisted = true;
+
     // manual override — human judgement beats any heuristic
-    if (isDenied(addr, t.s)) continue;
+    if (!whitelisted && isDenied(addr, t.s)) continue;
     // owner-signed bans: absolute, no evidence test, no exemption
     if (bans && bans[addr]) continue;
 
     // Cached DANGER verdicts from the deeper on-chain analysis — but only when
     // the token has no independent evidence of being real.
-    if (blocked && blocked[addr] && legitimacy(t, holders).length === 0) continue;
+    if (!whitelisted && blocked && blocked[addr] && legitimacy(t, holders).length === 0) continue;
 
     // credibility gate: two independent impossibilities means it isn't a market
     const cred = credibility(t, holders);
-    if (cred.hide) { hiddenLog.push({ s: t.s, a: addr, why: cred.reasons[0] || "no market" }); continue; }
+    if (!whitelisted && cred.hide) { hiddenLog.push({ s: t.s, a: addr, why: cred.reasons[0] || "no market" }); continue; }
     t._credWarn = cred.warn;
     // A pons launch is legitimate from block one, even before any volume
     // exists. Requiring volume would hide exactly the launches a sniper wants.
     const hasMarket = (t.h24 > 0 || t.h6 > 0 || t.h1 > 0 || t.m5 > 0) && (t.liq || 0) >= 200;
-    if (!hasMarket && !t.pons) continue;
+    if (!hasMarket && !t.pons && !whitelisted) continue;
 
     const k = normSym(t.s) || normTicker(t.s);
     if (!k) continue;
@@ -383,7 +389,7 @@ export function buildBoard(tokens, holders, blocked, bans) {
     // letscash stamps every token address with a trailing "cc". On its own
     // that's weak evidence, so the client confirms against the pool's hook
     // before showing the badge.
-    cc: hasCcStamp(t.a), lc: !!t.letscash,
+    cc: hasCcStamp(t.a), lc: !!t.letscash, wl: !!t.whitelisted,
     pons: !!t.pons, ponsBlock: t.ponsBlock || null,
     restrictionsEndBlock: t.restrictionsEndBlock || null,
     a: t.a, p: t.pool, s: String(t.s || "").replace(/^\$+/, ""), n: t.n,
@@ -544,7 +550,33 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
     }
   } catch (e) {}
 
-  const rows = buildBoard(known.t, holders, blocked, bans);
+  const allows = await getAllows().catch(() => ({}));
+
+  // A whitelisted token no feed has reported still needs a row, or the override
+  // silently does nothing. Read its identity straight off the chain.
+  for (const addr of Object.keys(allows)) {
+    if (known.t[addr]) continue;
+    try {
+      const { rpcBatch, decodeStr } = await import("./_rpc.mjs");
+      const res = await rpcBatch([
+        { method: "eth_call", params: [{ to: addr, data: "0x95d89b41" }, "latest"] },  // symbol()
+        { method: "eth_call", params: [{ to: addr, data: "0x06fdde03" }, "latest"] },  // name()
+        { method: "eth_call", params: [{ to: addr, data: "0xfb7f21eb" }, "latest"] }   // logo()
+      ]);
+      const sym = decodeStr(res[0]);
+      if (!sym) continue;
+      const rawLogo = decodeStr(res[2]);
+      known.t[addr] = {
+        a: addr, pool: null, s: sym, n: decodeStr(res[1]) || "",
+        img: (rawLogo && /^(https?:\/\/|ipfs:\/\/)/i.test(rawLogo)) ? normalizeLogo(rawLogo) : null,
+        px: null, liq: 0, mc: null,
+        m5: 0, h1: 0, h6: 0, h24: 0, cm5: 0, c1: 0, c6: 0, c24: 0,
+        cr: null, ver: "v3", src: "whitelist", t: Date.now()
+      };
+    } catch (e) {}
+  }
+
+  const rows = buildBoard(known.t, holders, blocked, bans, allows);
 
   // attach server-side 30D volume so the client never has to fetch per pool
   try {
@@ -594,6 +626,7 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
       washFiltered: rows.filter(r => r.wash).length,
       blockedByScore: Object.keys(blocked).length,
       bannedTokens: Object.keys(bans || {}).length,
+      whitelistedTokens: Object.keys(allows || {}).length,
       vol30Coverage: out30,
       hiddenSample: hiddenLog.slice(0, 25),
       hiddenCount: hiddenLog.length,

@@ -30,12 +30,26 @@ export async function getBans() {
   return (await store.get("bans", { type: "json" }).catch(() => null)) || {};
 }
 
+export async function getAllows() {
+  const store = await _store("hoodsnipr-cache");
+  return (await store.get("allows", { type: "json" }).catch(() => null)) || {};
+}
+
 export default async (req) => {
   try {
     const store = await _store("hoodsnipr-cache");
     const url = new URL(req.url);
 
     if (req.method === "GET") {
+      if (url.searchParams.get("list") === "allows") {
+        const allows = await getAllows();
+        return json(200, {
+          count: Object.keys(allows).length,
+          allows: Object.entries(allows).map(([a, v]) => ({
+            token: a, sym: v.sym || null, at: v.at, by: v.by, reason: v.reason || null
+          })).sort((x, y) => y.at - x.at)
+        });
+      }
       const bans = await getBans();
       // public read: the list itself isn't secret, only the ability to change it
       return json(200, {
@@ -57,7 +71,8 @@ export default async (req) => {
     const sym = String(body.sym || "").slice(0, 32);
 
     if (!/^0x[0-9a-f]{40}$/.test(token)) return json(400, { error: "token must be a contract address" });
-    if (!["ban", "unban"].includes(action)) return json(400, { error: "action must be ban or unban" });
+    if (!["ban", "unban", "allow", "unallow"].includes(action))
+      return json(400, { error: "action must be ban, unban, allow or unallow" });
     if (!ts || Math.abs(Date.now() - ts) > MAX_AGE_MS)
       return json(400, { error: "signature expired — sign again" });
     if (!sig) return json(400, { error: "signature required" });
@@ -69,9 +84,31 @@ export default async (req) => {
     if (!OWNERS.has(signer.toLowerCase()))
       return json(403, { error: "wallet not authorised", signer });
 
+    if (action === "allow" || action === "unallow") {
+      // WHITELIST
+      //
+      // The automated filters are deliberately strict, and strict filters have
+      // false negatives. This is the override: a whitelisted token appears in
+      // trending regardless of logo, holder count, credibility score or wash
+      // heuristics. It never bypasses a BAN — an explicit block always wins
+      // over an explicit allow, so the two lists can't contradict each other.
+      const allows = await getAllows();
+      if (action === "allow") {
+        allows[token] = { at: Date.now(), by: signer, reason: reason || null, sym: sym || null };
+      } else {
+        delete allows[token];
+      }
+      await store.setJSON("allows", allows);
+      await store.setJSON("bansVersion", { v: Date.now() }).catch(() => {});
+      return json(200, { ok: true, action, token, by: signer, total: Object.keys(allows).length });
+    }
+
     const bans = await getBans();
     if (action === "ban") {
       bans[token] = { at: Date.now(), by: signer, reason: reason || null, sym: sym || null };
+      // a ban supersedes a whitelist entry rather than fighting with it
+      const allows = await getAllows();
+      if (allows[token]) { delete allows[token]; await store.setJSON("allows", allows); }
     } else {
       delete bans[token];
     }
