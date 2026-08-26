@@ -2082,6 +2082,98 @@ function encodeV4SellVia(quoteKey, bridgeKey, tokenIn, amountInUnits, minOutWei)
   };
 }
 
+// MULTI-HOP: three candidate encodings.
+//
+// Chaining two SWAP_EXACT_IN_SINGLE actions relies on the second hop reading
+// amountIn = OPEN_DELTA (0) — "spend whatever the previous hop produced". Not
+// every build supports that, and this router is a fork: it reverted with
+// 0x743f26e1, a custom error that matches nothing in the public v4 or Permit2
+// ABIs, so we cannot reason our way to the right shape.
+//
+// Uniswap's own multi-hop action is SWAP_EXACT_IN (0x07) with a PathKey[].
+// And the fork's extra field is literally called minHopPrice, which suggests
+// its path struct carries one too. Rather than guess between them, all three
+// are built and SIMULATED, and the first that survives eth_call is the one we
+// sign. Empirical beats confident-and-wrong.
+var V4_ACT_SWAP_EXACT_IN = 0x07;
+
+function pathKeys(intermediate, finalKey, tokenOut, withMinHop){
+  var coder=ethers.AbiCoder.defaultAbiCoder();
+  // PathKey: (intermediateCurrency, fee, tickSpacing, hooks, hookData)
+  var PKEY = withMinHop
+    ? "tuple(address intermediateCurrency,uint24 fee,int24 tickSpacing,address hooks,uint256 minHopPriceX36,bytes hookData)"
+    : "tuple(address intermediateCurrency,uint24 fee,int24 tickSpacing,address hooks,bytes hookData)";
+  return { PKEY:PKEY, coder:coder };
+}
+
+function encodeExactInPath(currencyIn, hops, amountIn, minOut, tokenOut, withMinHop){
+  var V4=CFG.UNI.V4, coder=ethers.AbiCoder.defaultAbiCoder();
+  var PKEY = withMinHop
+    ? "tuple(address intermediateCurrency,uint24 fee,int24 tickSpacing,address hooks,uint256 minHopPriceX36,bytes hookData)"
+    : "tuple(address intermediateCurrency,uint24 fee,int24 tickSpacing,address hooks,bytes hookData)";
+  var path = hops.map(function(h){
+    return withMinHop
+      ? [h.currency, h.fee, h.ts, h.hooks, 0, "0x"]
+      : [h.currency, h.fee, h.ts, h.hooks, "0x"];
+  });
+  var params = coder.encode(
+    ["tuple(address currencyIn,"+PKEY+"[] path,uint128 amountIn,uint128 amountOutMinimum)"],
+    [[currencyIn, path, amountIn, minOut]]
+  );
+  var settle=coder.encode(["address","uint256"],[currencyIn, amountIn]);
+  var take  =coder.encode(["address","uint256"],[tokenOut, minOut]);
+  var actions=ethers.solidityPacked(["uint8","uint8","uint8"],
+    [V4_ACT_SWAP_EXACT_IN, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+  return coder.encode(["bytes","bytes[]"],[actions,[params,settle,take]]);
+}
+
+// Every plausible way to express ETH -> USDG -> token, newest-style first.
+function buildUsdgBuyCandidates(bridgeKey, quoteKey, tokenOut, amountInWei, minOut){
+  var V4=CFG.UNI.V4;
+  var leg=v4EthLeg(bridgeKey);
+  if(!leg) return [];
+  var usdg=CFG.UNI.V4.USDG;
+  var out=[];
+
+  // A + B: single SWAP_EXACT_IN with a two-hop path
+  [true,false].forEach(function(withMinHop){
+    var input=encodeExactInPath(leg.currency,
+      [{currency:usdg, fee:bridgeKey.fee, ts:bridgeKey.ts, hooks:bridgeKey.hooks},
+       {currency:tokenOut, fee:quoteKey.fee, ts:quoteKey.ts, hooks:quoteKey.hooks}],
+      amountInWei, minOut, tokenOut, withMinHop);
+    var wrapped = leg.native
+      ? { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input], value:amountInWei }
+      : { commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_WRAP_ETH, V4.CMD_SWAP]),
+          inputs:[ethers.AbiCoder.defaultAbiCoder().encode(["address","uint256"],[V4.ADDRESS_THIS, amountInWei]), input],
+          value: amountInWei };
+    out.push({ label:"path"+(withMinHop?"+minHop":""), enc:wrapped });
+  });
+
+  // C: two chained single swaps
+  var chained=encodeV4BuyVia(bridgeKey, quoteKey, tokenOut, amountInWei, minOut);
+  if(chained) out.push({ label:"chained-singles", enc:chained });
+  return out;
+}
+
+// Simulate each candidate and keep the first that survives.
+async function pickWorkingRoute(cands, from){
+  var iface=new ethers.Interface(UROUTER_ABI);
+  var dl=BigInt(Math.floor(Date.now()/1000)+300);
+  var tried=[];
+  for(var i=0;i<cands.length;i++){
+    var c=cands[i];
+    try{
+      var data=iface.encodeFunctionData("execute",[c.enc.commands, c.enc.inputs, dl]);
+      await rpc().call({ to:v4Router(), data:data, value:c.enc.value||0n, from:from });
+      return { ok:true, chosen:c, tried:tried };
+    }catch(e){
+      var r=decodeRevert(e);
+      tried.push(c.label+": "+(r.sel||r.why));
+    }
+  }
+  return { ok:false, tried:tried };
+}
+
 // BUY — ONE transaction, no approvals, no separate wrap.
 //
 // Native-ETH pool : execute() with msg.value. Nothing else.
@@ -2169,7 +2261,11 @@ var V4_ERRORS={
   "0x6f5ffb7e":"router is locked",
   "0x54e3ca0d":"pool manager locked",
   "0xaaad13f7":"input length mismatch",
-  "0x5cda29d7":"unsupported action"
+  "0x5cda29d7":"unsupported action",
+  // Seen on this chain's forked router when a multi-hop route is encoded the
+  // way stock Uniswap would. Not in any public ABI — recorded here so the
+  // message is useful rather than a bare hex string.
+  "0x743f26e1":"the router rejected this route encoding (fork-specific error)"
 };
 function decodeRevert(e){
   var d=null;
@@ -2971,15 +3067,33 @@ async function fire(){
       if(p.cc && modal.slip < 300)
         toast("This is a taxed letscash pool — 3% slippage or more is recommended", true);
 
-      var enc4 = viaUsdg
-        ? encodeV4BuyVia(bestPool.bridge, key, p.baseToken, netWei, minOut4)
-        : encodeV4Buy(key, p.baseToken, netWei, minOut4);
+      var enc4, routeLabel="direct";
+      if(viaUsdg){
+        // Probe the candidate encodings and use whichever the router accepts.
+        btn.innerHTML='<span class="spin"></span> FINDING A WORKING ROUTE…';
+        var cands=buildUsdgBuyCandidates(bestPool.bridge, key, p.baseToken, netWei, minOut4);
+        var probe=await pickWorkingRoute(cands, me);
+        if(!probe.ok){
+          if(!modal.force){
+            armForce("No USDG route was accepted by the router. Tried: "+probe.tried.join(" · ")+".");
+            return;
+          }
+          enc4=cands[0] && cands[0].enc;
+        }else{
+          enc4=probe.chosen.enc;
+          routeLabel=probe.chosen.label;
+          try{ localStorage.setItem("hs_usdgroute", routeLabel); }catch(e){}
+        }
+      }else{
+        enc4=encodeV4Buy(key, p.baseToken, netWei, minOut4);
+      }
       if(!enc4) throw new Error("Couldn't build the swap for $"+p.sym+". Nothing was charged.");
       var dl4=BigInt(Math.floor(Date.now()/1000)+300);
       var urIface4=new ethers.Interface(UROUTER_ABI);
 
       // Simulate the exact call BEFORE charging anything. This is what makes it
       // safe to take the fee first — we only charge when the swap will land.
+      // (A USDG route has already been simulated during route selection.)
       btn.innerHTML='<span class="spin"></span> PREFLIGHT…';
       try{
         await rpc().call({ to:v4Router(),
