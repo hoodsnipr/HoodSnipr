@@ -565,8 +565,44 @@ export async function rebuild({ deep = false, budgetMs = 12000 } = {}) {
 
   const allows = await getAllows().catch(() => ({}));
 
-  // A whitelisted token no feed has reported still needs a row, or the override
-  // silently does nothing. Read its identity straight off the chain.
+  // WHY THIS MATTERS BEYOND FIRST INJECTION
+  //
+  // The whitelist handler injects a fully-resolved row into the published board
+  // immediately. But the scheduled rebuild reconstructs the board from the
+  // universe — so a minute later that row was replaced by whatever the feeds
+  // knew, which for a fresh token is often no logo and no socials. That is why
+  // a token showed "logo: found" at whitelist time and then rendered with
+  // incomplete metadata.
+  //
+  // The resolved metadata is stored in `wlmeta`, so merge it into the universe
+  // on every rebuild — as a floor, never overwriting better live data.
+  try {
+    const wl = (await store.get("wlmeta", { type: "json" }).catch(() => null)) || {};
+    for (const addr of Object.keys(wl)) {
+      const m = wl[addr];
+      if (!m) continue;
+      const ex = known.t[addr];
+      if (ex) {
+        if (!ex.img && m.img) ex.img = m.img;
+        if (!ex.tw && m.tw) ex.tw = m.tw;
+        if (!ex.tg && m.tg) ex.tg = m.tg;
+        if (!ex.site && m.site) ex.site = m.site;
+        if ((!ex.n || !ex.n.length) && m.n) ex.n = m.n;
+        if ((!ex.s || ex.s === "?") && m.s) ex.s = m.s;
+        if (!ex.pool && m.p) ex.pool = m.p;
+      } else {
+        known.t[addr] = {
+          a: addr, pool: m.p || null, s: m.s, n: m.n || "",
+          img: m.img || null, tw: m.tw || null, tg: m.tg || null, site: m.site || null,
+          px: m.px, mc: m.mc, liq: m.liq || 0,
+          m5: m.m5 || 0, h1: m.h1 || 0, h6: m.h6 || 0, h24: m.h24 || 0,
+          cm5: 0, c1: 0, c6: 0, c24: 0,
+          cr: m.cr || null, ver: m.ver || "v3", src: "whitelist", t: Date.now()
+        };
+      }
+    }
+  } catch (e) {}
+
   for (const addr of Object.keys(allows)) {
     if (known.t[addr]) continue;
     try {

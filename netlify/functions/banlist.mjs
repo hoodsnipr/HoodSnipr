@@ -81,21 +81,40 @@ function decodeStrHex(hex) {
 export async function resolveWhitelistRow(token, symHint) {
   let sym = symHint || null, name = null, img = null;
   let px = null, liq = 0, mc = null, pool = null;
+  let tw = null, tg = null, site = null;
   let m5 = 0, h1 = 0, h6 = 0, h24 = 0, cr = null, ver = "v3";
 
   // identity from the contract
-  const [sRaw, nRaw, lRaw] = await Promise.all([
+  const [sRaw, nRaw, lRaw, socRaw, imgRaw] = await Promise.all([
     callSel(token, "0x95d89b41"),   // symbol()
     callSel(token, "0x06fdde03"),   // name()
-    callSel(token, "0xfb7f21eb")    // logo()
+    callSel(token, "0xfb7f21eb"),   // logo()
+    callSel(token, "0x53cd512a"),   // socials()  — letscash stores these on chain
+    callSel(token, "0xf3ccaac0")    // image()    — alternate logo getter
   ]);
   const symOnchain = decodeStrHex(sRaw);
   sym = symOnchain || sym;
   let symSrc = symOnchain ? "contract" : (symHint ? "operator" : null);
   name = decodeStrHex(nRaw);
-  const rawLogo = decodeStrHex(lRaw);
-  if (rawLogo && /^ipfs:\/\//i.test(rawLogo)) img = "https://ipfs.io/ipfs/" + rawLogo.replace(/^ipfs:\/\//i, "");
+  const rawLogo = decodeStrHex(lRaw) || decodeStrHex(imgRaw);
+  if (rawLogo && /^ipfs:\/\//i.test(rawLogo)) img = "https://ipfs.io/ipfs/" + rawLogo.replace(/^ipfs:\/\//i, "").replace(/^ipfs\//, "");
   else if (rawLogo && /^https?:\/\//i.test(rawLogo)) img = rawLogo;
+
+  // socials() is a free-form string on chain: JSON, a delimited list, or a bare
+  // handle. Pull whatever URLs are in it.
+  const socStr = decodeStrHex(socRaw);
+  if (socStr) {
+    let text = socStr;
+    try { const j = JSON.parse(socStr); if (j && typeof j === "object") text = Object.values(j).filter(v => typeof v === "string").join(" "); } catch (e) {}
+    const urls = text.match(/(https?:\/\/[^\s",'\]}]+)/gi) || [];
+    for (const u of urls) {
+      const l = u.toLowerCase();
+      if (!tw && /(twitter\.com|x\.com)/.test(l)) tw = u;
+      else if (!tg && /t\.me/.test(l)) tg = u;
+      else if (!site) site = u;
+    }
+    if (!tw) { const h = text.match(/(?:^|[\s,"])@([A-Za-z0-9_]{2,15})/); if (h) tw = "https://x.com/" + h[1]; }
+  }
 
   // market data, if any screener knows the token
   try {
@@ -116,6 +135,14 @@ export async function resolveWhitelistRow(token, symHint) {
         mc = +best.marketCap || +best.fdv || null;
         cr = best.pairCreatedAt || null;
         if (!img && best.info?.imageUrl) img = best.info.imageUrl;
+        // DexScreener also carries a socials array and a website list
+        for (const soc of (best.info?.socials || [])) {
+          const t = String(soc.type || "").toLowerCase(), u = soc.url;
+          if (!u) continue;
+          if (!tw && /twitter|x$/.test(t)) tw = u;
+          else if (!tg && /telegram/.test(t)) tg = u;
+        }
+        if (!site && best.info?.websites?.length) site = best.info.websites[0].url;
         if (!sym && best.baseToken?.symbol) { sym = best.baseToken.symbol; symSrc = "dexscreener"; }
         if (!name && best.baseToken?.name) name = best.baseToken.name;
         const labels = [].concat(best.labels || []);
@@ -135,6 +162,7 @@ export async function resolveWhitelistRow(token, symHint) {
     m5, h1, h6, h24, cm5: 0, c1: 0, c6: 0, c24: 0,
     ts5: Math.sqrt(m5 || 0), ts1: Math.sqrt(h1 || 0),
     ts6: Math.sqrt(h6 || 0), ts24: Math.sqrt(h24 || 0),
+    tw, tg, site,
     h: null, cr, ver, dex: "", src: "whitelist",
     boosts: 0, hasProfile: !!img, txns: null, pools: pool ? 1 : 0,
     _symSrc: symSrc || "address fallback",
