@@ -30,6 +30,92 @@ export async function getBans() {
   return (await store.get("bans", { type: "json" }).catch(() => null)) || {};
 }
 
+// Build a board row for a whitelisted token from whatever the chain and the
+// screeners can tell us. A whitelisted token with no market data still gets a
+// row — the whole point of the override is that our filters were wrong.
+const DS = "https://api.dexscreener.com";
+const RPC = "https://rpc.mainnet.chain.robinhood.com";
+
+async function callSel(to, data) {
+  try {
+    const r = await fetch(RPC, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data }, "latest"] })
+    });
+    const j = await r.json();
+    return j.result && j.result !== "0x" ? j.result : null;
+  } catch (e) { return null; }
+}
+function decodeStrHex(hex) {
+  if (!hex || hex.length < 130) return null;
+  try {
+    const len = parseInt(hex.slice(66, 130), 16);
+    if (!len || len > 200) return null;
+    const bytes = hex.slice(130, 130 + len * 2);
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 2) out += String.fromCharCode(parseInt(bytes.substr(i, 2), 16));
+    return out.replace(/\u0000/g, "").trim() || null;
+  } catch (e) { return null; }
+}
+
+export async function resolveWhitelistRow(token, symHint) {
+  let sym = symHint || null, name = null, img = null;
+  let px = null, liq = 0, mc = null, pool = null;
+  let m5 = 0, h1 = 0, h6 = 0, h24 = 0, cr = null, ver = "v3";
+
+  // identity from the contract
+  const [sRaw, nRaw, lRaw] = await Promise.all([
+    callSel(token, "0x95d89b41"),   // symbol()
+    callSel(token, "0x06fdde03"),   // name()
+    callSel(token, "0xfb7f21eb")    // logo()
+  ]);
+  sym = decodeStrHex(sRaw) || sym;
+  name = decodeStrHex(nRaw);
+  const rawLogo = decodeStrHex(lRaw);
+  if (rawLogo && /^ipfs:\/\//i.test(rawLogo)) img = "https://ipfs.io/ipfs/" + rawLogo.replace(/^ipfs:\/\//i, "");
+  else if (rawLogo && /^https?:\/\//i.test(rawLogo)) img = rawLogo;
+
+  // market data, if any screener knows the token
+  try {
+    const r = await fetch(`${DS}/tokens/v1/robinhood/${token}`, { headers: { accept: "application/json" } });
+    if (r.ok) {
+      const arr = await r.json();
+      const pairs = Array.isArray(arr) ? arr : (arr.pairs || []);
+      let best = null;
+      for (const p of pairs) {
+        const l = +(p.liquidity?.usd || 0);
+        if (!best || l > best._l) { best = p; best._l = l; }
+        liq += l;
+        m5 += +(p.volume?.m5 || 0); h1 += +(p.volume?.h1 || 0);
+        h6 += +(p.volume?.h6 || 0); h24 += +(p.volume?.h24 || 0);
+      }
+      if (best) {
+        pool = best.pairAddress; px = +best.priceUsd || null;
+        mc = +best.marketCap || +best.fdv || null;
+        cr = best.pairCreatedAt || null;
+        if (!img && best.info?.imageUrl) img = best.info.imageUrl;
+        if (!sym && best.baseToken?.symbol) sym = best.baseToken.symbol;
+        if (!name && best.baseToken?.name) name = best.baseToken.name;
+        const labels = [].concat(best.labels || []);
+        ver = labels.find(l => /^v\d/i.test(l))?.toLowerCase() || "v3";
+      }
+    }
+  } catch (e) {}
+
+  if (!sym) return null;
+  return {
+    a: token, p: pool, s: String(sym).replace(/^\$+/, ""), n: name || "",
+    img: img || null, px, mc, liq,
+    m5, h1, h6, h24, cm5: 0, c1: 0, c6: 0, c24: 0,
+    ts5: Math.sqrt(m5 || 0), ts1: Math.sqrt(h1 || 0),
+    ts6: Math.sqrt(h6 || 0), ts24: Math.sqrt(h24 || 0),
+    h: null, cr, ver, dex: "", src: "whitelist",
+    boosts: 0, hasProfile: !!img, txns: null, pools: pool ? 1 : 0,
+    wl: true, cc: /cc$/i.test(token), lc: false, pons: false,
+    wash: false, credWarn: null, d30: null
+  };
+}
+
 export async function getAllows() {
   const store = await _store("hoodsnipr-cache");
   return (await store.get("allows", { type: "json" }).catch(() => null)) || {};
@@ -100,7 +186,40 @@ export default async (req) => {
       }
       await store.setJSON("allows", allows);
       await store.setJSON("bansVersion", { v: Date.now() }).catch(() => {});
-      return json(200, { ok: true, action, token, by: signer, total: Object.keys(allows).length });
+
+      // Writing the allow list isn't enough on its own: the board is rebuilt on
+      // a schedule and served from cache, so a whitelisted token could sit
+      // invisible for minutes. Resolve it NOW and put the row straight into the
+      // published payload, so the override takes effect on the next page load.
+      let injected = null;
+      if (action === "allow") {
+        injected = await resolveWhitelistRow(token, sym).catch(() => null);
+        if (injected) {
+          const wl = (await store.get("wlmeta", { type: "json" }).catch(() => null)) || {};
+          wl[token] = injected;
+          await store.setJSON("wlmeta", wl).catch(() => {});
+          try {
+            const board = await store.get("board2", { type: "json" });
+            if (board && board.rows && !board.rows.some(r => String(r.a).toLowerCase() === token)) {
+              board.rows.push(injected);
+              await store.setJSON("board2", board);
+            }
+          } catch (e) {}
+        }
+      } else {
+        const wl = (await store.get("wlmeta", { type: "json" }).catch(() => null)) || {};
+        delete wl[token];
+        await store.setJSON("wlmeta", wl).catch(() => {});
+      }
+
+      return json(200, {
+        ok: true, action, token, by: signer,
+        total: Object.keys(allows).length,
+        resolved: injected ? { sym: injected.s, liq: injected.liq, h24: injected.h24, logo: !!injected.img } : null,
+        note: injected
+          ? "row injected into the live board — visible on the next load"
+          : "allowed, but no market data found yet; the next rebuild will retry"
+      });
     }
 
     const bans = await getBans();
