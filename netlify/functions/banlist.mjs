@@ -46,15 +46,35 @@ async function callSel(to, data) {
     return j.result && j.result !== "0x" ? j.result : null;
   } catch (e) { return null; }
 }
+// Two encodings are in the wild for symbol()/name(): the ABI string form
+// (offset + length + data) and the older fixed bytes32 form. The decoder only
+// handled the first, so a bytes32 token returned null — and because a null
+// symbol aborted the whole resolve, whitelisting such a token silently produced
+// no row at all.
 function decodeStrHex(hex) {
-  if (!hex || hex.length < 130) return null;
-  try {
-    const len = parseInt(hex.slice(66, 130), 16);
-    if (!len || len > 200) return null;
-    const bytes = hex.slice(130, 130 + len * 2);
+  if (!hex || hex === "0x") return null;
+  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const hexToStr = (bytes) => {
     let out = "";
-    for (let i = 0; i < bytes.length; i += 2) out += String.fromCharCode(parseInt(bytes.substr(i, 2), 16));
-    return out.replace(/\u0000/g, "").trim() || null;
+    for (let i = 0; i + 1 < bytes.length; i += 2) {
+      const c = parseInt(bytes.substr(i, 2), 16);
+      if (c > 0 && c < 0xff) out += String.fromCharCode(c);
+    }
+    return out.replace(/[^\x20-\x7E]/g, "").trim() || null;
+  };
+  try {
+    // ABI string: 32-byte offset, 32-byte length, then the data
+    if (h.length >= 128) {
+      const len = parseInt(h.slice(64, 128), 16);
+      if (len > 0 && len <= 256 && h.length >= 128 + len * 2) {
+        const v = hexToStr(h.slice(128, 128 + len * 2));
+        if (v) return v;
+      }
+    }
+    // fixed bytes32
+    if (h.length === 64) return hexToStr(h);
+    // anything else: salvage the printable characters
+    return hexToStr(h);
   } catch (e) { return null; }
 }
 
@@ -69,7 +89,9 @@ export async function resolveWhitelistRow(token, symHint) {
     callSel(token, "0x06fdde03"),   // name()
     callSel(token, "0xfb7f21eb")    // logo()
   ]);
-  sym = decodeStrHex(sRaw) || sym;
+  const symOnchain = decodeStrHex(sRaw);
+  sym = symOnchain || sym;
+  let symSrc = symOnchain ? "contract" : (symHint ? "operator" : null);
   name = decodeStrHex(nRaw);
   const rawLogo = decodeStrHex(lRaw);
   if (rawLogo && /^ipfs:\/\//i.test(rawLogo)) img = "https://ipfs.io/ipfs/" + rawLogo.replace(/^ipfs:\/\//i, "");
@@ -94,7 +116,7 @@ export async function resolveWhitelistRow(token, symHint) {
         mc = +best.marketCap || +best.fdv || null;
         cr = best.pairCreatedAt || null;
         if (!img && best.info?.imageUrl) img = best.info.imageUrl;
-        if (!sym && best.baseToken?.symbol) sym = best.baseToken.symbol;
+        if (!sym && best.baseToken?.symbol) { sym = best.baseToken.symbol; symSrc = "dexscreener"; }
         if (!name && best.baseToken?.name) name = best.baseToken.name;
         const labels = [].concat(best.labels || []);
         ver = labels.find(l => /^v\d/i.test(l))?.toLowerCase() || "v3";
@@ -102,7 +124,11 @@ export async function resolveWhitelistRow(token, symHint) {
     }
   } catch (e) {}
 
-  if (!sym) return null;
+  // NEVER give up. If the contract answers nothing and no screener knows the
+  // token, still produce a row — an override that silently does nothing is the
+  // worst possible outcome, because there is no way to tell it apart from a
+  // bug. A short address stands in for the symbol until real data arrives.
+  if (!sym) sym = token.slice(2, 8).toUpperCase();
   return {
     a: token, p: pool, s: String(sym).replace(/^\$+/, ""), n: name || "",
     img: img || null, px, mc, liq,
@@ -111,6 +137,7 @@ export async function resolveWhitelistRow(token, symHint) {
     ts6: Math.sqrt(h6 || 0), ts24: Math.sqrt(h24 || 0),
     h: null, cr, ver, dex: "", src: "whitelist",
     boosts: 0, hasProfile: !!img, txns: null, pools: pool ? 1 : 0,
+    _symSrc: symSrc || "address fallback",
     wl: true, cc: /cc$/i.test(token), lc: false, pons: false,
     wash: false, credWarn: null, d30: null
   };
@@ -216,9 +243,15 @@ export default async (req) => {
         ok: true, action, token, by: signer,
         total: Object.keys(allows).length,
         resolved: injected ? { sym: injected.s, liq: injected.liq, h24: injected.h24, logo: !!injected.img } : null,
+        diagnostics: injected ? {
+          symbolSource: injected._symSrc || "unknown",
+          marketData: injected.liq > 0 || injected.h24 > 0 ? "found" : "none yet",
+          logo: injected.img ? "found" : "none",
+          pool: injected.p || null
+        } : null,
         note: injected
           ? "row injected into the live board — visible on the next load"
-          : "allowed, but no market data found yet; the next rebuild will retry"
+          : "could not build a row; check the address is a contract on this chain"
       });
     }
 
