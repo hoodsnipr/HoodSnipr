@@ -608,7 +608,27 @@ export async function bootstrapV4(poolIds, budgetMs = 7000) {
     }
   }
 
-  if (!manager) return { ok: false, error: "no logs found for known v4 pool ids", idsTried: ids.length };
+  if (!manager) {
+    // The board's "pool ids" for v4 rows are DexScreener pair addresses, which
+    // for some pools are not the PoolId at all — so filtering Swap logs on them
+    // finds nothing. The PoolManager is already known and verified, so fall
+    // back to reading its Swap events directly rather than failing.
+    const fb = await discoverRouter(5000).catch(() => null);
+    if (fb && fb.ok && fb.router) {
+      const rec2 = { v: 2, manager: fb.manager, router: fb.router, routerVerified: false,
+                     candidates: fb.candidates || [], swapTopic: V4_SWAP_TOPIC, t: Date.now(),
+                     via: "manager-swap-scan" };
+      await store.setJSON("v4boot", rec2).catch(() => {});
+      await store.setJSON("v4router", { router: fb.router, manager: fb.manager, t: Date.now() }).catch(() => {});
+      return { ok: true, ...rec2 };
+    }
+    return {
+      ok: false,
+      error: "no logs matched the supplied pool ids, and no swaps were found on the PoolManager",
+      idsTried: ids.length,
+      hint: "the ids on v4 board rows may be pair addresses rather than PoolIds; try ?router=1"
+    };
+  }
 
   const ranked = Object.entries(senders).sort((a, b) => b[1] - a[1]);
   const candidates = [];
