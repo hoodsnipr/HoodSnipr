@@ -282,17 +282,22 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
     try{
       var r=await fetch(API+"/status");
       var j=await r.json();
+      // status nests everything under board.stats — reading j.stats directly
+      // was why this panel only ever showed the store mode
+      var b=j.board||{}, st=b.stats||{};
       var rows=[
-        ["board rows", j.rows!=null?j.rows:(j.stats&&j.stats.tokensTradeable)],
-        ["universe", j.stats&&j.stats.universeTokens],
-        ["banned", j.stats&&j.stats.bannedTokens],
-        ["whitelisted", j.stats&&j.stats.whitelistedTokens],
-        ["hidden by filters", j.stats&&j.stats.hiddenCount],
-        ["wash suspects", j.stats&&j.stats.washFiltered],
-        ["pons tokens", j.stats&&j.stats.ponsTokens],
-        ["letscash tokens", j.stats&&j.stats.letscashTokens],
-        ["30D coverage", j.stats&&j.stats.vol30Coverage&&(j.stats.vol30Coverage.attached+"/"+j.stats.vol30Coverage.total)],
-        ["liquidity outliers", j.stats&&j.stats.liqOutlierCount],
+        ["board age", b.ageSec!=null? b.ageSec+"s ago" : null],
+        ["board rows", b.rows!=null? b.rows : st.tokensTradeable],
+        ["universe", st.universeTokens!=null? st.universeTokens : j.universeTokens],
+        ["banned", st.bannedTokens],
+        ["whitelisted", st.whitelistedTokens],
+        ["hidden by filters", st.hiddenCount],
+        ["wash suspects", st.washFiltered],
+        ["pons tokens", st.ponsTokens],
+        ["letscash tokens", st.letscashTokens],
+        ["30D coverage", st.vol30Coverage && (st.vol30Coverage.attached+"/"+st.vol30Coverage.total)],
+        ["liquidity outliers", st.liqOutlierCount],
+        ["v4 manager", j.v4 && j.v4.manager ? j.v4.manager.slice(0,10)+"…" : null],
         ["store", j.storeMode]
       ];
       el.innerHTML=rows.filter(function(x){ return x[1]!=null; })
