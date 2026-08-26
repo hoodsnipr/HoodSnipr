@@ -248,9 +248,16 @@ button{width:100%;border:none;border-radius:10px;padding:13px;font-weight:700;fo
           sym:($("#wSym").value||"").trim(), reason:($("#wReason").value||"").trim() })});
       var j=await r.json();
       if(!r.ok){ sayW((j.error||"rejected")+(j.signer?("\nrecovered: "+j.signer):""), true); return; }
-      sayW(action==="allow"
-        ? ("Whitelisted "+token+"\nIt will appear in Trending on the next board build (about a minute).")
-        : ("Removed "+token+" from the whitelist"));
+      if(action==="allow"){
+        var d=j.diagnostics||{};
+        sayW("Whitelisted "+(j.resolved&&j.resolved.sym? "$"+j.resolved.sym : token)+"\n"
+          +"symbol from: "+(d.symbolSource||"?")+"\n"
+          +"market data: "+(d.marketData||"?")+"\n"
+          +"logo: "+(d.logo||"?")+"\n"
+          +(j.note||""));
+      }else{
+        sayW("Removed "+token+" from the whitelist");
+      }
       $("#wToken").value=""; $("#wSym").value=""; $("#wReason").value="";
       loadAllows();
     }catch(e){ sayW(e.shortMessage||e.message||"Failed", true); }
