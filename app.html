@@ -664,7 +664,11 @@ function boardRowToPool(r){
     site:r.site, tw:r.tw, tg:r.tg, dec:r.d, ver:r.ver||"", dex:r.dex||"",
     vers:r.vers||[], venues:r.venues||[],
     pons:!!r.pons, ponsBlock:r.ponsBlock||null, restrictionsEndBlock:r.restrictionsEndBlock||null,
-    cc:!!r.cc, lc:!!r.lc,
+    // The whitelist flag was never carried across from the payload, so p.wl was
+    // always undefined and the bypass in rankFor could never fire — the row was
+    // injected server-side and then discarded here. This one field is why an
+    // override appeared to do nothing.
+    cc:!!r.cc, lc:!!r.lc, wl:!!r.wl,
     d30:(r.d30!=null? r.d30 : null),        // server-computed, whole board
     ts5:r.ts5||0, ts1:r.ts1||0, ts6:r.ts6||0, ts24:r.ts24||0, txns:r.txns||null,
     holders:r.h!=null?r.h:null, wash:!!r.wash,
