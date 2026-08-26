@@ -231,7 +231,8 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvbig{font-family:var(--disp);font-weight:800;font-size:30px;color:var(--text);
   letter-spacing:-.02em;margin-bottom:8px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
-.wlb{color:var(--gold);font-size:11px;vertical-align:middle}
+.wlb{color:var(--gold);font-family:var(--mono);font-size:9px;letter-spacing:.08em;
+  border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle}
 .nologo{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--gold);
   border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.9}
 .lcash{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#00C805;
@@ -1341,6 +1342,12 @@ function rankFor(tf, washTf){
     out.push({ p:p, sc:sc, vol:vol, liq:p.liq||0, id:p.baseToken||p.pool||"" });
   }
   out.sort(function(a,b){
+    // An operator override is PINNED to the top. Ranking it purely on score
+    // put a low-volume token at the bottom of several hundred rows — present
+    // in the data, invisible in practice, and indistinguishable from broken.
+    // If you deliberately whitelisted a token, you want to see it.
+    var aw=a.p.wl?1:0, bw=b.p.wl?1:0;
+    if(aw!==bw) return bw-aw;
     var d=b.sc-a.sc; if(d) return d;
     var v=b.vol-a.vol; if(v) return v;
     var la=b.liq-a.liq; if(la) return la;
@@ -1386,7 +1393,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+(p.wl?'<span class="wlb" title="Whitelisted by the operator — shown regardless of the automated filters">★</span> ':'')+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+(p.wl?'<span class="wlb" title="Pinned by the operator — shown regardless of the automated filters">★ PINNED</span> ':'')+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]
         +(p._d30est&&state.tf==="d30"?' <span style="color:var(--gold)">EST</span>':'')+'</div></div>'
