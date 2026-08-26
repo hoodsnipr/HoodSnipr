@@ -231,8 +231,7 @@ main{max-width:960px;margin:0 auto;padding:14px 12px calc(90px + env(safe-area-i
 .pvbig{font-family:var(--disp);font-weight:800;font-size:30px;color:var(--text);
   letter-spacing:-.02em;margin-bottom:8px}
 .hgroup{font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.14em;padding:10px 0 4px}
-.wlb{color:var(--gold);font-family:var(--mono);font-size:9px;letter-spacing:.08em;
-  border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle}
+.wlb{color:var(--gold);font-size:11px;margin-right:4px;vertical-align:middle;opacity:.85}
 .nologo{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--gold);
   border:1px solid var(--gold);border-radius:6px;padding:1px 5px;margin-right:5px;vertical-align:middle;opacity:.9}
 .lcash{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:#00C805;
@@ -524,7 +523,11 @@ var CFG = {
       ACT_SWAP_IN_SINGLE: 0x06,          // Actions.SWAP_EXACT_IN_SINGLE
       ACT_SETTLE_ALL: 0x0c,
       ACT_TAKE_ALL: 0x0f,
-      NATIVE: "0x0000000000000000000000000000000000000000"
+      NATIVE: "0x0000000000000000000000000000000000000000",
+      // letscash pools are priced in ETH *or* USDG, chosen at launch and fixed
+      // forever. A USDG-quoted pool has no ETH leg at all, which is why a
+      // straight ETH swap reported "no ETH-paired pool".
+      USDG: "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
     }
   },
   GT: "https://api.geckoterminal.com/api/v2",
@@ -1342,12 +1345,9 @@ function rankFor(tf, washTf){
     out.push({ p:p, sc:sc, vol:vol, liq:p.liq||0, id:p.baseToken||p.pool||"" });
   }
   out.sort(function(a,b){
-    // An operator override is PINNED to the top. Ranking it purely on score
-    // put a low-volume token at the bottom of several hundred rows — present
-    // in the data, invisible in practice, and indistinguishable from broken.
-    // If you deliberately whitelisted a token, you want to see it.
-    var aw=a.p.wl?1:0, bw=b.p.wl?1:0;
-    if(aw!==bw) return bw-aw;
+    // Whitelisted tokens rank on their own volume like everything else. Pinning
+    // them to the top was the wrong fix — the override exists to stop a token
+    // being EXCLUDED, not to promote it above markets that are trading harder.
     var d=b.sc-a.sc; if(d) return d;
     var v=b.vol-a.vol; if(v) return v;
     var la=b.liq-a.liq; if(la) return la;
@@ -1393,7 +1393,7 @@ function renderBoard(){
       +'<div class="tok"><div class="s">$'+esc(p.sym)
       +'<span data-trust="'+esc((p.baseToken||"").toLowerCase())+'"></span>'
       +'<span data-soc="'+esc((p.baseToken||"").toLowerCase())+'">'+socialLinks(p,12)+'</span></div>'
-      +'<div class="n">'+(p.wl?'<span class="wlb" title="Pinned by the operator — shown regardless of the automated filters">★ PINNED</span> ':'')+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
+      +'<div class="n">'+(p.wl?'<span class="wlb" title="Listed by operator override — ranked on its own volume like any other token">★</span> ':'')+noLogoMark(p)+letscashBadge(p)+ponsBadge(p)+(p.credWarn?'<span style="color:var(--gold)" title="'+esc(p.credWarn)+'">⚠ </span>':'')+'MC '+fmtUsd(p.mcap)+' · '+holdersCell(p)+'</div></div>'
       +'<div class="pr"><div class="p">$'+fmtP(p.price)+'</div><div class="c '+(up?"up":"dn")+'">'+(up?"+":"")+(+c).toFixed(1)+'%</div></div>'
       +'<div class="vl"><div class="v">'+fmtUsd(volFor(p))+'</div><div class="k">'+buyPressure(p)+'VOL '+TF_LABEL[state.tf]
         +(p._d30est&&state.tf==="d30"?' <span style="color:var(--gold)">EST</span>':'')+'</div></div>'
@@ -1716,7 +1716,7 @@ function openToken(poolAddr){
         +'This pool charges a <span class="tax">trading tax on every buy and sell</span>, set at launch '
         +'(1%, 3%, 5% or 10%) and taken in '+esc(lc.quote==="USDG"?"USDG":"ETH")+' — never in the token. '
         +'It is already reflected in the quote above.'
-        +(lc.routable ? '' : ' <span style="color:var(--red)">This pool is priced in USDG, which HoodSnipr can\'t route yet — trade it on letscash.</span>')
+        +(lc.quote==="USDG" ? ' <span style="color:var(--gold)">This pool is priced in USDG — your ETH is routed through USDG automatically, in one transaction.</span>' : '')
         +'</div>'
         +'<div style="margin-top:7px"><a href="'+esc(lc.tokenUrl)+'" target="_blank" rel="noopener" data-action="ext" style="color:var(--green);font-size:11px">view on letscash.fun ↗</a></div>'
         +'</div>';
@@ -1988,6 +1988,17 @@ function v4Direction(key, inputCurrency){
   return String(key.c0).toLowerCase()===String(inputCurrency).toLowerCase();
 }
 var ZERO_ADDR="0x0000000000000000000000000000000000000000";
+// Which asset is this pool priced in?
+function v4Quote4Asset(key, token){
+  var t=String(token||"").toLowerCase();
+  var a=String(key.c0).toLowerCase(), b=String(key.c1).toLowerCase();
+  var other = (a===t)? b : a;
+  var w=CFG.UNI.weth.toLowerCase(), u=String(CFG.UNI.V4.USDG).toLowerCase();
+  if(other===ZERO_ADDR) return { currency:key.c0===ZERO_ADDR?key.c0:key.c1, kind:"ETH" };
+  if(other===w) return { currency:(a===w?key.c0:key.c1), kind:"WETH" };
+  if(other===u) return { currency:(a===u?key.c0:key.c1), kind:"USDG" };
+  return { currency:(a===t?key.c1:key.c0), kind:"OTHER" };
+}
 // Which side of this pool is the ETH leg, and is it native or wrapped?
 function v4EthLeg(key){
   var a=String(key.c0).toLowerCase(), b=String(key.c1).toLowerCase();
@@ -2006,6 +2017,69 @@ function v4SwapParams(key, inputCurrency, amountIn, minOut){
     [[[key.c0,key.c1,key.fee,key.ts,key.hooks], v4Direction(key,inputCurrency), amountIn, minOut,
       CFG.UNI.V4.MIN_HOP_PRICE_X36, "0x"]]
   );
+}
+
+// TWO-HOP BUY for a USDG-quoted pool: ETH -> USDG -> token, inside a single
+// execute(). Both hops use the SWAP_EXACT_IN_SINGLE struct we already know this
+// router accepts (including its extra minHopPriceX36 field); the router nets the
+// deltas, so only the ETH goes in and only the token comes out.
+function encodeV4BuyVia(bridgeKey, quoteKey, tokenOut, amountInWei, minOut){
+  var V4=CFG.UNI.V4, coder=ethers.AbiCoder.defaultAbiCoder();
+  var bridgeLeg=v4EthLeg(bridgeKey);
+  if(!bridgeLeg) return null;
+  var usdg=CFG.UNI.V4.USDG;
+
+  // hop 1: ETH -> USDG. amountOutMinimum 0: the second hop's minimum is what
+  // actually protects the trade, and a floor here would double-count slippage.
+  var hop1=v4SwapParams(bridgeKey, bridgeLeg.currency, amountInWei, 0n);
+  // hop 2: USDG -> token, with the real slippage floor
+  var hop2=v4SwapParams(quoteKey, usdg, 0n, minOut);
+
+  var settle=coder.encode(["address","uint256"],[bridgeLeg.currency, amountInWei]);
+  var take  =coder.encode(["address","uint256"],[tokenOut, minOut]);
+  var actions=ethers.solidityPacked(["uint8","uint8","uint8","uint8"],
+    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+  var input=coder.encode(["bytes","bytes[]"],[actions,[hop1,hop2,settle,take]]);
+
+  if(bridgeLeg.native){
+    return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input], value:amountInWei };
+  }
+  var wrapInput=coder.encode(["address","uint256"],[V4.ADDRESS_THIS, amountInWei]);
+  return {
+    commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_WRAP_ETH, V4.CMD_SWAP]),
+    inputs:[wrapInput, input], value:amountInWei
+  };
+}
+
+// TWO-HOP SELL for a USDG-quoted pool: token -> USDG -> ETH, one transaction.
+// Mirror of the buy. Permit2 still covers the token side.
+function encodeV4SellVia(quoteKey, bridgeKey, tokenIn, amountInUnits, minOutWei){
+  var V4=CFG.UNI.V4, coder=ethers.AbiCoder.defaultAbiCoder();
+  var bridgeLeg=v4EthLeg(bridgeKey);
+  if(!bridgeLeg) return null;
+  var usdg=CFG.UNI.V4.USDG;
+
+  var hop1=v4SwapParams(quoteKey, tokenIn, amountInUnits, 0n);      // token -> USDG
+  var hop2=v4SwapParams(bridgeKey, usdg, 0n, minOutWei);            // USDG -> ETH
+  var settle=coder.encode(["address","uint256"],[tokenIn, amountInUnits]);
+
+  if(bridgeLeg.native){
+    var take=coder.encode(["address","uint256"],[bridgeLeg.currency, minOutWei]);
+    var actions=ethers.solidityPacked(["uint8","uint8","uint8","uint8"],
+      [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE_ALL]);
+    var input=coder.encode(["bytes","bytes[]"],[actions,[hop1,hop2,settle,take]]);
+    return { commands: ethers.solidityPacked(["uint8"],[V4.CMD_SWAP]), inputs:[input], value:0n };
+  }
+  // WETH bridge: take into the router, then unwrap to the seller
+  var takeR=coder.encode(["address","address","uint256"],[bridgeLeg.currency, V4.ADDRESS_THIS, V4.OPEN_DELTA_AMT]);
+  var actions2=ethers.solidityPacked(["uint8","uint8","uint8","uint8"],
+    [V4.ACT_SWAP_IN_SINGLE, V4.ACT_SWAP_IN_SINGLE, V4.ACT_SETTLE_ALL, V4.ACT_TAKE]);
+  var input2=coder.encode(["bytes","bytes[]"],[actions2,[hop1,hop2,settle,takeR]]);
+  var unwrap=coder.encode(["address","uint256"],[V4.MSG_SENDER, minOutWei]);
+  return {
+    commands: ethers.solidityPacked(["uint8","uint8"],[V4.CMD_SWAP, V4.CMD_UNWRAP_WETH]),
+    inputs:[input2, unwrap], value:0n
+  };
 }
 
 // BUY — ONE transaction, no approvals, no separate wrap.
@@ -2356,6 +2430,27 @@ async function v4Quote(key, inputCurrency, amountIn){
 // A token often has v4 pools at several fee tiers. Taking the first one can
 // route through a thin pool and deliver a fraction of what the deep pool would
 // — quoting all of them and picking the best output is the only safe way.
+// The ETH<->USDG pool used to reach dollar-quoted markets. Resolved once and
+// cached; without it a USDG pool is unreachable from an ETH balance.
+var usdgBridgeKey=null;
+async function v4UsdgBridge(){
+  if(usdgBridgeKey) return usdgBridgeKey;
+  var keys=await v4KeysDirect(CFG.UNI.V4.USDG);
+  if(!keys || !keys.length) return null;
+  var cands=keys.filter(function(k){ return !!v4EthLeg(k); });
+  if(!cands.length) return null;
+  // deepest fee tier first is a poor proxy for depth, so quote them
+  var probe=await Promise.all(cands.slice(0,4).map(async function(k){
+    var leg=v4EthLeg(k);
+    var out=await v4Quote(k, leg.currency, ethers.parseEther("0.01"));
+    return { k:k, out:(out||0n) };
+  }));
+  probe.sort(function(a,b){ return (b.out>a.out)?1:((b.out<a.out)?-1:0); });
+  if(probe[0] && probe[0].out>0n){ usdgBridgeKey=probe[0].k; return usdgBridgeKey; }
+  usdgBridgeKey=cands[0];
+  return usdgBridgeKey;
+}
+
 async function v4BestPool(keys, amountIn, side, token){
   var cands=(keys||[]).filter(function(k){ return !!v4EthLeg(k); });
   if(!cands.length) return null;
@@ -2836,8 +2931,36 @@ async function fire(){
       var TOKL=String(p.baseToken).toLowerCase();
       btn.innerHTML='<span class="spin"></span> QUOTING V4 POOLS…';
       var bestPool=await v4BestPool(vkeys, netWei, "buy", p.baseToken);
+
+      // A letscash launch picks ETH *or* USDG as its quote, fixed forever. A
+      // USDG pool has no ETH leg at all, so an ETH-only search finds nothing —
+      // that is the "no ETH-paired pool" error. Route ETH -> USDG -> token in
+      // one transaction instead.
+      var usdgKey=null, viaUsdg=false;
+      if(!bestPool){
+        var uq=vkeys.filter(function(k){ return v4Quote4Asset(k, p.baseToken).kind==="USDG"; });
+        if(uq.length){
+          btn.innerHTML='<span class="spin"></span> ROUTING VIA USDG…';
+          var bridge=await v4UsdgBridge();
+          if(!bridge)
+            throw new Error("$"+p.sym+" is priced in USDG and no ETH↔USDG pool was found to route through. Nothing was charged.");
+          // quote both hops to size the trade
+          var usdgOut=await v4Quote(bridge, v4EthLeg(bridge).currency, netWei);
+          if(!usdgOut || usdgOut<=0n)
+            throw new Error("Couldn't price ETH into USDG right now. Nothing was charged.");
+          var picked=null, bestOut=0n;
+          for(var ui=0; ui<uq.length; ui++){
+            var o=await v4Quote(uq[ui], CFG.UNI.V4.USDG, usdgOut);
+            if(o && o>bestOut){ bestOut=o; picked=uq[ui]; }
+          }
+          if(!picked || bestOut<=0n)
+            throw new Error("No USDG-quoted v4 pool for $"+p.sym+" could fill this size. Try a smaller amount. Nothing was charged.");
+          usdgKey=picked; viaUsdg=true;
+          bestPool={ key:picked, leg:{currency:CFG.UNI.V4.USDG, native:false}, out:bestOut, bridge:bridge };
+        }
+      }
       if(!bestPool)
-        throw new Error("No v4 quote for $"+p.sym+" — no ETH-paired pool could fill this size. Nothing was charged.");
+        throw new Error("No v4 quote for $"+p.sym+" — no ETH or USDG pool could fill this size. Nothing was charged.");
       var key=bestPool.key, leg=bestPool.leg, qOut=bestPool.out;
       var minOut4=qOut - (qOut*BigInt(modal.slip)/10000n);
       if(minOut4<1n) minOut4=1n;
@@ -2848,7 +2971,10 @@ async function fire(){
       if(p.cc && modal.slip < 300)
         toast("This is a taxed letscash pool — 3% slippage or more is recommended", true);
 
-      var enc4=encodeV4Buy(key, p.baseToken, netWei, minOut4);
+      var enc4 = viaUsdg
+        ? encodeV4BuyVia(bestPool.bridge, key, p.baseToken, netWei, minOut4)
+        : encodeV4Buy(key, p.baseToken, netWei, minOut4);
+      if(!enc4) throw new Error("Couldn't build the swap for $"+p.sym+". Nothing was charged.");
       var dl4=BigInt(Math.floor(Date.now()/1000)+300);
       var urIface4=new ethers.Interface(UROUTER_ABI);
 
@@ -2867,7 +2993,7 @@ async function fire(){
       // FEE FIRST — the swap can't be taken without it.
       var feePaid4=await chargeFee(signer, fee, function(m){ btn.innerHTML='<span class="spin"></span> '+m; });
 
-      btn.innerHTML='<span class="spin"></span> SNIPE — SIGN IN WALLET…';
+      btn.innerHTML='<span class="spin"></span> '+(viaUsdg?'SNIPE VIA USDG — SIGN IN WALLET…':'SNIPE — SIGN IN WALLET…');
       var ur4=new ethers.Contract(v4Router(), UROUTER_ABI, signer);
       var tx4, rc4;
       try{
@@ -4258,8 +4384,33 @@ async function fireLoose(){
 
       btn.innerHTML='<span class="spin"></span> QUOTING V4 POOLS…';
       var bestSell=await v4BestPool(vk, units, "sell", x.addr);
+
+      // Same story as the buy: a USDG-quoted pool has no ETH leg, so sell
+      // token -> USDG -> ETH in one transaction.
+      var sellViaUsdg=false, sellBridge=null;
+      if(!bestSell){
+        var uqs=vk.filter(function(k){ return v4Quote4Asset(k, x.addr).kind==="USDG"; });
+        if(uqs.length){
+          btn.innerHTML='<span class="spin"></span> ROUTING VIA USDG…';
+          sellBridge=await v4UsdgBridge();
+          if(!sellBridge)
+            throw new Error("$"+x.sym+" is priced in USDG and no ETH↔USDG pool was found to route through. Nothing was charged.");
+          var pickS=null, bestU=0n;
+          for(var si=0; si<uqs.length; si++){
+            var uo=await v4Quote(uqs[si], x.addr, units);
+            if(uo && uo>bestU){ bestU=uo; pickS=uqs[si]; }
+          }
+          if(!pickS || bestU<=0n)
+            throw new Error("No USDG pool for $"+x.sym+" could absorb this sale. Try a smaller amount. Nothing was charged.");
+          var ethBack=await v4Quote(sellBridge, CFG.UNI.V4.USDG, bestU);
+          if(!ethBack || ethBack<=0n)
+            throw new Error("Couldn't price USDG back into ETH right now. Nothing was charged.");
+          sellViaUsdg=true;
+          bestSell={ key:pickS, leg:{currency:CFG.UNI.V4.USDG, native:false}, out:ethBack };
+        }
+      }
       if(!bestSell)
-        throw new Error("No v4 quote for $"+x.sym+" — no ETH-paired pool could fill this size. Nothing was charged.");
+        throw new Error("No v4 quote for $"+x.sym+" — no ETH or USDG pool could fill this size. Nothing was charged.");
       var k4=bestSell.key, leg2=bestSell.leg;
 
       // the router pulls the token through Permit2 — one-time per token
@@ -4272,7 +4423,10 @@ async function fireLoose(){
       var minW=qEth - (qEth*BigInt(looseM.slip)/10000n);
       if(minW<1n) minW=1n;
 
-      var encS=encodeV4Sell2(k4, x.addr, units, minW);
+      var encS = sellViaUsdg
+        ? encodeV4SellVia(k4, sellBridge, x.addr, units, minW)
+        : encodeV4Sell2(k4, x.addr, units, minW);
+      if(!encS) throw new Error("Couldn't build the sale for $"+x.sym+". Nothing was charged.");
       var dlS=BigInt(Math.floor(Date.now()/1000)+300);
       var ifaceS=new ethers.Interface(UROUTER_ABI);
 
